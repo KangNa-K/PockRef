@@ -1,0 +1,40 @@
+# Gradle
+.gradle/
+.gradle-bin/
+build/
+local.properties
+keystore.properties
+release.keystore
+
+# IDE
+.idea/
+*.iml
+.trae/
+.opencode/
+.mavis/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Android
+captures/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Logs / Temp
+*.log
+*.tmp
+hs_err_pid*
+
+# Kotlin
+.kotlin/
+
+# Python (for the build_patch.py utility in docs/)
+__pycache__/
+*.pyc
+*.pyo

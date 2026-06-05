@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        PockRef Android 通过 Storage Access Framework (SAF) 访问用户文件,
+        严格来说无需声明读写权限 — 但为了让应用在 Android 13/14 上更好地
+        表达意图,以及为未来切换到 MediaStore PhotoPicker 预留空间,加上
+        下列声明。READ_MEDIA_* 不会触发运行时弹窗,仅在应用实际调用
+        MediaStore API 时才会被检查。
+    -->
+
+    <!-- Android 13+ (API 33+) 媒体读取 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Android 14+ (API 34+) 用户选择的媒体,PhotoPicker 自动使用 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!-- 旧版本兼容:API <= 32 仍可使用 READ_EXTERNAL_STORAGE 走 SAF 选择路径 -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!--
+        V_NOW: SYSTEM_ALERT_WINDOW removed. The previous S Pen
+        button detection used a TYPE_APPLICATION_OVERLAY window
+        to read event.buttonState for stylus button presses,
+        but the overlay approach didn't fire on SM-X810 (Samsung
+        fork strips the button bit before it reaches the
+        overlay's generic-motion listener). The replacement —
+        dispatchTouchEvent + dispatchGenericMotionEvent in
+        MainActivity reading MotionEvent.buttonState directly —
+        sits on the framework's standard input dispatch path
+        which Samsung's fork does NOT strip, and works on
+        SM-X810 without any permission. See
+        MainActivity.handleMotionEvent and the S Pen section
+        in AGENTS.md.
+    -->
+
+    <!--
+        Android 11+ (API 30+) Package Visibility:
+        声明本应用会查询/启动哪些外部组件 — 没有这块,系统会屏蔽
+        很多隐式 Intent (例如其他 app 的 ACTION_VIEW .pur 文件)
+    -->
+    <queries>
+        <!-- 允许解析打开 .pur 场景文件的 Intent -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/octet-stream" />
+        </intent>
+        <!-- 允许使用系统文件选择器 -->
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <!-- 允许使用系统文件保存器 -->
+        <intent>
+            <action android:name="android.intent.action.CREATE_DOCUMENT" />
+            <data android:mimeType="application/octet-stream" />
+        </intent>
+        <!-- 允许使用系统分享 -->
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:largeHeap="true"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.PockRef"
+        tools:targetApi="34">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:pathPattern=".*\\.pur" />
+            </intent-filter>
+            <!--
+                V_NOW: dedicated .pur MIME type (registered in
+                MainActivity.PUR_SCENE_MIME). File managers like
+                Google's Files / Files-by-Google, Material Files,
+                and Samsung My Files use the URI's MIME as the
+                primary filter key for their "Open with" picker.
+                With this filter, a .pur file's MIME (which the
+                Save As flow now writes as application/x-pockref-
+                scene via CreateDocument) directly maps PockRef
+                as a candidate. After the user picks PockRef once
+                for this MIME, the system remembers it as the
+                default — subsequent taps skip the picker.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/x-pockref-scene" />
+                <data android:pathPattern=".*\\.pur" />
+            </intent-filter>
+            <!-- Catch-all for adb / `am start -a VIEW -d file://... -t */*` so the
+                 app can be auto-launched with a .pur in CI / scripted tests.
+                 The real picker path is the application/octet-stream filter above. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.pur" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

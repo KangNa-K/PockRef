@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12+ (API 31+) 自动备份规则。
+    PockRef 的所有用户数据:
+      - SharedPreferences (recent_scenes, autosave)
+      - 自动保存目录 files/auto_save/
+    都不含敏感信息,允许完整备份。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="." />
+        <include domain="file" path="auto_save/" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="sharedpref" path="." />
+        <include domain="file" path="auto_save/" />
+    </device-transfer>
+</data-extraction-rules>

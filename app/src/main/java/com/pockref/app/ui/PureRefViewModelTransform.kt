@@ -1,0 +1,1516 @@
+package com.pockref.app.ui
+
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.viewModelScope
+import com.pockref.app.model.AngleSnapGuide
+import com.pockref.app.model.ColorAdjust
+import com.pockref.app.model.PockRefUiState
+import com.pockref.app.model.SceneImage
+import com.pockref.app.model.Size2D
+import com.pockref.app.model.SpeedSample
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+/**
+ * Metadata-only snapshot of a scene at a point in time. The image list is
+ * stored separately in [HistoryEntry.Snapshot] so we don't pin a 1000-image
+ * list every time a tiny property change is recorded.
+ *
+ * The undo/redo stacks no longer store [SceneSnapshot] directly — they store
+ * [HistoryEntry] which can be either a [HistoryEntry.Snapshot] (used as a
+ * checkpoint base for diffs) or a [HistoryEntry.Diff] (an incremental change).
+ */
+internal data class SceneSnapshot(
+    val sceneName: String,
+    val backgroundColor: Color,
+)
+
+/**
+ * One incremental change in the event log. Each variant carries enough
+ * information to be reversed without consulting a separate checkpoint: the
+ * reverse of a [UpdateImage] swaps every `old*`/`new*` field, the reverse
+ * of [AddImage] is a [RemoveImage] of the same image, and so on.
+ *
+ * Field-level [UpdateImage] entries are used for the common case
+ * (rotate / scale / move a single image) so the per-entry footprint stays
+ * tiny. [ReplaceImages] is the fallback used when a precise per-field diff
+ * isn't worth computing (e.g. multi-image reorders or bulk import follow-ups);
+ * it still carries [oldImages] so it remains reversible on its own.
+ */
+internal sealed interface SceneDiff {
+    /**
+     * Whole image list was replaced. We keep BOTH [oldImages] and [newImages]
+     * so reversing this entry is a self-contained swap — no need to consult
+     * the current state to recover the old list.
+     */
+    data class ReplaceImages(
+        val oldImages: List<SceneImage>,
+        val newImages: List<SceneImage>,
+    ) : SceneDiff
+
+    /**
+     * Property-level change of a single image. Only fields that actually
+     * changed are populated on each side; `null` means "leave this field
+     * alone" so the same data class works for arbitrary subsets of fields.
+     * [oldX] / [newX] mirror each other: the reverse swaps them.
+     */
+    data class UpdateImage(
+        val id: String,
+        val oldCenter: Offset? = null,
+        val oldDisplaySize: Size2D? = null,
+        val oldRotation: Float? = null,
+        val oldScale: Float? = null,
+        val oldFlipX: Boolean? = null,
+        val oldFlipY: Boolean? = null,
+        val oldColorAdjust: ColorAdjust? = null,
+        val newCenter: Offset? = null,
+        val newDisplaySize: Size2D? = null,
+        val newRotation: Float? = null,
+        val newScale: Float? = null,
+        val newFlipX: Boolean? = null,
+        val newFlipY: Boolean? = null,
+        val newColorAdjust: ColorAdjust? = null,
+    ) : SceneDiff
+
+    /** A new image appeared in the scene. */
+    data class AddImage(val image: SceneImage) : SceneDiff
+
+    /**
+     * An image was removed. We keep the full [SceneImage] (not just the id)
+     * so the reverse — re-adding it with the same field values — is possible
+     * without going back to a snapshot.
+     */
+    data class RemoveImage(val image: SceneImage) : SceneDiff
+
+    /**
+     * Scene-level metadata changed. Both old and new values are stored for
+     * the fields that actually changed (`null` on a side means "this field
+     * was not part of the change"). The reverse swaps them.
+     */
+    data class SetMeta(
+        val oldName: String? = null,
+        val newName: String? = null,
+        val oldBackgroundColor: Color? = null,
+        val newBackgroundColor: Color? = null,
+    ) : SceneDiff
+}
+
+/**
+ * One entry in the undo / redo stacks. A [Snapshot] is a full checkpoint
+ * (rare, used as a base for the diffs in between); a [Diff] is a small
+ * incremental change that can be applied forward or reversed cheaply.
+ */
+internal sealed interface HistoryEntry {
+    data class Snapshot(
+        val sceneName: String,
+        val backgroundColor: Color,
+        val images: List<SceneImage>,
+    ) : HistoryEntry
+
+    data class Diff(val diff: SceneDiff) : HistoryEntry
+}
+
+internal const val RECENT_SCENES_KEY = "recent_scenes_v1"
+
+/**
+ * Every Nth entry we emit a [HistoryEntry.Snapshot] instead of a [HistoryEntry.Diff]
+ * so a long undo chain doesn't have to replay from the dawn of time. Diffs in
+ * between are applied incrementally against the current state.
+ */
+internal const val SCENE_SNAPSHOT_INTERVAL = 5
+
+/**
+ * Snap trigger distance in screen pixels. The dragged group's edge becomes
+ * "active" for snap once it is within this many pixels (converted to world
+ * units via current canvasScale) of any other image's edge.
+ *
+ * Picked at 15 to match the user spec and to feel "tight" — a value much
+ * larger than that and snap starts feeling like the canvas is fighting
+ * the user; a value much smaller and snap becomes hard to find. The
+ * engine measures distance as the absolute delta between two edge
+ * positions on the SAME axis (no diagonal cases).
+ */
+private const val SNAP_THRESHOLD_PX = 15f
+
+/**
+ * How long (ms) the post-commit snap highlight is visible. Fades out over
+ * this window. The renderer animates an alpha from 0.6 → 0 over this
+ * duration.
+ */
+internal const val SNAP_HIGHLIGHT_DURATION_MS = 350L
+
+// ---------------------------------------------------------------------------
+// Intent-detection state machine thresholds (V4).
+//
+// Snap used to be "trigger the moment the cursor is within range". In dense
+// scenes with many small, irregular gaps, that fires constantly while the
+// user is just passing through. The V4 state machine gates snap on
+// INTENT: the user must slow down, dwell for a moment, AND be within
+// range. Symmetrically, a fast subsequent move cancels the snap
+// immediately rather than waiting for the cursor to drift past 15px again.
+//
+// All values are in *screen* pixels / ms for the speed and time gates.
+// They're not scaled with canvasScale — the intent reading is a
+// perceptual, finger-on-glass thing, not a world-space thing.
+// ---------------------------------------------------------------------------
+
+/**
+ * Time (ms) the cursor must stay within the trigger range AND below
+ * the engage speed threshold before snap fires. 200ms is the user
+ * spec; it matches Figma's "settle" feel and is long enough that a
+ * fast pass-through doesn't trigger, short enough that an explicit
+ * pause feels responsive.
+ */
+private const val SNAP_ENGAGE_DELAY_MS = 200L
+
+/**
+ * Maximum cursor speed (screen px/s) during the TRACKING window for
+ * snap to engage. Below this, the user is clearly "settling" on a
+ * target. 50 px/s is slow on a tablet (~20cm/sec fingertip) — slow
+ * enough to feel intentional.
+ */
+private const val SNAP_ENGAGE_MAX_SPEED_PX_PER_S = 50f
+
+/**
+ * Cursor speed (screen px/s) at which we conclude the user has
+ * "resumed moving" and cancel the active snap. Higher than the engage
+ * threshold (hysteresis): once locked on, the user must really MOVE
+ * to break out — small trembles don't disengage.
+ */
+private const val SNAP_DISENGAGE_SPEED_PX_PER_S = 100f
+
+/**
+ * Minimum move distance (screen px) for the disengage-speed check to
+ * count. Prevents the disengage from firing on a single high-spike
+ * sample at the end of a stationary cursor.
+ */
+private const val SNAP_DISENGAGE_MIN_MOVE_PX = 5f
+
+/**
+ * Distance (screen px) past the trigger range the user must move
+ * before we cancel snap (主动移出). Larger than the trigger range so
+ * tiny "graze" movements don't disengage.
+ */
+private const val SNAP_CANCEL_DISTANCE_PX = 30f
+
+/**
+ * Width (ms) of the sliding window used to compute the smoothed drag
+ * speed. 100ms is short enough to feel responsive to a sudden burst,
+ * long enough to swallow single-frame jitter from the touch sampler.
+ */
+private const val SNAP_SPEED_WINDOW_MS = 100L
+
+// ---------------------------------------------------------------------------
+// Rotation angle-snap (0° / 45° / 90° / 135° / 180° / 225° / 270° / 315°
+// lock, with 200ms pause + 10° continue).
+//
+// The transform layer runs rotation through the same gesture path as
+// scale + pan (TransformSelectedImage). When the user brings the
+// candidate rotation within [ROTATION_SNAP_ACTIVATION_THRESHOLD_DEG]
+// of any 8-angle, the engine starts a pause timer. After
+// [ROTATION_SNAP_DEBOUNCE_MS] of continuous in-zone rotation, the
+// rotation locks to the nearest 8-angle and an AngleSnapGuide is
+// published so the renderer can draw a small "snapped" indicator. The
+// snap is held until the user rotates past
+// [ROTATION_SNAP_CONTINUE_THRESHOLD_DEG] of the active snap target
+// — at which point the lock is released and the image follows the
+// gesture freely again (re-entering a zone starts the 200ms pause
+// timer fresh).
+//
+// Distinct from V5 edge-snap: that engine runs on the drag path
+// (updateImageDrag) and gates on cursor proximity + speed. Rotation
+// snap is continuous, deterministic (pure-function
+// `computeRotationSnapDecision`), and per-frame — the only stateful
+// piece is the pending 200ms debounce coroutine, which is cancelled
+// when the gesture leaves the zone or another snap fires.
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-export the spec constants from [TransformHelpers] so the rest of
+ * this file (and the `internal` visibility scope) can reference them
+ * without going through the helpers. Values are defined in
+ * [TransformHelpers] so the pure decision function
+ * [computeRotationSnapDecision] can use them as default arguments.
+ *
+ * (The constants previously lived in this file as `private const val
+ * ROTATION_SNAP_DEBOUNCE_MS = 150L` and were used directly by the
+ * state machine. The 4-angle, no-pause snap is gone in V2 of the
+ * engine; the V2 state machine lives in [computeRotationSnapDecision]
+ * and the coroutine variant in [scheduleRotationSnapEngage].)
+ */
+internal const val ROTATION_SNAP_DEBOUNCE_MS_LOCAL = ROTATION_SNAP_DEBOUNCE_MS
+
+internal fun PockRefUiState.normalizeSelection(): PockRefUiState {
+    val validIds = images.map { it.id }.toSet()
+    val keptSelection = selectedImageIds.filterTo(linkedSetOf()) { it in validIds }
+    val primary = when {
+        selectedImageId in validIds -> selectedImageId
+        keptSelection.isNotEmpty() -> keptSelection.last()
+        else -> null
+    }
+    val normalizedIds = when {
+        primary == null -> emptySet()
+        keptSelection.isEmpty() -> setOf(primary)
+        else -> keptSelection
+    }
+    return copy(
+        selectedImageId = primary,
+        selectedImageIds = normalizedIds,
+    )
+}
+
+internal fun PockRefUiState.syncHistoryFlags(undoStackSize: Int, redoStackSize: Int): PockRefUiState =
+    copy(canUndo = undoStackSize > 0, canRedo = redoStackSize > 0)
+
+/** Capture the full current scene as a snapshot entry. */
+internal fun PockRefUiState.toHistoryEntry(): HistoryEntry.Snapshot =
+    HistoryEntry.Snapshot(
+        sceneName = sceneName,
+        backgroundColor = backgroundColor,
+        images = images,
+    )
+
+/**
+ * Build a history entry for the transition [oldState] -> [newState].
+ *
+ * Strategy:
+ * 1. Try to produce a small set of [SceneDiff] entries (one per change).
+ * 2. If the resulting diff is "small enough" (at most a couple of image
+ *    additions/removals plus a handful of property updates), wrap it in a
+ *    [HistoryEntry.Diff] (or several — currently collapsed to one Diff
+ *    entry per call for stack simplicity).
+ * 3. Otherwise, fall back to a single [SceneDiff.ReplaceImages] so the
+ *    reverse still has the full new image list to swap with the current
+ *    one. (Task spec allows this simplification.)
+ *
+ * Every [SCENE_SNAPSHOT_INTERVAL] entries, we promote the entry to a
+ * [HistoryEntry.Snapshot] regardless of size — that's our checkpoint. The
+ * snapshot captures the **before** state, so undoing back to it (which
+ * just applies the snapshot) actually restores the state at the time the
+ * checkpoint was recorded.
+ */
+internal fun buildHistoryEntry(
+    oldState: PockRefUiState,
+    newState: PockRefUiState,
+    stackSize: Int,
+): HistoryEntry {
+    // Always take a checkpoint at the configured interval so undo chains
+    // don't need to replay dozens of diffs to recover the oldest state.
+    val needsCheckpoint = (stackSize % SCENE_SNAPSHOT_INTERVAL) == 0
+    if (needsCheckpoint) return oldState.toHistoryEntry()
+    val diff = computeSceneDiff(oldState, newState)
+    return HistoryEntry.Diff(diff)
+}
+
+/**
+ * Compute a single [SceneDiff] describing the change from [oldState] to
+ * [newState]. This is intentionally lossy — we collapse multi-image edits
+ * into one [SceneDiff.ReplaceImages] when the field-level diff would be
+ * larger than the replacement. Image-byte payloads are NOT part of the diff
+ * since the [SceneImage] instances already carry their bytes; only metadata
+ * and transform fields are compared.
+ */
+internal fun computeSceneDiff(oldState: PockRefUiState, newState: PockRefUiState): SceneDiff {
+    val oldById = oldState.images.associateBy { it.id }
+    val newById = newState.images.associateBy { it.id }
+
+    val added = newState.images.filter { it.id !in oldById }
+    val removed = oldState.images.filter { it.id !in newById }
+    val common = oldState.images.filter { it.id in newById }
+
+    val churn = added.size + removed.size
+    if (churn > 2 || common.size != oldState.images.size - removed.size) {
+        // Fallback: record both image lists so the entry stays reversible
+        // on its own (no external state lookup needed at undo time).
+        return SceneDiff.ReplaceImages(
+            oldImages = oldState.images,
+            newImages = newState.images,
+        )
+    }
+
+    // Metadata changes are recorded separately so the field-level UpdateImage
+    // entry stays focused on image transforms.
+    if (added.isEmpty() && removed.isEmpty() && common.size == oldState.images.size) {
+        // Try to find a single-image field update.
+        val updatedImages = common.mapNotNull { oldImg ->
+            val newImg = newById[oldImg.id]!!
+            val update = buildImageUpdate(oldImg, newImg) ?: return@mapNotNull null
+            oldImg to update
+        }
+        if (updatedImages.size == 1) {
+            val meta = buildMetaUpdate(oldState, newState)
+            if (meta != null) return meta // shouldn't normally happen together, but cover it
+            return updatedImages[0].second
+        }
+        // If the only change is one we didn't track field-by-field (e.g.
+        // zIndex in bringToFront / sendToBack), still fall back to a
+        // ReplaceImages so the entry is reversible — the caller will skip
+        // pushing it as a no-op anyway.
+        if (updatedImages.isEmpty() && oldState.images == newState.images) {
+            return SceneDiff.ReplaceImages(
+                oldImages = oldState.images,
+                newImages = newState.images,
+            )
+        }
+    }
+
+    // Multi-image change (or a single-image change we can't represent
+    // field-by-field). Encode as ReplaceImages — the reverse simply swaps
+    // image lists; metadata changes (if any) are captured by old/new
+    // snapshots taken at apply time.
+    return SceneDiff.ReplaceImages(
+        oldImages = oldState.images,
+        newImages = newState.images,
+    )
+}
+
+/**
+ * Build a [SceneDiff.UpdateImage] for a single image if any tracked field
+ * changed. Returns `null` when nothing material changed.
+ */
+private fun buildImageUpdate(oldImg: SceneImage, newImg: SceneImage): SceneDiff.UpdateImage? {
+    val oldCenter = if (oldImg.center != newImg.center) oldImg.center else null
+    val oldSize = if (oldImg.displaySize != newImg.displaySize) oldImg.displaySize else null
+    val oldRot = if (oldImg.rotationDegrees != newImg.rotationDegrees) oldImg.rotationDegrees else null
+    val oldScale = if (oldImg.scale != newImg.scale) oldImg.scale else null
+    val oldFlipX = if (oldImg.flipX != newImg.flipX) oldImg.flipX else null
+    val oldFlipY = if (oldImg.flipY != newImg.flipY) oldImg.flipY else null
+    val oldColor = if (oldImg.colorAdjust != newImg.colorAdjust) oldImg.colorAdjust else null
+
+    val newCenter = if (oldCenter != null) newImg.center else null
+    val newSize = if (oldSize != null) newImg.displaySize else null
+    val newRot = if (oldRot != null) newImg.rotationDegrees else null
+    val newScale = if (oldScale != null) newImg.scale else null
+    val newFlipX = if (oldFlipX != null) newImg.flipX else null
+    val newFlipY = if (oldFlipY != null) newImg.flipY else null
+    val newColor = if (oldColor != null) newImg.colorAdjust else null
+
+    if (oldCenter == null && oldSize == null && oldRot == null && oldScale == null &&
+        oldFlipX == null && oldFlipY == null && oldColor == null
+    ) {
+        return null
+    }
+    return SceneDiff.UpdateImage(
+        id = oldImg.id,
+        oldCenter = oldCenter,
+        oldDisplaySize = oldSize,
+        oldRotation = oldRot,
+        oldScale = oldScale,
+        oldFlipX = oldFlipX,
+        oldFlipY = oldFlipY,
+        oldColorAdjust = oldColor,
+        newCenter = newCenter,
+        newDisplaySize = newSize,
+        newRotation = newRot,
+        newScale = newScale,
+        newFlipX = newFlipX,
+        newFlipY = newFlipY,
+        newColorAdjust = newColor,
+    )
+}
+
+private fun buildMetaUpdate(oldState: PockRefUiState, newState: PockRefUiState): SceneDiff.SetMeta? {
+    val oldName = if (oldState.sceneName != newState.sceneName) oldState.sceneName else null
+    val newName = if (oldState.sceneName != newState.sceneName) newState.sceneName else null
+    val oldBg = if (oldState.backgroundColor != newState.backgroundColor) oldState.backgroundColor else null
+    val newBg = if (oldState.backgroundColor != newState.backgroundColor) newState.backgroundColor else null
+    if (newName == null && newBg == null) return null
+    return SceneDiff.SetMeta(
+        oldName = oldName,
+        newName = newName,
+        oldBackgroundColor = oldBg,
+        newBackgroundColor = newBg,
+    )
+}
+
+/**
+ * Compute the inverse of a [HistoryEntry.Diff] given the state the diff was
+ * applied against. Used by [undo] / [redo] to restore a previous state.
+ *
+ * For [HistoryEntry.Snapshot] entries there's nothing to invert — the
+ * snapshot itself IS the target state — so [undo] / [redo] apply it
+ * directly. The helper is therefore diff-only.
+ */
+internal fun invertHistoryEntry(
+    entry: HistoryEntry,
+    currentState: PockRefUiState,
+): HistoryEntry {
+    return when (entry) {
+        is HistoryEntry.Snapshot -> entry
+        is HistoryEntry.Diff -> HistoryEntry.Diff(invertDiff(entry.diff, currentState))
+    }
+}
+
+/**
+ * Compute the inverse of a single [SceneDiff] given the state the diff was
+ * applied against. For self-contained diffs ([UpdateImage], [AddImage],
+ * [RemoveImage]) the input [appliedState] is not consulted; the diff
+ * already carries everything needed to reverse itself. The argument is
+ * kept in the signature for symmetry / future use.
+ */
+internal fun invertDiff(diff: SceneDiff, appliedState: PockRefUiState): SceneDiff {
+    return when (diff) {
+        is SceneDiff.ReplaceImages -> SceneDiff.ReplaceImages(
+            oldImages = diff.newImages,
+            newImages = diff.oldImages,
+        )
+        is SceneDiff.UpdateImage -> diff.swap()
+        is SceneDiff.AddImage -> SceneDiff.RemoveImage(image = diff.image)
+        is SceneDiff.RemoveImage -> SceneDiff.AddImage(image = diff.image)
+        is SceneDiff.SetMeta -> SceneDiff.SetMeta(
+            oldName = diff.newName,
+            newName = diff.oldName,
+            oldBackgroundColor = diff.newBackgroundColor,
+            newBackgroundColor = diff.oldBackgroundColor,
+        )
+    }
+}
+
+/** Swap the `old*` and `new*` field bundles of an [UpdateImage]. */
+private fun SceneDiff.UpdateImage.swap(): SceneDiff.UpdateImage = SceneDiff.UpdateImage(
+    id = id,
+    oldCenter = newCenter,
+    oldDisplaySize = newDisplaySize,
+    oldRotation = newRotation,
+    oldScale = newScale,
+    oldFlipX = newFlipX,
+    oldFlipY = newFlipY,
+    oldColorAdjust = newColorAdjust,
+    newCenter = oldCenter,
+    newDisplaySize = oldDisplaySize,
+    newRotation = oldRotation,
+    newScale = oldScale,
+    newFlipX = oldFlipX,
+    newFlipY = oldFlipY,
+    newColorAdjust = oldColorAdjust,
+)
+
+class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
+    /**
+     * Pending 200ms debounce coroutine for rotation-snap engagement.
+     * Non-null means a coroutine is armed and waiting to fire the
+     * snap. Cancelled and re-armed on every
+     * [transformSelectedImage] call that needs it, and explicitly
+     * cleared by [beginImageDrag] / [commitImageDrag] /
+     * [cancelImageDrag] so a stale debounce never fires mid-drag.
+     *
+     * Lives on the transform controller (not on the main VM) because
+     * it's a rotation-gesture-internal concern: no other consumer
+     * needs to know whether a debounce is pending.
+     */
+    private var rotationSnapEngageJob: Job? = null
+
+    /**
+     * Clear all selection state and exit multi-select mode.
+     * Tapping blank canvas triggers this — the user's intent is
+     * "I'm done with this selection", which includes leaving
+     * multi-select mode so the next tap goes back to single-select.
+     */
+    internal fun deselect() {
+        mainVm._uiState.update { state ->
+            state.copy(
+                selectedImageId = null,
+                selectedImageIds = emptySet(),
+                multiSelectMode = false,
+                // V_NOW: tapping blank canvas means the user
+                // is "done with the panel" — collapse the
+                // right-bottom action panel so it stops
+                // competing with the empty-canvas prompt
+                // for visual space. The select-toolbar and
+                // top-toolbar both auto-re-emerge from the
+                // selection / app-bar state, so the user
+                // still has a way to find chrome after the
+                // collapse.
+                bottomRightPanelExpanded = false,
+            )
+        }
+    }
+
+    internal fun selectImage(imageId: String?) {
+        mainVm._uiState.update { state ->
+            if (imageId == null) {
+                return@update state.copy(
+                    selectedImageId = null,
+                    selectedImageIds = emptySet(),
+                    topToolbarExpanded = true,
+                    // V_NOW: same as [deselect] — deselecting
+                    // a selected image collapses the
+                    // right-bottom panel.
+                    bottomRightPanelExpanded = false,
+                )
+            }
+            if (!state.multiSelectMode) {
+                return@update state.copy(
+                    selectedImageId = imageId,
+                    selectedImageIds = setOf(imageId),
+                    topToolbarExpanded = false,
+                    // V_NOW: selecting an image causes the
+                    // SelectionFloatingToolbar to appear
+                    // (the user's "new focus area" per the
+                    // spec). Collapse the right-bottom panel
+                    // so the selection toolbar has clean
+                    // visual room without competing with the
+                    // bottom panel's 4 list items.
+                    bottomRightPanelExpanded = false,
+                    // V_NOW: re-show the selection toolbar
+                    // if it was auto-hidden by the 5s
+                    // inactivity timer. Tapping an image is
+                    // the explicit user action to bring it
+                    // back.
+                    selectionToolbarHidden = false,
+                )
+            }
+            val updated = state.selectedImageIds.toMutableSet().apply {
+                if (!add(imageId)) remove(imageId)
+            }
+            state.copy(
+                selectedImageId = when {
+                    updated.isEmpty() -> null
+                    imageId in updated -> imageId
+                    state.selectedImageId in updated -> state.selectedImageId
+                    else -> updated.lastOrNull()
+                },
+                selectedImageIds = updated,
+                topToolbarExpanded = updated.isEmpty(),
+                // V_NOW: re-show the selection toolbar on
+                // multi-select tap (same as single-select).
+                selectionToolbarHidden = false,
+            )
+                .normalizeSelection()
+        }
+    }
+
+    internal fun moveImage(imageId: String, delta: Offset) {
+        // V_NOW: lock guard. `selectedIdsFor(imageId)` returns the
+        // full multi-selection which may include locked images. A
+        // locked image must not move even when selected (same
+        // invariant as the drag / scale / rotate / flip paths).
+        // Filter locked out before applying the delta so a mixed
+        // selection translates only the unlocked members.
+        val stateBefore = mainVm._uiState.value
+        val targets = selectedIdsFor(imageId).filterTo(linkedSetOf()) { id ->
+            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+        }
+        if (targets.isEmpty()) return
+        mainVm.updateSceneForGesture {
+            copy(images = images.map { image ->
+                if (image.id in targets) image.copy(center = image.center + delta / canvasScale) else image
+            })
+        }
+    }
+
+    internal fun bringImageToFront(imageId: String) {
+        if (imageId.isBlank()) return
+        val state = mainVm._uiState.value
+        val target = state.images.firstOrNull { it.id == imageId } ?: return
+        val currentMax = state.images.maxOf { it.zIndex }
+        if (target.zIndex >= currentMax) {
+            // Already at the top; still record a gesture entry so undo/redo
+            // work consistently even when the zIndex bump is a no-op.
+            return
+        }
+        mainVm.updateSceneForGesture {
+            copy(images = images.map { img ->
+                if (img.id == imageId) img.copy(zIndex = currentMax + 1) else img
+            })
+        }
+    }
+
+    internal fun cycleImageUnderPoint(point: Offset) {
+        val state = mainVm._uiState.value
+        val viewportW = state.canvasViewportSize.width
+        val viewportH = state.canvasViewportSize.height
+        if (viewportW <= 0f || viewportH <= 0f) return
+
+        fun hitTest(state: PockRefUiState, p: Offset): List<String> {
+            return state.images.sortedByDescending { it.zIndex }.mapNotNull { image ->
+                val mappedCenter = Offset(
+                    p.x - (viewportW / 2f) - state.canvasOffset.x,
+                    p.y - (viewportH / 2f) - state.canvasOffset.y,
+                )
+                val localPoint = Offset(
+                    x = (mappedCenter.x / state.canvasScale) - image.center.x,
+                    y = (mappedCenter.y / state.canvasScale) - image.center.y,
+                )
+                val matrix = android.graphics.Matrix().apply {
+                    postRotate(-image.rotationDegrees)
+                    postScale(if (image.flipX) -1f else 1f, if (image.flipY) -1f else 1f)
+                }
+                val pts = floatArrayOf(localPoint.x, localPoint.y)
+                matrix.mapPoints(pts)
+                val halfWidth = (image.displaySize.width * image.scale) / 2f
+                val halfHeight = (image.displaySize.height * image.scale) / 2f
+                if (pts[0] in -halfWidth..halfWidth && pts[1] in -halfHeight..halfHeight) image.id else null
+            }
+        }
+
+        val stacked = hitTest(state, point)
+        if (stacked.isEmpty()) return
+        val currentTop = state.selectedImageId
+        val nextIndex = if (currentTop == null) {
+            0
+        } else {
+            val idx = stacked.indexOf(currentTop)
+            if (idx < 0) 0 else (idx + 1) % stacked.size
+        }
+        val nextId = stacked[nextIndex]
+        selectImage(nextId)
+        bringImageToFront(nextId)
+    }
+
+    internal fun beginImageDrag(imageId: String) {
+        // V_NOW: lock guard. The down handler in PockRefApp.kt is
+        // supposed to skip BeginImageDrag for locked images, but the
+        // VM is the authoritative state machine — defence in depth.
+        // If a locked image's id is somehow passed in, refuse here.
+        val stateBefore = mainVm._uiState.value
+        val hitImage = stateBefore.images.firstOrNull { it.id == imageId }
+        if (hitImage?.locked == true) return
+        mainVm.beginSceneGesture()
+        // V_NOW (user bug report): 在单选 / 多选 / 框选模式下,锁定的
+        // 图片即使被选中了也不能被移动。`selectedIdsFor` 返回的集合
+        // 可能包含**其它**已锁定的图片(例如用户先用框选把一张锁定
+        // 图片和一张未锁定图片一起圈进选择,然后手指落在未锁定图片
+        // 上开始拖)。如果不过滤,这一组 ids 会全部进入
+        // `transientDragImageIds`,updateImageDrag 把 dragDelta
+        // 累加到 `transientDragDelta`,commitImageDrag 提交时把这
+        // 个 delta 同步加到每张图(包括锁定的)上 — 锁定图片被静默
+        // 移动了。
+        //
+        // 修法:在赋值给 `transientDragImageIds` 前把锁定的剔掉。
+        // 渲染层用 `transientDragImageIds` 决定哪几张图渲染时叠
+        // `+transientDragDelta`,锁定图片不在这集合里 → 视觉上
+        // 不动;commit 时 `dragIds` 也只包含非锁定的 → 实际位
+        // 置不变。锁定图片的 zIndex / 边框 / 选中高亮照常显示,
+        // 用户依然可以选中(用于解锁或检查),只是不能动。
+        val targets = selectedIdsFor(imageId).filterTo(linkedSetOf()) { id ->
+            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+        }
+        // Drag and rotation are mutually exclusive: cancel any pending
+        // rotation-snap debounce so it doesn't fire mid-drag and
+        // surprise the user with a sudden rotation lock.
+        rotationSnapEngageJob?.cancel()
+        rotationSnapEngageJob = null
+        mainVm._uiState.update {
+            it.copy(
+                transientDragImageIds = targets,
+                transientDragDelta = Offset.Zero,
+                // Clear any leftover snap state from a previous gesture so
+                // the new gesture starts from a clean visual baseline.
+                snapGuide = null,
+                snapHighlight = null,
+                snapInRangeSinceMs = null,
+                snapEngagedTargetId = null,
+                snapRecentSpeeds = emptyList(),
+                snapLastSampleTimeMs = null,
+                snapGuideAlpha = 1f,
+                // Clear any stale angle-snap guide from a prior rotation
+                // gesture (could happen if the user lifted mid-rotation).
+                angleSnapGuide = null,
+            )
+        }
+    }
+
+    internal fun updateImageDrag(delta: Offset) {
+        val current = mainVm._uiState.value
+        if (current.transientDragImageIds.isEmpty()) return
+
+        // If the user has disabled snap, accumulate the drag delta
+        // verbatim and never run the engine. We still want to clear
+        // any leftover snapGuide from a prior drag (e.g. user toggled
+        // snap off mid-frame) so the canvas doesn't keep drawing
+        // ghost guide lines. Also clear intent-detection state so a
+        // subsequent re-enable starts clean.
+        if (!current.edgeSnapEnabled) {
+            mainVm._uiState.update { state ->
+                val scale = state.canvasScale.coerceAtLeast(0.0001f)
+                val maxStep = 200f
+                val dx = delta.x.coerceIn(-maxStep, maxStep)
+                val dy = delta.y.coerceIn(-maxStep, maxStep)
+                state.copy(
+                    transientDragDelta = state.transientDragDelta + Offset(dx, dy) / scale,
+                    snapGuide = null,
+                    snapInRangeSinceMs = null,
+                    snapEngagedTargetId = null,
+                    snapRecentSpeeds = emptyList(),
+                    snapGuideAlpha = 1f,
+                )
+            }
+            return
+        }
+
+        mainVm._uiState.update { state ->
+            val scale = state.canvasScale.coerceAtLeast(0.0001f)
+            // delta 是屏幕坐标增量，转换为世界坐标增量。
+            // 限制单次最大步长，避免 motion event batched 后 delta 过大。
+            val maxStep = 200f
+            val dx = delta.x.coerceIn(-maxStep, maxStep)
+            val dy = delta.y.coerceIn(-maxStep, maxStep)
+            val candidate = state.transientDragDelta + Offset(dx, dy) / scale
+
+            val now = System.currentTimeMillis()
+            val triggerWorld = SNAP_THRESHOLD_PX / scale
+            val cancelWorld = SNAP_CANCEL_DISTANCE_PX / scale
+
+            // ---- 1. Probe proximity to the nearest target (world units) ----
+            val proximity = SnapEngine.measureClosestTargetDistance(
+                deltaWorld = SnapEngine.SnapDelta(candidate.x, candidate.y),
+                dragIds = state.transientDragImageIds,
+                allImages = state.images,
+            )
+
+            // ---- 2. Update sliding-window speed samples (screen px/s) ----
+            val prevSampleMs = state.snapLastSampleTimeMs
+            val dtMs = if (prevSampleMs == null) 16L else (now - prevSampleMs).coerceIn(1L, 100L)
+            val instantaneousSpeedPxPerSec = if (delta == Offset.Zero) 0f else
+                kotlin.math.hypot(delta.x, delta.y) / (dtMs.toFloat() / 1000f)
+            val prunedSpeeds = state.snapRecentSpeeds.filter { now - it.timestampMs <= SNAP_SPEED_WINDOW_MS }
+            val newSamples = prunedSpeeds + SpeedSample(now, instantaneousSpeedPxPerSec)
+            val avgSpeed = if (newSamples.isEmpty()) 0f else newSamples.sumOf { it.pxPerSec.toDouble() }.toFloat() / newSamples.size
+
+            // ---- 3. State machine: in-range timer, engage target, alpha ----
+            // in-range timer
+            val newInRangeSince: Long? = when {
+                proximity == null || proximity.distanceWorld > cancelWorld -> null
+                state.snapEngagedTargetId != null -> state.snapInRangeSinceMs
+                proximity.distanceWorld <= triggerWorld -> state.snapInRangeSinceMs ?: now
+                else -> state.snapInRangeSinceMs
+            }
+
+            // engage target: which image the snap engine should lock on
+            val isInCancel = proximity != null && proximity.distanceWorld > cancelWorld
+            val fastMove = avgSpeed >= SNAP_DISENGAGE_SPEED_PX_PER_S &&
+                (delta.x * delta.x + delta.y * delta.y) > (SNAP_DISENGAGE_MIN_MOVE_PX * SNAP_DISENGAGE_MIN_MOVE_PX)
+            val shouldDisengage = state.snapEngagedTargetId != null && (isInCancel || fastMove)
+
+            val newEngagedTarget: String? = when {
+                shouldDisengage -> null
+                proximity != null && proximity.distanceWorld <= triggerWorld -> proximity.targetImageId
+                else -> state.snapEngagedTargetId
+            }
+
+            // is currently engaged (engine should run)
+            val dwellSatisfied = newInRangeSince != null && now - newInRangeSince >= SNAP_ENGAGE_DELAY_MS
+            val slowEnough = avgSpeed < SNAP_ENGAGE_MAX_SPEED_PX_PER_S
+            val isEngaged = newEngagedTarget != null && dwellSatisfied && slowEnough
+
+            // guide alpha: 0..1 fade-in over the TRACKING window
+            val guideAlpha: Float = when {
+                isEngaged -> 1f
+                newInRangeSince == null -> 1f  // no active engagement, alpha is moot
+                else -> ((now - newInRangeSince).toFloat() / SNAP_ENGAGE_DELAY_MS.toFloat())
+                    .coerceIn(0f, 1f)
+            }
+
+            // ---- 4. Run the engine only when ENGAGED ----
+            if (isEngaged) {
+                val snapResult = SnapEngine.compute(
+                    deltaWorld = SnapEngine.SnapDelta(candidate.x, candidate.y),
+                    dragIds = state.transientDragImageIds,
+                    allImages = state.images,
+                    thresholdWorld = triggerWorld,
+                )
+                state.copy(
+                    transientDragDelta = Offset(
+                        snapResult.adjustedDeltaWorld.dx,
+                        snapResult.adjustedDeltaWorld.dy,
+                    ),
+                    snapGuide = snapResult.guide,
+                    snapInRangeSinceMs = newInRangeSince,
+                    snapEngagedTargetId = newEngagedTarget,
+                    snapRecentSpeeds = newSamples,
+                    snapLastSampleTimeMs = now,
+                    snapGuideAlpha = guideAlpha,
+                )
+            } else {
+                // No snap this frame. Accumulate raw drag delta and
+                // clear the guide. Intent-detection state is updated
+                // either way so the user still sees the alpha ramp
+                // (when in TRACKING) and the next engage decision is
+                // current.
+                state.copy(
+                    transientDragDelta = candidate,
+                    snapGuide = null,
+                    snapInRangeSinceMs = newInRangeSince,
+                    snapEngagedTargetId = newEngagedTarget,
+                    snapRecentSpeeds = newSamples,
+                    snapLastSampleTimeMs = now,
+                    snapGuideAlpha = guideAlpha,
+                )
+            }
+        }
+    }
+
+    internal fun commitImageDrag() {
+        val dragIds = mainVm._uiState.value.transientDragImageIds
+        val dragDelta = mainVm._uiState.value.transientDragDelta
+        val lastGuide = mainVm._uiState.value.snapGuide
+        if (dragIds.isEmpty()) {
+            // Clear any pending rotation-snap debounce so a stale
+            // timer doesn't fire after the drag ends.
+            rotationSnapEngageJob?.cancel()
+            rotationSnapEngageJob = null
+            mainVm.endSceneGesture()
+            return
+        }
+        if (dragDelta == Offset.Zero) {
+            cancelImageDrag()
+            return
+        }
+        // V_NOW: 防御性 lock 过滤。理论上 `transientDragImageIds`
+        // 在 `beginImageDrag` 里就已经剔过锁定的图,正常路径下
+        // 这里不会再有锁定图片。但是中间件路径(例如
+        // Lock 状态在拖动中从外部被改动 — 未来的批处理脚本、
+        // 撤销栈应用 [applyDiffForward]、跨设备协同等)可能
+        // 让一张图在拖动过程中突然变成 locked。如果不再次过滤,
+        // commit 时 delta 就会落到一张不该动的图上。
+        val stateNow = mainVm._uiState.value
+        val movableIds = dragIds.filter { id ->
+            stateNow.images.firstOrNull { it.id == id }?.locked != true
+        }
+        if (movableIds.isEmpty()) {
+            // 全部被锁住 / 已经空了 — 当成取消处理,清 transient。
+            cancelImageDrag()
+            return
+        }
+        // dragDelta 是世界单位累加，直接加到 image.center。
+        // 同步清零 transient 状态：否则下一帧 drawSceneImage 会把 dragDelta 叠加到
+        // 已含 dragDelta 的 image.center 上（image.center + dragOffset），导致 2x 跳位。
+        mainVm.updateSceneForGesture {
+            copy(
+                images = images.map { image ->
+                    if (image.id in movableIds) image.copy(center = image.center + dragDelta) else image
+                },
+                transientDragImageIds = emptySet(),
+                transientDragDelta = Offset.Zero,
+                snapGuide = null,
+                // Reset the V4 intent-detection state machine so the
+                // NEXT drag starts from IDLE (no stale "in range since"
+                // timer or engaged target from this drag).
+                snapInRangeSinceMs = null,
+                snapEngagedTargetId = null,
+                snapRecentSpeeds = emptyList(),
+                snapLastSampleTimeMs = null,
+                snapGuideAlpha = 1f,
+                // Drag is unrelated to rotation, but clearing here keeps
+                // the invariant "angleSnapGuide is null unless a
+                // transform-gesture is actively firing rotation snap".
+                angleSnapGuide = null,
+            )
+        }
+        mainVm.endSceneGesture()
+        // If the final resting position was produced by snap, fire a brief
+        // highlight overlay so the user gets visual confirmation that
+        // snap fired. We arm it with the start time so the renderer can
+        // animate an alpha fade-out over [SNAP_HIGHLIGHT_DURATION_MS].
+        if (lastGuide != null) {
+            mainVm.setSnapHighlight(
+                com.pockref.app.model.SnapHighlight(
+                    guide = lastGuide,
+                    startTimeMs = System.currentTimeMillis(),
+                )
+            )
+        }
+    }
+
+    internal fun cancelImageDrag() {
+        // Clear any pending rotation-snap debounce so a stale
+        // timer doesn't fire after the drag is cancelled.
+        rotationSnapEngageJob?.cancel()
+        rotationSnapEngageJob = null
+        mainVm._uiState.update {
+            it.copy(
+                transientDragImageIds = emptySet(),
+                transientDragDelta = Offset.Zero,
+                snapGuide = null,
+                snapInRangeSinceMs = null,
+                snapEngagedTargetId = null,
+                snapRecentSpeeds = emptyList(),
+                snapLastSampleTimeMs = null,
+                snapGuideAlpha = 1f,
+                angleSnapGuide = null,
+            )
+        }
+        mainVm.endSceneGesture()
+    }
+
+    internal fun zoomCanvas(scaleChange: Float, focus: Offset) {
+        // [focus] parameter is intentionally ignored. The two-finger
+        // vertical SLIDE gesture (PockRefApp.kt) and the no-selection
+        // pinch / rotate gestures all dispatch [ZoomCanvas] expecting
+        // the zoom to anchor on the **canvas geometric center** —
+        // that is the only behaviour the user spec'd ("固定为画布可视
+        // 区域的几何中心,而非双指中点或单指触点或画布右下角").
+        //
+        // The correct formula to keep the viewport's world-space
+        // centre (= the world point sitting at the screen centre
+        // (vpW/2, vpH/2)) fixed is [newOffset = canvasOffset * scaleRatio].
+        // The previous formula [newOffset = anchor - (anchor - canvasOffset)
+        // * scaleRatio] was the textbook "zoom around point" form, but
+        // it implicitly assumed [anchor] and [canvasOffset] share a
+        // coordinate system where the origin is the **screen's** top-left
+        // — which is true for [anchor] (it is the screen centre in raw
+        // pixels) but **false** for [canvasOffset], which is the world
+        // origin's offset from the **screen centre** (see line 4545,
+        // `imageLeftScreenX = halfW + canvasOffset.x + worldX * scale`).
+        // That coordinate-system mismatch produced an extra
+        // [anchor * (1 - scaleRatio)] term that drifted the world-space
+        // viewport centre by ~0.09 * viewportWidth on a 10% zoom in —
+        // which is what the user observed as '画布朝右下角放大' on
+        // the minimap (the blue viewport indicator slid toward the
+        // bottom-right of the scene bbox instead of staying put while
+        // shrinking). The pure-multiply form has no such term.
+        mainVm._uiState.update { state ->
+            val newScale = (state.canvasScale * scaleChange).coerceIn(0.1f, 10f)
+            val scaleRatio = newScale / state.canvasScale
+            val newOffset = state.canvasOffset * scaleRatio
+            state.copy(canvasScale = newScale, canvasOffset = newOffset, fittedImageId = null)
+        }
+    }
+
+    internal fun transformSelectedImage(scaleChange: Float, rotationChange: Float, pan: Offset) {
+        val stateBefore = mainVm._uiState.value
+        val allSelectedIds = stateBefore.selectedImageIds.ifEmpty {
+            stateBefore.selectedImageId?.let(::setOf).orEmpty()
+        }
+        // V_NOW: a locked image must NOT be scaled, rotated, or
+        // panned. Filter it out of the transform target set. If
+        // every selected image is locked, this call is a no-op
+        // (the gesture handler still has `transformMode` = SCALE /
+        // ROTATE so the rest of the app's "transform in progress"
+        // state stays consistent, but the scene itself is not
+        // mutated). For mixed selections, the locked images keep
+        // their pose while the rest transform normally — the locked
+        // ones are not part of the pivot, the scale factor, or
+        // the per-image transform loop below.
+        val selectedIds = allSelectedIds.filter { id ->
+            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+        }
+        if (selectedIds.isEmpty()) return
+        val rotationSnapActive = stateBefore.rotationSnapEnabled
+        val previousGuide = stateBefore.angleSnapGuide
+        // The rotation-snap reference image must also be a
+        // transformable one — otherwise the snap guide would fire
+        // for a pose change the locked image isn't actually
+        // undergoing. Prefer [selectedImageId] if it's unlocked,
+        // else fall through to the first unlocked member of
+        // [selectedImageIds].
+        val firstImageId = stateBefore.selectedImageId
+            ?.takeIf { id -> id in selectedIds }
+            ?: stateBefore.selectedImageIds.firstOrNull { id -> id in selectedIds }
+        val firstImage = if (firstImageId != null) {
+            stateBefore.images.firstOrNull { it.id == firstImageId }
+        } else null
+        val firstRotation = firstImage?.rotationDegrees ?: 0f
+        val now = System.currentTimeMillis()
+
+        // Run the pure state-machine transition. The result tells us
+        // (a) what `effectiveDelta` to apply to the image's
+        // `rotationDegrees` for THIS frame, (b) what the new
+        // `angleSnapGuide` should be, and (c) whether we still need a
+        // pending coroutine to fire the 200ms debounce (or if the
+        // state machine decided to fire it synchronously on this
+        // frame, in which case no coroutine is needed).
+        val decision = computeRotationSnapDecision(
+            firstRotation = firstRotation,
+            rotationChange = rotationChange,
+            rotationSnapActive = rotationSnapActive,
+            previousGuide = previousGuide,
+            now = now,
+        )
+
+        // Coroutine bookkeeping. We keep a single `Job?` reference so
+        // we never have more than one pending debounce fire at a time.
+        // The coroutine is only armed when:
+        // - The state machine says we're in the zone
+        // - We're NOT actively snapped (so a coroutine for the NEXT
+        //   fire isn't needed — we're already locked)
+        // - The state machine did NOT fire synchronously on this frame
+        // - The user-supplied rotationChange was non-zero (otherwise
+        //   we'd just be re-arming the same coroutine every frame the
+        //   user holds still, which is wasteful — the coroutine
+        //   already started counting from the original entry)
+        val needsEngageJob = decision.isInZone &&
+            !decision.isActivelySnapped &&
+            !decision.shouldEngageNow &&
+            decision.newGuide != null &&
+            decision.newGuide.activeSnapAngle == null &&
+            rotationChange != 0f
+
+        if (!needsEngageJob) {
+            rotationSnapEngageJob?.cancel()
+            rotationSnapEngageJob = null
+        } else if (rotationSnapEngageJob == null) {
+            val enteredMs = decision.newGuide?.angleEnteredSnapZoneMs ?: now
+            val remaining = (enteredMs + ROTATION_SNAP_DEBOUNCE_MS) - now
+            if (remaining > 0L) {
+                scheduleRotationSnapEngage(
+                    imageId = firstImageId,
+                    remainingMs = remaining,
+                )
+            }
+        }
+
+        // Apply the state-machine decision. `effectiveDelta` is what
+        // actually mutates the image's `rotationDegrees` for this
+        // frame; the center math in `transformImageAroundPivot` uses
+        // it (so when the snap fires on the same frame, the image
+        // visually jumps to the snap target rather than overshooting
+        // and rubber-banding back).
+        val effectiveDelta = decision.effectiveDelta
+        val newGuide = decision.newGuide
+        mainVm.updateSceneForGesture {
+            val selected = images.filter { it.id in selectedIds }
+            if (selected.isEmpty()) return@updateSceneForGesture this
+
+            val pivot = calculateTransformPivot(selected)
+            val effectiveScale = computeGroupScaleFactor(selected, scaleChange)
+            val panInScene = pan / canvasScale
+
+            copy(
+                images = images.map { image ->
+                    if (image.id !in selectedIds) image
+                    else transformImageAroundPivot(image, pivot, effectiveScale, effectiveDelta, panInScene)
+                },
+                angleSnapGuide = newGuide,
+            )
+        }
+    }
+
+    /**
+     * Arm a coroutine on the main VM's `viewModelScope` that fires
+     * after [remainingMs] and re-evaluates the rotation-snap state
+     * machine. If the gesture is still in the snap zone at fire
+     * time, the snap engages: the image's `rotationDegrees` is set
+     * to the canonical 8-angle, the `angleSnapGuide` is updated to
+     * the ENGAGED shape, and the gesture is locked until the user
+     * rotates past the continue threshold.
+     *
+     * The coroutine uses a fresh `now` value (re-evaluated at fire
+     * time) and re-reads the current state from
+     * `mainVm._uiState.value`, so it correctly handles the case
+     * where the user kept moving (or moved out of the zone) between
+     * the schedule time and the fire time — if the state machine
+     * says "no engage" at fire time, the coroutine is a no-op.
+     *
+     * Cancelled by any subsequent [transformSelectedImage] call that
+     * arms a different decision state, and by
+     * [beginImageDrag] / [commitImageDrag] / [cancelImageDrag] (drag
+     * and rotation are mutually exclusive gestures — clearing the
+     * job here prevents a stale debounce from firing mid-drag).
+     */
+    private fun scheduleRotationSnapEngage(imageId: String?, remainingMs: Long) {
+        rotationSnapEngageJob?.cancel()
+        if (imageId == null) return
+        val targetImageId = imageId
+        rotationSnapEngageJob = mainVm.viewModelScope.launch {
+            delay(remainingMs)
+            val stateNow = mainVm._uiState.value
+            val currentImg = stateNow.images.firstOrNull { it.id == targetImageId }
+                ?: return@launch
+            val fireNow = System.currentTimeMillis()
+            val decision = computeRotationSnapDecision(
+                firstRotation = currentImg.rotationDegrees,
+                rotationChange = 0f,
+                rotationSnapActive = stateNow.rotationSnapEnabled,
+                previousGuide = stateNow.angleSnapGuide,
+                now = fireNow,
+            )
+            if (decision.shouldEngageNow && decision.engageTargetAngle != null) {
+                val target = decision.engageTargetAngle
+                mainVm._uiState.update { s ->
+                    s.copy(
+                        images = s.images.map { img ->
+                            if (img.id == targetImageId) img.copy(rotationDegrees = target) else img
+                        },
+                        angleSnapGuide = decision.newGuide ?: s.angleSnapGuide,
+                    )
+                }
+            }
+        }
+    }
+
+    internal fun scaleSelected(factor: Float) {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            val selected = images.filter { it.id in selectedIds }
+            if (selected.isEmpty()) return@mutateScene this
+
+            val pivot = calculateTransformPivot(selected)
+            val effectiveFactor = computeGroupScaleFactor(selected, factor)
+
+            copy(images = images.map { image ->
+                if (image.id !in selectedIds) image
+                else scaleImageAroundPivot(image, pivot, effectiveFactor)
+            })
+        }
+    }
+
+    internal fun rotateSelected(delta: Float) {
+        val stateBefore = mainVm._uiState.value
+        val allSelectedIds = stateBefore.selectedImageIds.ifEmpty {
+            stateBefore.selectedImageId?.let(::setOf).orEmpty()
+        }
+        // V_NOW: lock guard. Locked images ignore discrete rotate
+        // (the ±90° toolbar buttons) the same way they ignore
+        // continuous pinch / rotate (see [transformSelectedImage]
+        // and [flipSelected] for the matching filter).
+        val selectedIds = allSelectedIds.filter { id ->
+            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+        }
+        if (selectedIds.isEmpty()) return
+        val rotationSnapActive = stateBefore.rotationSnapEnabled
+        mainVm.mutateScene {
+            val selected = images.filter { it.id in selectedIds }
+            if (selected.isEmpty()) return@mutateScene this
+
+            val pivot = calculateTransformPivot(selected)
+
+            // Discrete rotate (-90° / +90° buttons) — snap the FINAL
+            // angle to the nearest cardinal. For exactly-90° deltas this
+            // is a no-op (the result is already on a snap), but the
+            // check is cheap and keeps behavior consistent with the
+            // continuous-rotation path. e.g. a discrete "rotate 87°"
+            // would land on 90° if within threshold.
+            val firstRotation = selected.first().rotationDegrees
+            val candidate = firstRotation + delta
+            val snapped = if (rotationSnapActive) detectAngleSnap(candidate) else null
+            val effectiveDelta = if (snapped != null) snapped - firstRotation else delta
+
+            copy(images = images.map { image ->
+                if (image.id !in selectedIds) image
+                else rotateImageAroundPivot(image, pivot, effectiveDelta)
+            })
+        }
+    }
+
+    internal fun flipSelected(horizontal: Boolean) {
+        val stateBefore = mainVm._uiState.value
+        val allSelectedIds = stateBefore.selectedImageIds.ifEmpty {
+            stateBefore.selectedImageId?.let(::setOf).orEmpty()
+        }
+        // V_NOW: locked images ignore flip too. For a mixed
+        // selection, only the unlocked members actually flip;
+        // for an all-locked selection, the call is a no-op
+        // (same shape as the transformSelectedImage filter).
+        val transformableIds = allSelectedIds.filter { id ->
+            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+        }
+        if (transformableIds.isEmpty()) return
+        mainVm.mutateScene {
+            copy(images = images.map { image ->
+                if (image.id !in transformableIds) image
+                else if (horizontal) image.copy(flipX = !image.flipX)
+                else image.copy(flipY = !image.flipY)
+            })
+        }
+    }
+
+    internal fun bringToFront() {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            copy(images = reorderZIndex(images, selectedIds, bringToFront = true))
+        }
+    }
+
+    internal fun sendToBack() {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            copy(images = reorderZIndex(images, selectedIds, bringToFront = false))
+        }
+    }
+
+    internal fun deleteSelected() {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            val remaining = images.filterNot { it.id in selectedIds }
+            copy(
+                images = remaining,
+                selectedImageId = remaining.lastOrNull()?.id,
+                selectedImageIds = remaining.lastOrNull()?.id?.let(::setOf).orEmpty(),
+                transientDragImageIds = emptySet(),
+                transientDragDelta = Offset.Zero,
+            )
+        }
+    }
+
+    /**
+     * Clone every selected image with a fresh id and a small
+     * diagonal offset, then add the clones to the scene above the
+     * originals. The new images inherit selection so the user can
+     * immediately move / rotate them. Lock state is NOT carried
+     * over (the user explicitly duplicated — they almost certainly
+     * want to work with the copies, not have them be inert).
+     */
+    internal fun duplicateSelected() {
+        // V_NOW: lock guard. A locked image can be duplicated —
+        // duplicating creates a NEW image and does not touch the
+        // original's pose, so the original's lock state is
+        // preserved (and the clone itself is born unlocked, see
+        // [locked = false] below). Refuse only the (rare) case
+        // where a user explicitly tries to duplicate by
+        // double-tap-drag or other future gesture against a locked
+        // image — the down handler skips drag there, so this
+        // server-side guard is defence in depth, not a primary
+        // lock enforcement.
+        val stateBefore = mainVm._uiState.value
+        val selectedIds = stateBefore.selectedImageIds.ifEmpty {
+            stateBefore.selectedImageId?.let(::setOf).orEmpty()
+        }
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            val originals = images.filter { it.id in selectedIds }
+            val maxZ = (images.maxOfOrNull { it.zIndex } ?: 0) + 1
+            val newImages = originals.mapIndexed { i, original ->
+                val clone = original.copy(
+                    id = java.util.UUID.randomUUID().toString(),
+                    center = original.center + Offset(20f + i * 6f, 20f + i * 6f),
+                    zIndex = maxZ + i,
+                    // The clone is born UNLOCKED — the lock applies
+                    // to a specific image id (i.e. the original); a
+                    // fresh clone starts as a normal mutable image.
+                    locked = false,
+                )
+                clone
+            }
+            copy(
+                images = images + newImages,
+                selectedImageIds = newImages.map { it.id }.toSet(),
+                selectedImageId = newImages.last().id,
+            )
+        }
+    }
+
+    /**
+     * Flip the [locked] flag on every selected image. Locked images
+     * ignore drag / pinch / rotate / lasso input but still render
+     * and remain tappable so the user can unlock them. Used by the
+     * long-press context menu's lock button.
+     */
+    internal fun toggleLockSelected() {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            copy(images = images.map { image ->
+                if (image.id !in selectedIds) image
+                else image.copy(locked = !image.locked)
+            })
+        }
+    }
+
+    internal fun updateColorAdjust(brightness: Float, contrast: Float, saturation: Float) {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            copy(images = images.map { image ->
+                if (image.id !in selectedIds) image
+                else image.copy(
+                    colorAdjust = ColorAdjust(
+                        brightness = brightness,
+                        contrast = contrast,
+                        saturation = saturation,
+                    )
+                )
+            })
+        }
+    }
+
+    fun undo() {
+        val entry = mainVm.undoStack.removeLastOrNull() ?: return
+        val currentState = mainVm._uiState.value
+        // The state we are about to leave behind is the redo target.
+        mainVm.redoStack.addLast(currentState.toHistoryEntry())
+        if (mainVm.redoStack.size > 50) mainVm.redoStack.removeFirst()
+        when (entry) {
+            is HistoryEntry.Snapshot -> applyHistoryEntry(entry)
+            is HistoryEntry.Diff -> applyDiffForward(invertDiff(entry.diff, currentState))
+        }
+    }
+
+    fun redo() {
+        val entry = mainVm.redoStack.removeLastOrNull() ?: return
+        val currentState = mainVm._uiState.value
+        mainVm.undoStack.addLast(currentState.toHistoryEntry())
+        if (mainVm.undoStack.size > 50) mainVm.undoStack.removeFirst()
+        when (entry) {
+            is HistoryEntry.Snapshot -> applyHistoryEntry(entry)
+            is HistoryEntry.Diff -> applyDiffForward(entry.diff)
+        }
+    }
+
+    /**
+     * Apply a [HistoryEntry] to the current state. The entry is expected to
+     * already be in "forward" form relative to the current state — [undo]
+     * and [redo] compute the inverse before calling here.
+     */
+    internal fun applyHistoryEntry(entry: HistoryEntry) {
+        when (entry) {
+            is HistoryEntry.Snapshot -> {
+                mainVm._uiState.update { state ->
+                    state.copy(
+                        sceneName = entry.sceneName,
+                        backgroundColor = entry.backgroundColor,
+                        images = entry.images,
+                        transientDragImageIds = emptySet(),
+                        transientDragDelta = Offset.Zero,
+                    ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
+                }
+            }
+            is HistoryEntry.Diff -> applyDiffForward(entry.diff)
+        }
+    }
+
+    /**
+     * Apply a [SceneDiff] in the forward direction (old -> new). The diff
+     * is constructed so the "old" side matches the current state for the
+     * fields it sets, and the "new" side carries the target value.
+     */
+    private fun applyDiffForward(diff: SceneDiff) {
+        mainVm._uiState.update { state ->
+            when (diff) {
+                is SceneDiff.ReplaceImages -> state.copy(
+                    images = diff.newImages,
+                    transientDragImageIds = emptySet(),
+                    transientDragDelta = Offset.Zero,
+                )
+                is SceneDiff.UpdateImage -> state.copy(
+                    images = state.images.map { img ->
+                        if (img.id != diff.id) img
+                        else img.copy(
+                            center = diff.newCenter ?: img.center,
+                            displaySize = diff.newDisplaySize ?: img.displaySize,
+                            rotationDegrees = diff.newRotation ?: img.rotationDegrees,
+                            scale = diff.newScale ?: img.scale,
+                            flipX = diff.newFlipX ?: img.flipX,
+                            flipY = diff.newFlipY ?: img.flipY,
+                            colorAdjust = diff.newColorAdjust ?: img.colorAdjust,
+                        )
+                    },
+                )
+                is SceneDiff.AddImage -> state.copy(
+                    images = state.images + diff.image,
+                )
+                is SceneDiff.RemoveImage -> state.copy(
+                    images = state.images.filterNot { it.id == diff.image.id },
+                )
+                is SceneDiff.SetMeta -> state.copy(
+                    sceneName = diff.newName ?: state.sceneName,
+                    backgroundColor = diff.newBackgroundColor ?: state.backgroundColor,
+                )
+            }.normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
+        }
+    }
+
+    private fun currentSelectedIds(): Set<String> {
+        val state = mainVm._uiState.value
+        return state.selectedImageIds.ifEmpty {
+            state.selectedImageId?.let(::setOf).orEmpty()
+        }
+    }
+
+    private fun selectedIdsFor(fallbackImageId: String): Set<String> {
+        val selected = currentSelectedIds()
+        return if (fallbackImageId in selected) selected else setOf(fallbackImageId)
+    }
+
+    fun resetTransform() {
+        val stateBefore = mainVm._uiState.value
+        val allSelectedIds = stateBefore.selectedImageIds.ifEmpty {
+            stateBefore.selectedImageId?.let(::setOf).orEmpty()
+        }
+        // V_NOW: lock guard. Resetting a transform reverts rotation
+        // / scale / flip / display-size / position — every pose
+        // field — which is the broadest possible mutation. A locked
+        // image must keep its current pose until the user explicitly
+        // unlocks, so reset is a no-op for it.
+        val selectedIds = allSelectedIds.filter { id ->
+            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+        }
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            copy(
+                images = images.map { img ->
+                    if (img.id !in selectedIds) img else img.copy(
+                        center = img.initialCenter,
+                        displaySize = img.initialDisplaySize,
+                        rotationDegrees = 0f,
+                        scale = 1f,
+                        flipX = false,
+                        flipY = false,
+                    )
+                },
+            )
+        }
+    }
+
+    internal fun fitImageToScreen(imageId: String) {
+        val currentState = mainVm._uiState.value
+        if (currentState.fittedImageId == imageId) {
+            mainVm._uiState.update { state ->
+                state.copy(
+                    canvasScale = state.preFitCanvasScale,
+                    canvasOffset = state.preFitCanvasOffset,
+                    fittedImageId = null,
+                )
+            }
+            return
+        }
+        val image = currentState.images.find { it.id == imageId } ?: return
+        val viewport = currentState.canvasViewportSize
+        if (viewport.width <= 0f || viewport.height <= 0f) return
+        val imgW = image.displaySize.width * image.scale
+        val imgH = image.displaySize.height * image.scale
+        val effectiveW: Float
+        val effectiveH: Float
+        if (image.rotationDegrees % 180f != 0f) {
+            effectiveW = imgH
+            effectiveH = imgW
+        } else {
+            effectiveW = imgW
+            effectiveH = imgH
+        }
+        val targetScale = minOf(
+            viewport.width / effectiveW,
+            viewport.height / effectiveH,
+        ).coerceIn(0.15f, 8f)
+        val savedScale = currentState.canvasScale
+        val savedOffset = currentState.canvasOffset
+        mainVm._uiState.update { state ->
+            state.copy(
+                canvasScale = targetScale,
+                canvasOffset = Offset(
+                    -image.center.x * targetScale,
+                    -image.center.y * targetScale,
+                ),
+                fittedImageId = imageId,
+                preFitCanvasScale = savedScale,
+                preFitCanvasOffset = savedOffset,
+            )
+        }
+    }
+
+    fun convertToGrayscale() {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        mainVm.mutateScene {
+            copy(
+                images = images.map { img ->
+                    if (img.id !in selectedIds) img
+                    else {
+                        val currentSat = img.colorAdjust.saturation
+                        val newSat = if (currentSat <= -0.9f) 0f else -1f
+                        img.copy(colorAdjust = img.colorAdjust.copy(saturation = newSat))
+                    }
+                },
+            )
+        }
+    }
+
+}

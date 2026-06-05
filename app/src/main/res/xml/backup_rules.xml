@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 6.0+ (API 23) 旧版自动备份规则,被 fullBackupContent 引用。
+    完整备份 SharedPreferences 和自动保存目录。
+-->
+<full-backup-content>
+    <include domain="sharedpref" path="." />
+    <include domain="file" path="auto_save/" />
+</full-backup-content>

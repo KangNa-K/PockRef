@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">PockRef</string>
+    <string name="bg_dark_grey">深灰</string>
+    <string name="bg_black">纯黑</string>
+    <string name="bg_white">纯白</string>
+    <string name="bg_light_grey">浅灰</string>
+    <string name="bg_canvas">米黄</string>
+    <string name="bg_mint">薄荷</string>
+    <string name="bg_sky">天蓝</string>
+    <string name="bg_custom">自定义</string>
+    <string name="bg_dialog_title">背景色</string>
+    <string name="bg_background_label">背景</string>
+</resources>

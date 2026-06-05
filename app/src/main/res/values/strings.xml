@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">PockRef</string>
+    <string name="bg_dark_grey">Dark grey</string>
+    <string name="bg_black">Black</string>
+    <string name="bg_white">White</string>
+    <string name="bg_light_grey">Light grey</string>
+    <string name="bg_canvas">Canvas</string>
+    <string name="bg_mint">Mint</string>
+    <string name="bg_sky">Sky</string>
+    <string name="bg_custom">Custom</string>
+    <string name="bg_dialog_title">Background color</string>
+    <string name="bg_background_label">Background</string>
+</resources>
