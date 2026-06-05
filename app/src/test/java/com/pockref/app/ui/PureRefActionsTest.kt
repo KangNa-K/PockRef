@@ -67,16 +67,16 @@ class PockRefActionsTest {
      *     of [SetBottomRightPanelExpanded]. Idempotent.
      *     Net change is +1.
      */
-    // V_NOW (iOS PiP-style minimap): +1 variant for
-    // [PockRefAction.SetMinimapZoomScale] (pinch-to-zoom
-    // scale, clamped to [0.5f, 2.0f] in the reducer
-    // and persisted to
-    // [com.pockref.app.data.AppPreferences.minimapZoomScale]).
-    // The 114 count is verified at build time by
+    // V_NOW: -1 variant — [PockRefAction.SetMinimapMoving]
+    // (long-press-drag "moving" flag) was REMOVED by user
+    // spec "minimap 去掉长按功能". The 114 → 113 net
+    // change is verified at build time by
     // [PockRefAction.permittedSubclasses.size]; if a new
     // variant is added or removed, this number must be
-    // updated in lockstep.
-    private val expectedVariantCount: Int = 114
+    // updated in lockstep. [SetMinimapZoomScale] is still
+    // in the variant set — its data-layer plumbing is
+    // preserved for a future UI-layer re-enable.
+    private val expectedVariantCount: Int = 113
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

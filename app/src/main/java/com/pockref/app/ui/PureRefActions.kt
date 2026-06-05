@@ -185,15 +185,6 @@ sealed interface PockRefAction {
     data class SetMinimapCollapsed(val collapsed: Boolean) : PockRefAction
 
     /**
-     * V_NOW: transient — true while the user is long-pressing
-     * AND dragging the minimap to a new position. Dispatched
-     * by the long-press pointerInput at the 500ms threshold
-     * (true) and by the drag-end detector on release (false).
-     * Not persisted.
-     */
-    data class SetMinimapMoving(val moving: Boolean) : PockRefAction
-
-    /**
      * V_NOW: pinch-to-zoom scale for the full minimap panel.
      * Dispatched continuously during a two-finger pinch.
      * Clamped to [0.5f, 2.0f] in the reducer so callers

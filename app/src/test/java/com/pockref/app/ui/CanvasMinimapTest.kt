@@ -194,12 +194,18 @@ class CanvasMinimapTest {
     fun computeSceneBboxForMinimap_singleImage_atOrigin() {
         val img = image(id = "a", center = Offset(0f, 0f), displayW = 100f, displayH = 50f)
         val bbox = computeSceneBboxForMinimap(listOf(img))
-        // Image AABB is (-50,-25)..(50,25). 10% padding: padW=10, padH=5.
-        // So bbox = (-60, -30)..(60, 30).
+        // Image AABB is (-50,-25)..(50,25). The minDim=100 floor
+        // forces the bbox to be at least 100x100 (image height
+        // is 50, which would yield a 0-scale row otherwise), so
+        // the bbox expands to (-50,-50)..(50,50) BEFORE the 10%
+        // padding. Final bbox = (-60,-60)..(60,60) — note top/
+        // bottom are -60/+60 (not -30/+30), because the minDim
+        // expansion is what makes this case distinct from
+        // [computeSceneBboxForMinimap_multipleImagesTakesUnion].
         assertEquals(-60f, bbox.left, 0.01f)
-        assertEquals(-30f, bbox.top, 0.01f)
+        assertEquals(-60f, bbox.top, 0.01f)
         assertEquals(60f, bbox.right, 0.01f)
-        assertEquals(30f, bbox.bottom, 0.01f)
+        assertEquals(60f, bbox.bottom, 0.01f)
     }
 
     @Test

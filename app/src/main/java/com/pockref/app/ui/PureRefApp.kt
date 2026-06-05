@@ -22,9 +22,7 @@ import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -1097,15 +1095,17 @@ fun PockRefApp(
             // inner [pointerInput] uses [awaitEachGesture]
             // with [awaitFirstDown] + a manual move loop, so
             // a quick tap-and-drag fires its drag handler
-            // (canvas pan). Our OUTER [pointerInput] uses
-            // [detectDragGesturesAfterLongPress] which only
-            // fires after a 500ms hold WITHOUT movement; if
-            // the user drags immediately, the long-press
-            // never fires and the events flow through to
-            // the inner gesture. If the long-press DOES fire
-            // (and thus the outer enters drag mode and
-            // consumes subsequent events), the inner sees no
-            // moves and its drag never starts. So the two
+            // (canvas pan). Our OUTER [pointerInput] used to
+            // use [detectDragGesturesAfterLongPress] which
+            // only fires after a 500ms hold WITHOUT movement
+            // — that long-press handler was REMOVED by user
+            // spec "minimap 去掉长按功能". The panel now has
+            // zero touch interactivity of its own (it's a
+            // static [Alignment.BottomStart] surface), so
+            // every pointer event flows through to the inner
+            // [CanvasMinimap] gesture untouched. The inner
+            // canvas-pan is the only minimap-related drag
+            // handler that exists.
             // interactions are mutually exclusive by
             // construction.
             //
@@ -2406,14 +2406,6 @@ private fun BoxScope.CropOverlay(
  *     Expanded. The [hoverable] modifier covers stylus / mouse
  *     hover; [clickable] covers touch.
  *
- *   **Moving** (`minimapLongPressMoving == true`): transient
- *     flag set during the long-press drag. The 3s auto-
- *     collapse timer pauses while this is true (otherwise the
- *     timer would fire mid-drag and try to collapse a panel
- *     the user is actively moving). The renderer also reads
- *     this to draw a slight scale-up + shadow for "lift to
- *     drop" affordance.
- *
  * The 3s auto-collapse matches the top toolbar's contract:
  * the timer starts after the last REAL interaction (Press /
  * Move-with-pressed / Release), reads the wall-clock against
@@ -2422,12 +2414,26 @@ private fun BoxScope.CropOverlay(
  * (same pattern as the top toolbar — see the long comment
  * block at [TopToolbar]'s LaunchedEffect).
  *
- * Coexistence with [CanvasMinimap]'s inner gesture: see
- * the long comment at the call site (line ~1081 in this
- * file) for the full reasoning. TL;DR: long-press takes
- * over the gesture via [detectDragGesturesAfterLongPress];
- * a quick tap-and-drag (no long-press) flows through to the
- * inner canvas-pan gesture untouched.
+ * V_NOW: long-press drag is REMOVED. The previous
+ * 3-state model (Expanded / Collapsed / Moving) collapsed
+ * to a 2-state model (Expanded / Collapsed). The user spec
+ * is "minimap 去掉长按功能" — the panel stays anchored
+ * at its [Alignment.BottomStart] default position for
+ * the whole session. The [Moving] flag, the
+ * [SetMinimapMoving] dispatch, the
+ * [detectDragGesturesAfterLongPress] pointerInput, the
+ * 1.05× lift-scale animation, and the long-press auto-dock
+ * on release are all gone. Pinch-to-zoom is also gone
+ * (see the [graphicsLayer] block + the dedicated
+ * V_NOW comment for the zoom-removal rationale).
+ *
+ * Coexistence with [CanvasMinimap]'s inner gesture: the
+ * outer panel has no pointerInput now, so all pointer
+ * events flow through to the inner [CanvasMinimap]'s
+ * canvas-pan-by-drag untouched. No gesture conflict
+ * to reason about. The "outer long-press + inner
+ * drag" coexistence dance that the previous comment
+ * described is no longer relevant.
  */
 @Composable
 private fun BoxScope.MinimapChrome(
@@ -2587,81 +2593,20 @@ private fun BoxScope.MinimapChrome(
         }
     }
 
-    // V_NOW (0-frame pinch lag fix): the previous
-    // design dispatched [PockRefAction.SetMinimapZoomScale]
-    // on EVERY pinch event frame. The full path was:
-    //   pinch event → detectTransformGestures callback
-    //   → onAction(SetMinimapZoomScale(current * zoom))
-    //   → ViewModel reducer → appPrefs.minimapZoomScale =
-    //     clamped (SharedPreferences write!) +
-    //   _uiState.update { copy(minimapZoomScale = clamped) }
-    //   → StateFlow emission → recomposition →
-    //   CanvasMinimap(zoomScale = state.minimapZoomScale)
-    //   → panel size recomputed
-    // At 60-120Hz that's 60-120 SharedPreferences writes
-    // per second + a full recomposition roundtrip per
-    // frame, with 16-32ms of latency. The user reported
-    // "调整尺寸大小不跟手" (zoom-resize doesn't track
-    // fingers).
-    //
-    // The fix mirrors the position-drag fix above: use
-    // a LOCAL [mutableFloatStateOf] as the hot-path
-    // render source. The pinch handler writes to
-    // [liveZoom] directly, and the graphicsLayer block
-    // (draw phase) reads it on the same frame. Only
-    // when the user STOPS pinching (i.e. the value
-    // is stable for [ZOOM_DEBOUNCE_MS]) does a single
-    // [SetMinimapZoomScale] dispatch fire to write
-    // the final value through to StateFlow +
-    // SharedPreferences. The debounce window is
-    // short enough that the user perceives the
-    // persistence as instant; long enough that
-    // mid-pinch writes never fire.
-    val liveZoom = androidx.compose.runtime.remember {
-        androidx.compose.runtime.mutableFloatStateOf(state.minimapZoomScale)
-    }
-    androidx.compose.runtime.LaunchedEffect(state.minimapZoomScale) {
-        // Sync from external StateFlow → local. The
-        // [SetMinimapZoomScale] dispatch above (the
-        // [onPinchEnd] path) writes [state.minimapZoomScale]
-        // and triggers this LaunchedEffect; we then
-        // re-anchor [liveZoom] to the new value. Reads
-        // of [liveZoom] between the dispatch and this
-        // effect still use the previous frame's value
-        // (so there's no visual jump — the user
-        // already released the pinch, so the
-        // panel is "settled").
-        liveZoom.floatValue = state.minimapZoomScale
-    }
-    // V_NOW (0-frame pinch lag fix): debounced
-    // dispatch to commit the pinch end to StateFlow
-    // + SharedPreferences. Every time [liveZoom]
-    // changes, [collectLatest] cancels any
-    // in-flight [delay] and starts a new one
-    // — only the FINAL settled value (after
-    // [ZOOM_DEBOUNCE_MS] of stability) ever
-    // reaches the ViewModel. The dispatch
-    // itself reads the current [liveZoom.floatValue]
-    // (not the snapshot from the moment the
-    // [delay] started), so the persisted
-    // value is always the latest user intent.
-    // [collectLatest] is the key piece — plain
-    // [collect] would sequentialize the delays
-    // and dispatch on every emission. The
-    // [LaunchedEffect] is keyed on [liveZoom]
-    // (the State instance, not its .value) so
-    // the collector restarts only when the
-    // State is replaced (which never happens
-    // after [remember] — the collector runs
-    // for the lifetime of the composable).
-    val ZOOM_DEBOUNCE_MS = 180L
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        androidx.compose.runtime.snapshotFlow { liveZoom.floatValue }
-            .collectLatest {
-                kotlinx.coroutines.delay(ZOOM_DEBOUNCE_MS)
-                onAction(PockRefAction.SetMinimapZoomScale(liveZoom.floatValue))
-            }
-    }
+    // V_NOW: pinch-to-zoom state removed (see
+    // [graphicsLayer] block below + pinch
+    // pointerInput removal above). The
+    // [liveZoom] mutableFloatState, the
+    // StateFlow→local sync LaunchedEffect,
+    // and the 180ms debounced
+    // [SetMinimapZoomScale] dispatch are
+    // all gone. [state.minimapZoomScale] is
+    // still read at first composition to
+    // seed nothing (the field is unused
+    // here now), and the data layer
+    // (PockRefAction / AppPreferences /
+    // ViewModel reducer) is intentionally
+    // preserved untouched.
 
     // RememberUpdatedState so the pointerInput coroutine
     // (which is keyed on Unit and never re-collects) sees
@@ -2879,29 +2824,25 @@ private fun BoxScope.MinimapChrome(
         }
     } else {
         // Full minimap panel. Outer Box carries the
-        // long-press-drag-to-move pointerInput AND the
-        // two-finger pinch-to-zoom transform gesture
-        // (added in the iOS PiP-style redesign).
-        // Inner is the existing [CanvasMinimap] (which
-        // keeps its own canvas-pan-by-drag gesture —
-        // see coexistence note at the call site).
+        // V_NOW: long-press-drag-to-move AND
+        // two-finger pinch-to-zoom are BOTH DISABLED
+        // by user spec "minimap 去掉长按功能" +
+        // "minimap 禁止自由调整大小". The panel
+        // is anchored at its [Alignment.BottomStart]
+        // default position (24dp inset, 24dp above
+        // bottom edge) for the entire session —
+        // no drag, no zoom, no lift animation. The
+        // [graphicsLayer] block is a no-op identity
+        // transform; the [onSizeChanged] still
+        // captures panel size for the [offset]
+        // alignment math but no [localPosition]
+        // mutation ever happens.
         //
-        // Visual feedback while moving: slight scale-up
-        // + shadow to make "lift to drop" obvious. The
-        // [graphicsLayer] lerp on the recomposition
-        // after [minimapLongPressMoving] flips true;
-        // the user gets ~1 frame of lift animation
-        // thanks to the animate*AsState lerp.
-        val liftScale by androidx.compose.animation.core.animateFloatAsState(
-            targetValue = if (state.minimapLongPressMoving) 1.05f else 1f,
-            animationSpec = androidx.compose.animation.core.tween(durationMillis = 120),
-            label = "minimap-lift-scale",
-        )
-        val liftShadow by androidx.compose.animation.core.animateDpAsState(
-            targetValue = if (state.minimapLongPressMoving) 8.dp else 2.dp,
-            animationSpec = androidx.compose.animation.core.tween(durationMillis = 120),
-            label = "minimap-lift-shadow",
-        )
+        // The inner is the existing [CanvasMinimap]
+        // (which keeps its own canvas-pan-by-drag
+        // gesture for panning the MAIN view, NOT
+        // moving the minimap panel — see the
+        // coexistence note at the call site).
         androidx.compose.foundation.layout.Box(
             modifier = Modifier
                 // V_NOW (alignment fix — minimap
@@ -2998,169 +2939,48 @@ private fun BoxScope.MinimapChrome(
                     }
                 }
                 .graphicsLayer {
-                    // V_NOW (0-frame pinch lag fix): the
-                    // panel size is multiplied by the
-                    // user's LIVE pinch zoom (clamped
-                    // to [0.5f, 2.0f] in the pinch
-                    // handler). [liveZoom] is a
-                    // local [mutableFloatStateOf] —
-                    // the pinch handler writes to it
-                    // directly with 0-frame latency,
-                    // and the graphicsLayer block
-                    // (draw phase) reads it on the
-                    // same frame. The debounced
-                    // [LaunchedEffect] elsewhere
-                    // writes the final value
-                    // through to [state.minimapZoomScale]
-                    // + SharedPreferences. [liftScale]
-                    // is multiplied on top so the
-                    // long-press-drag lift animation
-                    // composes correctly with the
-                    // zoom. [shadowElevation] is
-                    // also a draw-phase concern
-                    // (cast shadow under the panel
-                    // is drawn by the same layer
-                    // that draws the panel) and
-                    // belongs here.
-                    scaleX = liftScale * liveZoom.floatValue
-                    scaleY = liftScale * liveZoom.floatValue
-                    shadowElevation = liftShadow.toPx()
-                    // V_NOW (center-anchored zoom):
-                    // transformOrigin is the
-                    // center of the panel so the
-                    // pinch zoom expands/contracts
-                    // the panel AROUND ITS CENTER
-                    // — the user's fingers are
-                    // typically on the panel's
-                    // center, and a center-anchored
-                    // zoom keeps the panel's
-                    // visual position stable while
-                    // the size changes.
-                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0.5f)
+                    // V_NOW: identity transform — the
+                    // panel is a static
+                    // [Alignment.BottomStart] surface
+                    // that draws with its raw size +
+                    // a fixed 2dp shadow (matching the
+                    // previous idle-state shadow).
+                    // Pinch-zoom + long-press-lift
+                    // scale animations are removed by
+                    // user spec. No [Modifier.scaleX/Y]
+                    // write, no [shadowElevation] lerp.
+                    shadowElevation = 2.dp.toPx()
                 }
-                .pointerInput(Unit) {
-                    // V_NOW (iOS PiP-style): the expanded
-                    // panel supports BOTH long-press-drag
-                    // (to move the panel) AND
-                    // two-finger pinch (to zoom the panel
-                    // size). The two gestures are
-                    // independent — the user can pinch
-                    // without long-pressing first. The
-                    // existing long-press-drag handler is
-                    // preserved as-is; the pinch handler
-                    // is added on a SEPARATE
-                    // [Modifier.pointerInput] chained
-                    // AFTER the drag handler so the
-                    // touch-slop resolution works in the
-                    // user's favor: a single-finger
-                    // long-press still moves the panel;
-                    // two-finger pinches zoom it.
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = {
-                            onAction(PockRefAction.SetMinimapMoving(true))
-                        },
-                        onDrag = { _, dragAmount ->
-                            // V_NOW (lag fix): direct mutable state
-                            // write. Bypasses ViewModel / StateFlow
-                            // for the hot path. The drag tracks the
-                            // finger with 1-frame latency at most
-                            // (the drag event's natural rate), not the
-                            // 16-32ms StateFlow-recomposition cycle.
-                            val newPos = Offset(
-                                x = (localPosition.value.x + dragAmount.x).coerceIn(
-                                    minimumValue = -currentMinimapSize * 0.5f,
-                                    maximumValue = currentParentWidth - currentMinimapSize * 0.5f,
-                                ),
-                                y = (localPosition.value.y + dragAmount.y).coerceIn(
-                                    minimumValue = -currentMinimapSize * 0.5f,
-                                    maximumValue = currentParentHeight - currentMinimapSize * 0.5f,
-                                ),
-                            )
-                            localPosition.value = newPos
-                        },
-                        onDragEnd = {
-                            onAction(PockRefAction.SetMinimapMoving(false))
-                            // V_NOW (lag fix): single write to the
-                            // ViewModel at drag end. The
-                            // [putFloat().apply()] writes
-                            // asynchronously on a background
-                            // thread so the UI thread isn't
-                            // blocked, but it's still a single
-                            // write per drag instead of the old
-                            // 60-per-second firehose. The local
-                            // state is already up-to-date — no
-                            // roundtrip needed.
-                            onAction(PockRefAction.SetMinimapPosition(
-                                localPosition.value.x,
-                                localPosition.value.y,
-                            ))
-                            // V_NOW: auto-dock on release if the
-                            // panel is close enough to a
-                            // screen edge.
-                            val pos = localPosition.value
-                            val dockEdge = when {
-                                pos.x < currentDockThreshold ->
-                                    com.pockref.app.model.MinimapDockEdge.LEFT
-                                pos.x + currentMinimapSize > currentParentWidth - currentDockThreshold ->
-                                    com.pockref.app.model.MinimapDockEdge.RIGHT
-                                pos.y < currentDockThreshold ->
-                                    com.pockref.app.model.MinimapDockEdge.TOP
-                                pos.y + currentMinimapSize > currentParentHeight - currentDockThreshold ->
-                                    com.pockref.app.model.MinimapDockEdge.BOTTOM
-                                else -> null
-                            }
-                            if (dockEdge != null) {
-                                onAction(PockRefAction.SetMinimapDockEdge(dockEdge))
-                                onAction(PockRefAction.SetMinimapCollapsed(true))
-                            }
-                        },
-                    )
-                }
-                // V_NOW (iOS PiP-style pinch-to-zoom):
-                // chained pointerInput for two-finger
-                // pinch. [detectTransformGestures] also
-                // reports pan + rotation, but we
-                // intentionally ignore them (the panel
-                // already moves via long-press drag,
-                // and rotation is meaningless for an
-                // axis-aligned rect). The pinch `zoom`
-                // factor is a per-frame multiplier;
-                // we multiply it with the current
-                // scale to get the new scale, clamp
-                // in the reducer, and dispatch
-                // [SetMinimapZoomScale]. The reducer
-                // writes to [appPrefs.minimapZoomScale]
-                // on every dispatch (cheap — single
-                // [putFloat().apply()]), so the
-                // user's last pinch survives a
-                // crash.
-                .pointerInput(Unit) {
-                    detectTransformGestures(
-                        panZoomLock = false,
-                    ) { _, _, zoom, _ ->
-                        // V_NOW (0-frame pinch lag fix):
-                        // direct write to the local
-                        // [liveZoom] mutableState, NOT a
-                        // dispatch to the ViewModel.
-                        // The graphicsLayer block (draw
-                        // phase) reads [liveZoom.floatValue]
-                        // on the same frame, so the
-                        // panel resize tracks the pinch
-                        // with 0-frame latency. The
-                        // debounced [LaunchedEffect]
-                        // elsewhere in the function
-                        // fires a single
-                        // [SetMinimapZoomScale] dispatch
-                        // after [ZOOM_DEBOUNCE_MS] of
-                        // stability to persist the
-                        // final value through to
-                        // StateFlow + SharedPreferences.
-                        if (zoom != 1f) {
-                            liveZoom.floatValue = (liveZoom.floatValue * zoom)
-                                .coerceIn(0.5f, 2.0f)
-                        }
-                    }
-                }
+                // V_NOW: long-press drag handler is
+                // REMOVED by user spec "minimap 去掉
+                // 长按功能". The panel stays anchored
+                // at its [Alignment.BottomStart]
+                // default position. No pointerInput
+                // is attached to the outer panel
+                // Box anymore — the panel has zero
+                // touch interactivity of its own
+                // (the inner [CanvasMinimap] keeps
+                // its own canvas-pan-by-drag for
+                // panning the MAIN view, which
+                // doesn't conflict with this
+                // "panel stays still" rule).
+                // V_NOW: two-finger pinch-to-zoom is
+                // DISABLED by user spec "minimap 禁止
+                // 自由调整大小". The panel size is
+                // fixed by the scene-bbox math in
+                // [CanvasMinimap] (60dp..200dp).
+                // The previous [detectTransformGestures]
+                // pointerInput, [liveZoom] state, and
+                // [SetMinimapZoomScale] dispatch are
+                // removed from this UI layer. The
+                // data layer (PockRefAction /
+                // AppPreferences / ViewModel reducer)
+                // is preserved so a future re-enable
+                // is a UI-only restoration, and
+                // existing users' persisted
+                // `minimap_zoom_scale` SharedPreferences
+                // key is harmlessly ignored.
+                //
                 // V_NOW (iOS PiP-style): double-tap on
                 // the expanded panel collapses to the
                 // bar at the current position. The

@@ -709,16 +709,6 @@ data class PockRefUiState(
      */
     val minimapZoomScale: Float = 1f,
     /**
-     * V_NOW: transient — true while the user is long-pressing AND
-     * dragging the minimap to a new position. Flips to true on
-     * 500ms long-press hold; back to false on drag release. The
-     * renderer uses this to (a) skip the 3s auto-collapse while
-     * moving (otherwise the timer fires mid-drag), and (b) draw
-     * a slightly elevated chrome (1dp shadow + scale 1.05) so the
-     * user gets visual confirmation that "lift to drop" is active.
-     */
-    val minimapLongPressMoving: Boolean = false,
-    /**
      * Active settings tab (V_NOW: tabbed settings sheet).
      * Persists across sheet open/close so the user comes
      * back to whichever tab they were on. Default is

@@ -549,7 +549,6 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.SetMinimapPosition -> setMinimapPosition(action.x, action.y)
             is PockRefAction.SetMinimapDockEdge -> setMinimapDockEdge(action.edge)
             is PockRefAction.SetMinimapCollapsed -> setMinimapCollapsed(action.collapsed)
-            is PockRefAction.SetMinimapMoving -> setMinimapMoving(action.moving)
             is PockRefAction.SetMinimapZoomScale -> setMinimapZoomScale(action.scale)
             PockRefAction.SetMenuBarsCollapsed -> collapseMenuBarsOnWindowBlur()
             PockRefAction.RestoreMenuBarsOnFocus -> restoreMenuBarsOnWindowFocus()
@@ -665,16 +664,6 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     internal fun setMinimapCollapsed(collapsed: Boolean) {
         appPrefs.minimapCollapsed = collapsed
         _uiState.update { it.copy(minimapCollapsed = collapsed) }
-    }
-
-    /**
-     * V_NOW: transient — toggle the "long-press moving" flag.
-     * NOT persisted. The renderer uses this to (a) skip the
-     * 3s auto-collapse timer while moving and (b) draw a
-     * slightly elevated chrome to confirm "lift to drop".
-     */
-    internal fun setMinimapMoving(moving: Boolean) {
-        _uiState.update { it.copy(minimapLongPressMoving = moving) }
     }
 
     /**
