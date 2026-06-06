@@ -552,20 +552,6 @@ data class CropRect(
     }
 }
 
-/**
- * Snapshot of the long-press context menu, shown after the user holds
- * a finger on a selected image. [anchorScreen] is the touch-down
- * position in screen space; the renderer positions the menu near
- * (but clamped inside) the screen rect. [targetImageIds] is the set
- * of images the menu's actions apply to — usually a single id from
- * the long-press, but supports multi-select (long-press with a
- * pre-existing multi-selection keeps the whole selection).
- */
-data class ContextMenuState(
-    val anchorScreen: Offset,
-    val targetImageIds: Set<String>,
-)
-
 data class PockRefUiState(
     val sceneName: String = "Untitled",
     val backgroundColor: Color = BackgroundPreset.White.color,
@@ -583,7 +569,7 @@ data class PockRefUiState(
      * value flows back through the next uiState snapshot.
      */
     val spenMode: com.pockref.app.spen.SpenMode =
-        com.pockref.app.spen.SpenMode.PRESS_AND_HOLD,
+        com.pockref.app.spen.SpenMode.DOUBLE_TAP,
     val images: List<SceneImage> = emptyList(),
     /**
      * Scene-level default spacing (horizontal / vertical, in scene
@@ -723,14 +709,6 @@ data class PockRefUiState(
     val fittedImageId: String? = null,
     val preFitCanvasScale: Float = 1f,
     val preFitCanvasOffset: Offset = Offset.Zero,
-    /**
-     * Active long-press context menu, if shown. Non-null = menu is
-     * visible. The menu lists actions for the [targetImageIds]; a
-     * non-empty selection applies each action to all selected images.
-     * Anchored at the touch position (in screen-space) so the menu
-     * feels connected to the finger.
-     */
-    val contextMenu: ContextMenuState? = null,
     val canUndoOptimization: Boolean = false,
     val batchOptimizeState: BatchOptimizeState = BatchOptimizeState(),
     val showBatchOptimizeConfirm: Boolean = false,
@@ -951,6 +929,91 @@ data class PockRefUiState(
      * this field is purely a UI mirror.
      */
     val autoSaveIntervalMs: Long = 3_600_000L,
+    /**
+     * V_NOW (P2-C3): one-shot "selection just changed" flash
+     * marker. Non-null means the renderer should briefly tint
+     * the matching [imageId] with a fade-in/fade-out alpha
+     * (0.1 → 0.5 → 0.0 over 200ms) so the user gets
+     * visual confirmation that the two-finger-down hit-test
+     * actually replaced the selection. The marker is set
+     * by [com.pockref.app.ui.PockRefAction.FlashSelection]
+     * (dispatched in the same `pointerInput` handler that
+     * dispatches `SelectImage(nonSelectedHit)` on a
+     * two-finger-down hit of an unselected image) and is
+     * allowed to naturally expire — the renderer computes
+     * `now - atMs` per frame and renders alpha = 0 once
+     * the elapsed exceeds 200ms. No reducer is needed
+     * to clear it.
+     *
+     * The marker is intentionally separate from the
+     * selection itself (no reducer-level effect on
+     * [selectedImageIds]) so a user re-selecting the
+     * same image via a single-finger tap does NOT
+     * trigger a flash — that would be a constant
+     * distraction.
+     */
+    val selectionFlash: SelectionFlash? = null,
+    /**
+     * V_NOW (SelectionBottomSheet "弹不出来" 修复):
+     * monotonically increasing counter that the
+     * pointerInput dispatches alongside
+     * [PockRefAction.CycleImageUnderPoint] /
+     * [PockRefAction.FitImageToScreen] (i.e. any
+     * "the user just did a meaningful image tap"
+     * event). The [SelectionBottomSheet] keys a
+     * [kotlinx.coroutines.LaunchedEffect] on this
+     * counter and calls `sheetState.show()` on
+     * every tick — which re-raises the sheet
+     * after the user has previously dismissed it
+     * via the X / 收起 / scrim-tap path.
+     *
+     * Why this is needed: M3 1.2
+     * [androidx.compose.material3.ModalBottomSheet]
+     * uses `rememberSaveable` for its
+     * [androidx.compose.material3.SheetState] and
+     * fires its own
+     * `LaunchedEffect(sheetState) { sheetState.show() }`
+     * only ONCE per state instance. After
+     * `sheetState.hide()` puts the state at
+     * `SheetValue.Hidden`, the state object
+     * identity stays the same across user taps,
+     * so that built-in `LaunchedEffect` does not
+     * re-fire. Result: the sheet never re-raises
+     * after the first dismissal, even though
+     * `state.selectedImageIds` is still non-empty
+     * and the [SelectionBottomSheet] Composable
+     * is still in the composition. The user's
+     * reported bug is exactly this scenario.
+     *
+     * Pure state counter (no side-effect
+     * dependency on the SheetState instance)
+     * works around the M3 1.2 limitation: every
+     * user-tap event is a brand-new counter
+     * value, so the [LaunchedEffect] re-fires
+     * unconditionally and calls `show()`.
+     *
+     * Default `0` so a fresh UiState with no
+     * prior tick history is well-defined. The
+     * counter is allowed to grow without bound
+     * (Int.MAX_VALUE taps ≈ 70 years at 4 taps
+     * / sec — well outside the app's lifetime).
+     */
+    val selectionSheetShowTick: Int = 0,
+)
+
+/**
+ * V_NOW (P2-C3): companion record to
+ * [PockRefUiState.selectionFlash]. Holds the image id
+ * and the wall-clock millis at which the flash was
+ * triggered, so the renderer can compute
+ * `now - atMs` per frame and drive the fade-in /
+ * fade-out alpha curve. See
+ * [PockRefUiState.selectionFlash] for the full
+ * rationale.
+ */
+data class SelectionFlash(
+    val imageId: String,
+    val atMs: Long,
 )
 
 enum class BatchOptimizeStatus {

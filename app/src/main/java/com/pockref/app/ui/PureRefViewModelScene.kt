@@ -712,23 +712,67 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
     }
 
     private fun constrainToAspect(rect: CropRect, aspect: CropAspect, imgW: Int, imgH: Int): CropRect {
+        // V_NOW: math fix (user feedback "调整好选区,点击
+        // 应用后,图片没有变化"). The previous formula had
+        // two bugs:
+        //
+        //   1. The branch condition compared
+        //      `currentW / currentH > targetAspect` — this
+        //      is the rect's NORMALIZED aspect, not its
+        //      PIXEL aspect. Since the [CropRect] coords are
+        //      normalized over [0, 1] in image space, the
+        //      pixel aspect of the selection is
+        //      `(currentW / currentH) * imgAspect`, NOT
+        //      `currentW / currentH`. Comparing the wrong
+        //      metric made the "too wide / too tall" branch
+        //      decision incorrect for any image where
+        //      [imgAspect] != 1.0.
+        //
+        //   2. The `newW` / `newH` math multiplied by
+        //      `imgH / imgW` or `imgW / imgH` to keep the
+        //      PIXEL aspect at `targetAspect`, but the
+        //      result was `newW = currentH * (targetAspect /
+        //      imgAspect)` and `newH = currentW * (imgAspect
+        //      / targetAspect)`. The `coerceIn(0f, 1f -
+        //      newW)` then failed silently when `newW > 1f`
+        //      (range became [0, negative], clamping
+        //      produced `left = 0, right = newW > 1f` —
+        //      out-of-bounds rect). The downstream
+        //      [commitCrop] then hit its `isValid()` /
+        //      `cropPixelW <= 0` early return and silently
+        //      called [cancelCrop] — the user saw
+        //      "nothing happened" on Apply.
+        //
+        // Fixed formula: keep the newH branch's "freeze H,
+        // scale W to hit targetAspect" direction; pick the
+        // branch by comparing the actual PIXEL aspect
+        // (`currentW / currentH) * imgAspect`) against
+        // `targetAspect`. The `coerceIn` lower bound uses
+        // `(1f - newW).coerceAtLeast(0f)` to defend against
+        // the `newW > 1f` clamp-reversal case
+        // (see [clampOffsetToScene] for the same pattern).
         val targetAspect = aspect.ratioW / aspect.ratioH
         val imgAspect = imgW.toFloat() / imgH.toFloat()
         val currentW = rect.cropWidth
         val currentH = rect.cropHeight
+        val currentPxAspect = if (currentH > 0f) (currentW / currentH) * imgAspect else targetAspect
         val newW: Float
         val newH: Float
-        if (currentW / currentH > targetAspect * (imgAspect / imgAspect)) {
+        if (currentPxAspect > targetAspect) {
+            // Selection is too wide in pixels: freeze H,
+            // scale W down to hit targetAspect.
             newH = currentH
-            newW = currentH * targetAspect * (imgH.toFloat() / imgW.toFloat())
+            newW = currentH * (targetAspect / imgAspect)
         } else {
+            // Selection is too tall in pixels: freeze W,
+            // scale H down to hit targetAspect.
             newW = currentW
-            newH = currentW / targetAspect * (imgW.toFloat() / imgH.toFloat())
+            newH = currentW * (imgAspect / targetAspect)
         }
         val cx = (rect.left + rect.right) / 2f
         val cy = (rect.top + rect.bottom) / 2f
-        val cl = (cx - newW / 2f).coerceIn(0f, 1f - newW)
-        val ct = (cy - newH / 2f).coerceIn(0f, 1f - newH)
+        val cl = (cx - newW / 2f).coerceIn(0f, (1f - newW).coerceAtLeast(0f))
+        val ct = (cy - newH / 2f).coerceIn(0f, (1f - newH).coerceAtLeast(0f))
         return CropRect(left = cl, top = ct, right = cl + newW, bottom = ct + newH)
     }
 
@@ -1269,7 +1313,19 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             intrinsicWidth = bounds.outWidth,
                             intrinsicHeight = bounds.outHeight,
                             displaySize = Size2D(newDisplayW, newDisplayH),
-                            rotationDegrees = image.rotationDegrees + cropRotation,
+                            // V_NOW: do NOT add cropRotation to
+                            // rotationDegrees. The pixel rotation
+                            // (matrix.postRotate above) has already
+                            // baked cropRotation into the bitmap
+                            // pixels. Adding it again here would
+                            // double-rotate: once in the pixels,
+                            // once at render time via
+                            // [drawSceneImage]'s rotate() call.
+                            // The user's on-canvas rotation
+                            // (image.rotationDegrees) is preserved
+                            // as-is — the crop tool's rotation is
+                            // purely a pixel-level transform.
+                            rotationDegrees = image.rotationDegrees,
                         )
                     },
                     cropImageId = null,
@@ -1468,9 +1524,11 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             ?: continue
                         decoded.add(image to source)
 
-                        // Compute the 4 corners of the transformed image
-                        val w = source.width * image.scale
-                        val h = source.height * image.scale
+                        // Use displaySize (same as on-screen rendering) so the
+                        // export canvas matches what the user sees — not the
+                        // potentially much larger intrinsic pixel dimensions.
+                        val w = image.displaySize.width * image.scale
+                        val h = image.displaySize.height * image.scale
                         val cx = image.center.x
                         val cy = image.center.y
                         val corners = floatArrayOf(
@@ -1531,17 +1589,29 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         // Translate so image center maps to canvas position
                         val offsetX = (image.center.x - minX) * scale
                         val offsetY = (image.center.y - minY) * scale
-                        matrix.postTranslate(-source.width / 2f, -source.height / 2f)
-                        matrix.postScale(image.scale * scale, image.scale * scale)
-                        if (image.rotationDegrees != 0f) {
-                            matrix.postRotate(image.rotationDegrees)
-                        }
+                        // Build matrix using post* (right-multiply). The
+                        // operations are listed in reverse application order:
+                        // the LAST post* call is applied FIRST to the source
+                        // pixel. Correct pipeline: center at origin → scale
+                        // (intrinsic→display, then image.scale, then export)
+                        // → rotate → flip → position at (offsetX, offsetY).
+                        matrix.postTranslate(offsetX, offsetY)
                         if (image.flipX || image.flipY) {
                             val sx = if (image.flipX) -1f else 1f
                             val sy = if (image.flipY) -1f else 1f
                             matrix.postScale(sx, sy)
                         }
-                        matrix.postTranslate(offsetX, offsetY)
+                        if (image.rotationDegrees != 0f) {
+                            matrix.postRotate(image.rotationDegrees)
+                        }
+                        // Scale: intrinsic→display ratio × image.scale × export scale
+                        val displayScaleX = image.displaySize.width / source.width.toFloat()
+                        val displayScaleY = image.displaySize.height / source.height.toFloat()
+                        matrix.postScale(
+                            image.scale * scale * displayScaleX,
+                            image.scale * scale * displayScaleY,
+                        )
+                        matrix.postTranslate(-source.width / 2f, -source.height / 2f)
 
                         canvas.drawBitmap(source, matrix, paint)
                     }

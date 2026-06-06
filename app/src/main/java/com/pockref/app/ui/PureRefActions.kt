@@ -32,8 +32,6 @@ sealed interface PockRefAction {
     data object DeleteSelected : PockRefAction
     data object DuplicateSelected : PockRefAction
     data object ToggleLockSelected : PockRefAction
-    data class ShowContextMenu(val anchorScreen: Offset, val targetImageIds: Set<String>) : PockRefAction
-    data object DismissContextMenu : PockRefAction
     data object BeginRenameScene : PockRefAction
     data class ConfirmRenameScene(val newName: String) : PockRefAction
     data object CancelRenameScene : PockRefAction
@@ -65,11 +63,53 @@ sealed interface PockRefAction {
     data object CloseScene : PockRefAction
     data class SelectImage(val imageId: String?) : PockRefAction
     data object Deselect : PockRefAction
+    /**
+     * V_NOW (P2-C3): one-shot "selection just changed" flash
+     * marker. The two-finger-down hit-test handler dispatches
+     * this in the SAME call as
+     * [PockRefAction.SelectImage] (only when
+     * `SelectImage(nonSelectedHit)` was the previous
+     * dispatch — i.e. the selection was actually replaced
+     * by a different image, not just a no-op re-tap of
+     * the currently-selected one). The reducer writes
+     * [com.pockref.app.model.PockRefUiState.selectionFlash]
+     * = `SelectionFlash(imageId, now)` and the renderer
+     * fades the matching image in/out over 200ms. See
+     * the kdoc on [com.pockref.app.model.PockRefUiState.selectionFlash]
+     * for the full rationale and the no-renderer-effect
+     * guarantee.
+     */
+    data class FlashSelection(val imageId: String) : PockRefAction
+    /**
+     * V_NOW (SelectionBottomSheet "弹不出来" 修复): the
+     * pointerInput dispatches this alongside any
+     * "the user just did a meaningful image tap" event
+     * (single-tap [CycleImageUnderPoint], double-tap
+     * [FitImageToScreen], and the locked-image
+     * branches of the same). The reducer bumps
+     * [com.pockref.app.model.PockRefUiState.selectionSheetShowTick]
+     * so the [SelectionBottomSheet]'s
+     * [kotlinx.coroutines.LaunchedEffect] keyed on
+     * the tick value re-fires and calls
+     * `sheetState.show()` — re-raising the sheet
+     * after a previous dismissal. See the kdoc on
+     * [com.pockref.app.model.PockRefUiState.selectionSheetShowTick]
+     * for the full M3 1.2 ModalBottomSheet
+     * rememberSaveable rationale.
+     */
+    data object TickSelectionSheet : PockRefAction
     data class MoveImage(val imageId: String, val delta: Offset) : PockRefAction
     data class CycleImageUnderPoint(val point: Offset) : PockRefAction
     data class BringImageToFront(val imageId: String) : PockRefAction
     data class PanCanvas(val delta: Offset) : PockRefAction
     data class ZoomCanvas(val scaleChange: Float, val focus: Offset) : PockRefAction
+    /**
+     * Set the canvas zoom to an absolute scale value.
+     * Used by the minimap long-press zoom slider to set
+     * the zoom level directly. The zoom anchors on
+     * the canvas visual center (same as [ZoomCanvas]).
+     */
+    data class SetCanvasZoom(val scale: Float) : PockRefAction
     /**
      * Programmatic canvas-offset set: the minimap composable dispatches this
      * when the user clicks a point in the minimap thumbnail. The [offset] is
@@ -83,6 +123,20 @@ sealed interface PockRefAction {
         val scaleChange: Float,
         val rotationChange: Float,
         val pan: Offset,
+        // V_NOW (user spec "双指缩放选中图片"): when
+        // [worldPivot] is non-null, it overrides the
+        // default AABB-centre pivot for the scale
+        // component. The reducer uses it as the
+        // scale anchor instead of
+        // [calculateTransformPivot], so the image
+        // scales around the two-finger centroid
+        // (in scene/world coordinates) rather than
+        // its own centre. Rotation still uses the
+        // AABB pivot for stability. Pass `null` to
+        // keep the legacy AABB-centre behaviour
+        // (used by one-shot [ScaleUp] / [ScaleDown]
+        // toolbar buttons that have no focal point).
+        val worldPivot: Offset? = null,
     ) : PockRefAction
     data class SetColorAdjust(
         val brightness: Float,
@@ -235,7 +289,6 @@ sealed interface PockRefAction {
      * [SetMenuBarsCollapsed] pattern but for the selection
      * toolbar's own idle timeout rather than window blur.
      */
-    data class SetSelectionToolbarHidden(val hidden: Boolean) : PockRefAction
 
     /**
      * V_NOW (focus-restore follow-up): window-focus restore
@@ -432,26 +485,32 @@ object GestureId {
     const val MOVE_IMAGE = "moveImage"
     const val PINCH_ZOOM = "pinchZoom"
     const val PINCH_ROTATE = "pinchRotate"
-    const val SLIDE_ZOOM = "slideZoom"
     const val TWO_FINGER_TAP = "twoFingerTap"
     const val THREE_FINGER_TAP = "threeFingerTap"
     const val DOUBLE_TAP_EMPTY = "doubleTapEmpty"
     val ALL: List<String> = listOf(
-        MOVE_IMAGE, PINCH_ZOOM, PINCH_ROTATE, SLIDE_ZOOM,
+        MOVE_IMAGE, PINCH_ZOOM, PINCH_ROTATE,
         TWO_FINGER_TAP, THREE_FINGER_TAP,
         DOUBLE_TAP_EMPTY,
     )
 
-    /** Human-readable label for the settings panel. The 7 keys
-     *  above each map to one of these. */
+    /** Human-readable label for the settings panel. */
     fun label(id: String): String = when (id) {
         MOVE_IMAGE -> "单指拖动"
         PINCH_ZOOM -> "双指捏合缩放"
         PINCH_ROTATE -> "双指旋转"
-        SLIDE_ZOOM -> "双指竖直滑动缩放"
         TWO_FINGER_TAP -> "双指点击(撤销)"
         THREE_FINGER_TAP -> "三指点击(重做)"
         DOUBLE_TAP_EMPTY -> "双击空白(适应窗口)"
         else -> id
     }
 }
+
+/**
+ * Returns `true` if the gesture identified by [id] is enabled
+ * in the current [gestureToggles] map. Missing keys default to
+ * `true` (so a freshly deserialised state that lacks the field
+ * still allows every gesture).
+ */
+fun isGestureEnabled(gestureToggles: Map<String, Boolean>, id: String): Boolean =
+    gestureToggles[id] ?: true

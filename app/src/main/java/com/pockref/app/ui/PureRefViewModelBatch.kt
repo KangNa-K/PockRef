@@ -44,6 +44,29 @@ internal fun imageRotatedFootprint(image: SceneImage): RotatedFootprint {
     return RotatedFootprint(width = aabbW, height = aabbH)
 }
 
+/**
+ * Base rotated AABB at scale=1.0 — the footprint a freshly
+ * imported image would have. Used by [executeAutoLayout] to
+ * back-solve the target `scale` from a desired AABB height:
+ *   `scale = targetAabbH / baseFootprint.height`
+ *
+ * [imageRotatedFootprint] includes the current [SceneImage.scale],
+ * so dividing by it would produce `scale / oldScale` instead of
+ * the absolute scale the image needs. This function avoids that
+ * by computing the AABB at scale=1.0.
+ */
+internal fun imageBaseFootprint(image: SceneImage): RotatedFootprint {
+    val w = image.displaySize.width
+    val h = image.displaySize.height
+    val theta = Math.toRadians(image.rotationDegrees.toDouble())
+    val absCos = kotlin.math.abs(kotlin.math.cos(theta)).toFloat()
+    val absSin = kotlin.math.abs(kotlin.math.sin(theta)).toFloat()
+    return RotatedFootprint(
+        width = absCos * w + absSin * h,
+        height = absSin * w + absCos * h,
+    )
+}
+
 internal data class RotatedFootprint(val width: Float, val height: Float)
 
 class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
@@ -417,13 +440,12 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
 
         if (n == 1) {
             val img = sorted[0]
-            // V12: scale off the rotated AABB so a 45°-rotated
-            // single image is fit by its corners (not by its
-            // axis-aligned rectangle, which would clip the
-            // corners past the viewport edge).
-            val fp = imageRotatedFootprint(img)
-            val scaleX = if (fp.width > 0f) availW / fp.width else 1f
-            val scaleY = if (fp.height > 0f) availH / fp.height else 1f
+            // Scale off the base rotated AABB (scale=1.0) so the
+            // result is an absolute scale, not relative to the
+            // image's current scale.
+            val baseFp = imageBaseFootprint(img)
+            val scaleX = if (baseFp.width > 0f) availW / baseFp.width else 1f
+            val scaleY = if (baseFp.height > 0f) availH / baseFp.height else 1f
             val scale = min(scaleX, scaleY)
             mainVm.mutateScene {
                 copy(
@@ -446,6 +468,12 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
         // corners never overlap a neighbor's AABB (which would
         // mean a visible collision in screen space).
         val footprints = sorted.map { imageRotatedFootprint(it) }
+        // Base footprints at scale=1.0, used to back-solve the
+        // target scale from the desired AABB height. [footprints]
+        // includes each image's current [SceneImage.scale]; dividing
+        // the target AABB by that would yield `newScale / oldScale`,
+        // not the absolute scale the image needs.
+        val baseFootprints = sorted.map { imageBaseFootprint(it) }
         // Aspect ratio of the AABB, not the unrotated rect.
         val aspects = footprints.map { fp ->
             if (fp.height > 0f) fp.width / fp.height else 1f
@@ -501,23 +529,20 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
             var curX = -rowWidth / 2f
             for (item in row.items) {
                 val img = sorted[item.imageIndex]
-                val fp = footprints[item.imageIndex]
+                val baseFp = baseFootprints[item.imageIndex]
                 // Target AABB dimensions for this cell.
                 val newAabbW = item.aspect * row.height * globalScale
                 val newAabbH = row.height * globalScale
-                // V12: back-solve the scene-space `scale` from the
-                // target AABB height (axis-aligned to avoid float
-                // drift between the two formulas). For an
-                // unrotated image, aabbH = scale·h, so this
-                // matches the old behavior. For a rotated image,
-                // aabbH = scale·(|sinθ|·w₀ + |cosθ|·h₀), which
-                // is LARGER than scale·h₀ — so the resulting
-                // scale will be smaller than the unrotated
-                // version. Visually: a 100×50 image rotated 45°
-                // gets a smaller scale (it occupies MORE pixels
-                // in the cell), so the cell's rotated corners
-                // stay inside the AABB target.
-                val scale = if (fp.height > 0f) newAabbH / fp.height else 1f
+                // Back-solve the scene-space `scale` from the
+                // target AABB height using the BASE footprint
+                // (scale=1.0).  aabbH = scale·baseHeight, so
+                // scale = aabbH / baseHeight. Using [footprints]
+                // (which includes the old scale) would produce
+                // `newScale / oldScale` instead of the absolute
+                // scale — the image would be too small if it was
+                // previously scaled up, or too large if scaled
+                // down.
+                val scale = if (baseFp.height > 0f) newAabbH / baseFp.height else 1f
                 val center = Offset(curX + newAabbW / 2f, curY + newAabbH / 2f)
                 result.add(img.copy(center = center, scale = scale))
                 curX += newAabbW + scaledGap

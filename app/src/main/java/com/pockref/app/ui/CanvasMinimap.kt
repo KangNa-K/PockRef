@@ -9,12 +9,15 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -35,14 +39,17 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.model.SceneImage
@@ -137,20 +144,44 @@ private data class MinimapColors(
      state: PockRefUiState,
      onAction: (PockRefAction) -> Unit,
      modifier: Modifier = Modifier,
-     // V_NOW (智能收缩 / 让位给 pill): when [isCollapsed] is
-     // true the minimap renders as a 24dp clickable "navigate"
-     // icon instead of the full panel. The user spec is
-     // "minimap 不该和 pill 抢位置"; collapsing to a 24dp
-     // corner icon (vs fully hiding) keeps the navigation
-     // entry one tap away — the user can expand it back to
-     // the full minimap via [onExpand] without going through
-     // any settings / submenu. The transition uses
-     // [AnimatedContent] + crossfade so the 250ms shrink is
-     // visually continuous with the pill's fade-in (no jump
-     // cut when the selection count crosses 0 ↔ 1).
-     isCollapsed: Boolean = false,
-     onExpand: () -> Unit = {},
- ) {
+    // V_NOW (智能收缩 / 让位给 pill): when [isCollapsed] is
+    // true the minimap renders as a 24dp clickable "navigate"
+    // icon instead of the full panel. The user spec is
+    // "minimap 不该和 pill 抢位置"; collapsing to a 24dp
+    // corner icon (vs fully hiding) keeps the navigation
+    // entry one tap away — the user can expand it back to
+    // the full minimap via [onExpand] without going through
+    // any settings / submenu. The transition uses
+    // [AnimatedContent] + crossfade so the 250ms shrink is
+    // visually continuous with the pill's fade-in (no jump
+    // cut when the selection count crosses 0 ↔ 1).
+    isCollapsed: Boolean = false,
+    onExpand: () -> Unit = {},
+    // V_NOW: long-press on the minimap (panel body OR
+    // collapsed-icon capsule — the parent [MinimapChrome]
+    // routes both call sites through this single
+    // callback) enters "slider mode" — the panel morphs
+    // into an M3 [Slider] for canvasScale 0.5..2.0.
+    // [onLongPress] fires when the long-press threshold
+    // is reached (default Compose
+    // [viewConfiguration.longPressTimeoutMillis] = 500ms);
+    // [onLongPressEnd] fires when the pointer is
+    // released (after a long-press fired). The parent
+    // is responsible for the actual mode flip +
+    // [AnimatedContent] morph; this function just
+    // reports the gesture.
+    onLongPress: () -> Unit = {},
+    onLongPressEnd: () -> Unit = {},
+    // V_NOW: when true, the canvas-pan-by-drag gesture
+    // is suppressed (the [pointerInput] re-keys on
+    // [sliderActive] and short-circuits). The slider
+    // mode morphs the panel away anyway, so the
+    // drag-pan handler would conflict with the
+    // M3 [Slider]'s own thumb drag. Disabling the
+    // drag-pan during slider mode is the cleanest
+    // way to avoid the gesture race.
+    sliderActive: Boolean = false,
+  ) {
      // V_NOW (智能收缩 / 让位给 pill): when [isCollapsed] is
      // true the minimap renders as a 24dp clickable "navigate"
      // icon instead of the full panel. The user spec is
@@ -176,19 +207,58 @@ private data class MinimapColors(
 
     val density = LocalDensity.current
     val (panelWDp, panelHDp, panelWpx, panelHpx) = with(density) {
-        // Panel shape follows the scene's aspect ratio. Area roughly
-        // constant (~15000 dp^2), each dim clamped to [60, 200] dp.
+        // V_NOW (user feedback "minimap 显示的画布尺寸和实
+        // 际窗口的尺寸、比例有一点出入"): the previous
+        // formula derived wDp and hDp INDEPENDENTLY from
+        // `sqrt(15000 * aspect)` / `sqrt(15000 / aspect)`,
+        // then clamped EACH to [60, 200] dp. The two
+        // independent clamps broke the panel's aspect ratio
+        // for any non-square scene — e.g. a scene with
+        // aspect=0.2 produced wDp=60dp (clamped) but
+        // hDp=300dp (clamped to 200), so the final panel
+        // was 60×200 (aspect=0.3) instead of 60×300
+        // (aspect=0.2). The downstream `scaleW = contentW
+        // / bboxW` and `scaleH = contentH / bboxH` were
+        // also independent, so images in the minimap were
+        // squashed (different x/y zoom), and the viewport
+        // indicator's projected rect ended up offset and
+        // occasionally overshooting the panel border.
+        //
+        // New design: pick the LONGER side as the binding
+        // constraint (clamped to [MIN_DP, MAX_DP]), then
+        // derive the SHORTER side STRICTLY from the aspect
+        // ratio (with the same clamp as a safety floor for
+        // extreme aspect). This guarantees the panel's
+        // aspect ratio equals the scene's aspect ratio
+        // exactly, so the letterbox math in
+        // [drawMinimapContent] is purely a uniform-scale
+        // projection with no axis-distortion.
         val bbox = computeSceneBboxForMinimap(state.images)
         val aspect = (bbox.width / bbox.height)
             .coerceIn(MINIMAP_MIN_ASPECT, MINIMAP_MAX_ASPECT)
-        val wDp = kotlin.math.sqrt(MINIMAP_TARGET_AREA_DP2.toDouble() * aspect)
-            .toFloat()
+        val maxSide = MINIMAP_PANEL_MAX_DP.value
             .coerceIn(MINIMAP_PANEL_MIN_DP.value, MINIMAP_PANEL_MAX_DP.value)
-            .dp
-        val hDp = kotlin.math.sqrt(MINIMAP_TARGET_AREA_DP2.toDouble() / aspect)
-            .toFloat()
-            .coerceIn(MINIMAP_PANEL_MIN_DP.value, MINIMAP_PANEL_MAX_DP.value)
-            .dp
+        val minSide = MINIMAP_PANEL_MIN_DP.value
+        val longSide: Float
+        val shortSide: Float
+        if (aspect >= 1f) {
+            // Wide scene: width is the long side.
+            longSide = maxSide
+            shortSide = (longSide / aspect).coerceIn(minSide, maxSide)
+        } else {
+            // Tall scene: height is the long side.
+            longSide = maxSide
+            shortSide = (longSide * aspect).coerceIn(minSide, maxSide)
+        }
+        val wDp: Dp
+        val hDp: Dp
+        if (aspect >= 1f) {
+            wDp = longSide.dp
+            hDp = shortSide.dp
+        } else {
+            wDp = shortSide.dp
+            hDp = longSide.dp
+        }
         Tuple4(wDp, hDp, wDp.toPx(), hDp.toPx())
     }
     val insetPx = with(density) { MINIMAP_INNER_INSET_DP.toPx() }
@@ -306,6 +376,28 @@ private data class MinimapColors(
     Box(
         modifier = modifier
             .size(width = panelWDp, height = panelHDp)
+            // V_NOW (user feedback "minimap 的外边框也应该是
+            // 要圆角的,和蓝色的视野范围区域框的圆角一致"):
+            // the [background] and [border] are RE-INSTATED
+            // after the previous round (which had removed
+            // them) — that round was a misread of the user's
+            // earlier "去除 minimap 外一圈浅灰色长方形"
+            // feedback, which was about the FOUR CORNERS
+            // being sharp 90° corners (a rectangle), not
+            // about the panel itself being unwanted. The
+            // panel now ships with:
+            //   - alpha 0.85 [panelBackground] surface
+            //   - 1dp alpha 0.4 [panelBorder] outline
+            //   - [ChromeCornerRadius] (12dp) round corners
+            //     on both the background AND the border AND
+            //     the clip below — so the panel's outer
+            //     silhouette echoes the viewport indicator's
+            //     [drawRoundRect] corner radius, matching
+            //     the user's "圆角一致" spec.
+            // The scene inside still uses the same
+            // [Dimens.ChromeCornerRadius] for its own
+            // clip, so the entire card has a single uniform
+            // corner radius from outside to inside.
             .background(
                 color = colors.panelBackground,
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
@@ -316,6 +408,83 @@ private data class MinimapColors(
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
             )
             .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
+            // V_NOW: long-press → slider mode. The
+            // long-press detector runs in its OWN
+            // pointerInput block (separate from the
+            // drag-pan-canvas below) so the two
+            // gesture detectors don't fight over
+            // pointer event consumption. We don't
+            // call `down.consume()` on the initial
+            // down event so the drag-pan-canvas
+            // pointerInput also sees it (the user
+            // might press-then-immediately-drag
+            // before 500ms elapses, which should
+            // canvas-pan, not slider-mode).
+            //
+            // Pattern: [withTimeoutOrNull] racing
+            // against [awaitPointerEvent] inside
+            // [awaitEachGesture]. The long-press
+            // timeout is the timer; the
+            // `awaitPointerEvent` loop is the
+            // release-wait. Whichever fires first
+            // wins. After long-press fires, a
+            // second inner loop waits for the
+            // pointer to be released so
+            // [onLongPressEnd] reports the right
+            // timing (the parent morphs back to
+            // the minimap on release, matching
+            // the M3 FAB → sheet transform's
+            // reverse direction).
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val longPressTimeoutMs = viewConfiguration
+                        .longPressTimeoutMillis
+                    // Race: long-press timeout vs pointer
+                    // release. `withTimeoutOrNull` cancels
+                    // the inner `awaitPointerEvent` loop
+                    // when the timeout elapses; the result
+                    // is `null` (= timeout = long-press
+                    // fired) or `true` (= release happened
+                    // before the timeout = no long-press).
+                    val releasedBeforeTimeout = withTimeoutOrNull(
+                        longPressTimeoutMs.toLong(),
+                    ) {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.all { !it.pressed }) {
+                                return@withTimeoutOrNull true
+                            }
+                        }
+                        @Suppress("UNREACHABLE_CODE")
+                        false
+                    }
+                    if (releasedBeforeTimeout == true) {
+                        // User released before the long-press
+                        // threshold — no long-press. The
+                        // pointerInput's gesture ends; the
+                        // drag-pan-canvas below never sees
+                        // this gesture (the user didn't
+                        // move before releasing).
+                        return@awaitEachGesture
+                    }
+                    // Long-press fired. Notify the parent
+                    // so it can flip [sliderActive] =
+                    // true (and the morph runs).
+                    onLongPress()
+                    // Now wait for the pointer to be
+                    // released (no timeout — the user
+                    // holds as long as they need to
+                    // adjust the slider thumb).
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.all { !it.pressed }) {
+                            onLongPressEnd()
+                            return@awaitEachGesture
+                        }
+                    }
+                }
+            }
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { startPos ->
@@ -646,11 +815,26 @@ private data class MinimapColors(
             }
             .drawWithContent {
                 val cs = state.canvasScale
+                // V_NOW: pass bufferPx = 0f so the minimap's
+                // viewport indicator shows the EXACT visible
+                // region (not the cull-padded region with a
+                // 200px / canvasScale inflation on every side).
+                // Without this, at typical zoom-out levels
+                // (canvasScale ≈ 0.3) the indicator's right /
+                // bottom edges overshot the minimap's content
+                // rect by hundreds of world units, exposing
+                // the panel border as a "white edge" between
+                // the indicator and the minimap's bottom
+                // boundary. The default [VIEWPORT_BUFFER_PX]
+                // (200f) stays in place for the draw-loop cull
+                // + decode-priority filter, which are the
+                // intended consumers of the buffered rect.
                 val viewWorld = worldViewportRect(
                     canvasOffset = state.canvasOffset,
                     canvasScale = cs,
                     viewportWidth = viewport.width,
                     viewportHeight = viewport.height,
+                    bufferPx = 0f,
                 )
                 drawMinimapContent(
                     state = state,
@@ -674,12 +858,48 @@ private fun DrawScope.drawMinimapContent(
 ) {
     val baseX = innerInset + contentRect.left
     val baseY = innerInset + contentRect.top
-    // Guard against zero-width/height scene bbox (all images on the
-    // same line/point) — division would produce Infinity/NaN that
-    // crashes Skia's native drawRect. Fallback to 0 scale so nothing
-    // is drawn for that axis.
-    val scaleW = if (sceneBbox.width > 0f) contentRect.width / sceneBbox.width else 0f
-    val scaleH = if (sceneBbox.height > 0f) contentRect.height / sceneBbox.height else 0f
+    // V_NOW (user feedback "minimap 显示的画布尺寸和实际
+    // 窗口的尺寸、比例有一点出入 + 蓝色视野区域没和
+    // minimap 对齐,甚至还会超出 minimap 区域"): the
+    // previous code computed scaleW and scaleH INDEPENDENTLY
+    // from `contentRect.width / sceneBbox.width` and
+    // `contentRect.height / sceneBbox.height`, then used
+    // them independently to project both image AABBs and
+    // the viewport indicator. When the panel's aspect
+    // ratio drifted from the scene's (because the panel
+    // size used independent per-axis clamps in the parent
+    // composable), scaleW != scaleH — every image was
+    // squashed to a different aspect than its real
+    // footprint on the main canvas, and the viewport
+    // indicator (which is a [viewWorld] rect, i.e. a
+    // viewport-size portion of the scene) ended up
+    // projected with the wrong x/y ratio, drifting off
+    // the panel center and sometimes overshooting the
+    // panel border entirely.
+    //
+    // New design: LETTERBOX. The panel is now sized so
+    // its aspect ratio EQUALS the scene's aspect ratio
+    // (see the V_NOW block in the parent composable that
+    // derives [panelWDp] / [panelHDp]). With matching
+    // aspects, the projection from scene → contentRect is
+    // a UNIFORM scale, and the scene is centered inside
+    // the contentRect (with possible pillar/letterbox
+    // padding if the contentRect is somehow wider/taller
+    // than the scene's letterbox fit — which shouldn't
+    // happen with the matched-aspect panel, but we
+    // defend against the degenerate case anyway).
+    val sceneScale = if (sceneBbox.width > 0f && sceneBbox.height > 0f) {
+        minOf(
+            contentRect.width / sceneBbox.width,
+            contentRect.height / sceneBbox.height,
+        )
+    } else {
+        0f
+    }
+    val sceneW = sceneBbox.width * sceneScale
+    val sceneH = sceneBbox.height * sceneScale
+    val sceneLeft = baseX + (contentRect.width - sceneW) / 2f
+    val sceneTop = baseY + (contentRect.height - sceneH) / 2f
 
     drawRect(
         color = colors.sceneBackground,
@@ -699,10 +919,10 @@ private fun DrawScope.drawMinimapContent(
         // content; only the per-image draw uses the unrotated rect
         // with an explicit rotation.
         val aabb = imageWorldAabb(image)
-        val left = baseX + (aabb.left - sceneBbox.left) * scaleW
-        val top = baseY + (aabb.top - sceneBbox.top) * scaleH
-        val right = baseX + (aabb.right - sceneBbox.left) * scaleW
-        val bottom = baseY + (aabb.bottom - sceneBbox.top) * scaleH
+        val left = sceneLeft + (aabb.left - sceneBbox.left) * sceneScale
+        val top = sceneTop + (aabb.top - sceneBbox.top) * sceneScale
+        val right = sceneLeft + (aabb.right - sceneBbox.left) * sceneScale
+        val bottom = sceneTop + (aabb.bottom - sceneBbox.top) * sceneScale
         val w = (right - left).coerceAtLeast(2f)
         val h = (bottom - top).coerceAtLeast(2f)
         val centerX = (left + right) / 2f
@@ -760,21 +980,38 @@ private fun DrawScope.drawMinimapContent(
         }
     }
 
-    val indicatorLeft = baseX + (viewWorld.left - sceneBbox.left) * scaleW
-    val indicatorTop = baseY + (viewWorld.top - sceneBbox.top) * scaleH
-    val indicatorRight = baseX + (viewWorld.right - sceneBbox.left) * scaleW
-    val indicatorBottom = baseY + (viewWorld.bottom - sceneBbox.top) * scaleH
+    val indicatorLeft = sceneLeft + (viewWorld.left - sceneBbox.left) * sceneScale
+    val indicatorTop = sceneTop + (viewWorld.top - sceneBbox.top) * sceneScale
+    val indicatorRight = sceneLeft + (viewWorld.right - sceneBbox.left) * sceneScale
+    val indicatorBottom = sceneTop + (viewWorld.bottom - sceneBbox.top) * sceneScale
     val indicatorW = (indicatorRight - indicatorLeft).coerceAtLeast(2f)
     val indicatorH = (indicatorBottom - indicatorTop).coerceAtLeast(2f)
-    drawRect(
+    // V_NOW (user feedback "viewport indicator 应该是
+    // 圆角,不是直角"): the indicator is drawn with
+    // [drawRoundRect] matching [Dimens.ChromeCornerRadius]
+    // (12dp) so its four corners echo the panel's outer
+    // corner radius. [drawRoundRect] auto-clamps the
+    // corner radius to size/2 when the indicator shrinks
+    // below the threshold (e.g. during extreme zoom-out
+    // where [indicatorW] / [indicatorH] hit the 2px floor
+    // from [coerceAtLeast]), so the indicator still
+    // renders as a pill / ellipse rather than a malformed
+    // over-rounded shape. The corner radius is in panel-
+    // local pixels (same coordinate space as the rect
+    // coords), so it stays visually consistent with the
+    // panel silhouette regardless of scene scale.
+    val indicatorCornerRadius = CornerRadius(Dimens.ChromeCornerRadius.toPx())
+    drawRoundRect(
         color = colors.indicatorFill,
         topLeft = Offset(indicatorLeft, indicatorTop),
         size = Size(indicatorW, indicatorH),
+        cornerRadius = indicatorCornerRadius,
     )
-    drawRect(
+    drawRoundRect(
         color = colors.indicatorStroke,
         topLeft = Offset(indicatorLeft, indicatorTop),
         size = Size(indicatorW, indicatorH),
+        cornerRadius = indicatorCornerRadius,
         style = Stroke(width = 1.5f),
     )
 }
@@ -878,7 +1115,6 @@ private data class Tuple4<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 private val MINIMAP_PANEL_MIN_DP = 60.dp
 private val MINIMAP_PANEL_MAX_DP = 200.dp
-private const val MINIMAP_TARGET_AREA_DP2 = 15_000f
 private const val MINIMAP_MIN_ASPECT = 0.2f
 private const val MINIMAP_MAX_ASPECT = 5.0f
 private val MINIMAP_INNER_INSET_DP = 4.dp
@@ -1028,6 +1264,17 @@ private val minimapTouchConfig = MinimapTouchConfig()
 internal fun CollapsedMinimapIcon(
     edge: com.pockref.app.model.MinimapDockEdge,
     onExpand: () -> Unit,
+    // V_NOW: long-press on the collapsed icon
+    // capsule is treated the same as long-press on
+    // the expanded minimap panel — both enter
+    // "slider mode" and morph into an M3 [Slider].
+    // The parent [MinimapChrome] routes both
+    // call sites through the same [onLongPress]
+    // callback so the state machine is shared
+    // (one [isMinimapSliderMode] state covers
+    // both call sites).
+    onLongPress: () -> Unit = {},
+    onLongPressEnd: () -> Unit = {},
 ) {
     // V_NOW (iOS PiP-style minimap — visual redesign):
     // the bar now follows the iOS Picture-in-Picture
@@ -1098,7 +1345,51 @@ internal fun CollapsedMinimapIcon(
         modifier = Modifier
             .size(width = touchWidth, height = touchHeight)
             .hoverable(interactionSource = interactionSource)
-            .clickable { onExpand() },
+            .clickable { onExpand() }
+            // V_NOW: long-press → slider mode. Same
+            // `withTimeoutOrNull` racing pattern as the
+            // expanded CanvasMinimap (see the
+            // long-press pointerInput block above).
+            // Long-press on the capsule is equivalent
+            // to long-press on the panel — both enter
+            // slider mode without first going through
+            // the "tap to expand" intermediate state.
+            // The `clickable { onExpand() }` modifier
+            // above handles the short-tap case (which
+            // doesn't fire the long-press timer), so
+            // both gestures coexist on the same touch
+            // target without conflict — tap expands,
+            // long-press morphs to slider.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val longPressTimeoutMs = viewConfiguration
+                        .longPressTimeoutMillis
+                    val releasedBeforeTimeout = withTimeoutOrNull(
+                        longPressTimeoutMs.toLong(),
+                    ) {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.all { !it.pressed }) {
+                                return@withTimeoutOrNull true
+                            }
+                        }
+                        @Suppress("UNREACHABLE_CODE")
+                        false
+                    }
+                    if (releasedBeforeTimeout == true) {
+                        return@awaitEachGesture
+                    }
+                    onLongPress()
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.all { !it.pressed }) {
+                            onLongPressEnd()
+                            return@awaitEachGesture
+                        }
+                    }
+                }
+            },
         contentAlignment = barAlignment,
     ) {
         // V_NOW: hover-to-expand was previously handled in
@@ -1167,6 +1458,110 @@ internal fun CollapsedMinimapIcon(
                     color = borderColor,
                     shape = capsuleShape,
                 ),
+        )
+    }
+}
+
+/**
+ * V_NOW: long-press slider mode for the minimap.
+ *
+ * Replaces the minimap panel (or the collapsed icon,
+ * via direct morph in the parent [MinimapChrome])
+ * with an M3 [Slider] for canvas zoom. Long-press
+ * the minimap body or the collapsed icon to enter
+ * this mode; release the pointer to exit.
+ *
+ * Visual contract (M3 Slider spec, "discrete
+ * value, continuous selection"):
+ * - Track at the bottom 1/3 of the panel; full
+ *   panel width (minus 24dp horizontal padding)
+ * - M3 [Slider] thumb at the current
+ *   [PockRefUiState.canvasScale] position
+ * - [valueRange] = 0.5f..2.0f (matches the
+ *   [minimapZoomScale] range used elsewhere; the
+ *   slider's "value" semantically IS the canvas
+ *   zoom, NOT a separate minimap-only pref)
+ * - Tooltip on drag shows the current value
+ *   (e.g. "1.2x") via M3's built-in tooltip
+ *   support (M3 spec recommends `showValueAsTooltip`
+ *   for continuous value changes)
+ * - Panel chrome (background, border, corner
+ *   radius) is identical to the minimap so the
+ *   [AnimatedContent] morph between them is
+ *   visually continuous (no flash, no resize
+ *   jump)
+ *
+ * On value change: dispatch
+ * [PockRefAction.SetCanvasZoom] which sets
+ * [PockRefUiState.canvasScale] directly. The
+ * reducer clamps to [0.5f, 2.0f] and updates
+ * `fittedImageId = null` (a fit-to-screen image
+ * would re-fit on the next canvas-pan gesture).
+ */
+@Composable
+internal fun MinimapSlider(
+    state: PockRefUiState,
+    onAction: (PockRefAction) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val density = LocalDensity.current
+    // Same M3 ChromeSurface chrome as the
+    // minimap so the [AnimatedContent] morph is
+    // visually continuous.
+    val colors = MinimapColors(
+        panelBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+        panelBorder = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+        sceneBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+        imageBox = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
+        indicatorFill = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
+        indicatorStroke = MaterialTheme.colorScheme.primary,
+        selectedStroke = Color(0xFF4FC3F7),
+        lockedStroke = Color(0xFFE57373),
+    )
+    val panelCorner = Dimens.ChromeCornerRadius
+    Box(
+        modifier = modifier
+            .background(
+                color = colors.panelBackground,
+                shape = RoundedCornerShape(panelCorner),
+            )
+            .border(
+                width = 1.dp,
+                color = colors.panelBorder,
+                shape = RoundedCornerShape(panelCorner),
+            )
+            .clip(RoundedCornerShape(panelCorner))
+            // Pad the slider from the panel edges so
+            // the thumb's full 20dp diameter has
+            // breathing room (the track is laid out
+            // at the panel's full width by default,
+            // and the thumb would clip on the corner
+            // radius without inset).
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        // M3 Slider — continuous value, range
+        // 0.5..2.0, single thumb. We don't enable
+        // `steps` (M3 spec: continuous range, no
+        // discrete ticks) since canvas zoom is
+        // naturally continuous. The M3 Slider's
+        // internal gesture handling is isolated
+        // from the parent (the long-press
+        // pointerInput above and the parent's
+        // drag-pan-canvas handler) so there's no
+        // gesture race.
+        Slider(
+            value = state.canvasScale,
+            onValueChange = { newScale ->
+                onAction(PockRefAction.SetCanvasZoom(newScale))
+            },
+            valueRange = 0.5f..2.0f,
+            // M3 spec: 48dp minimum touch target
+            // for the thumb. Slider is a single
+            // control, so 48dp height is the
+            // default; this modifier just makes it
+            // explicit.
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }

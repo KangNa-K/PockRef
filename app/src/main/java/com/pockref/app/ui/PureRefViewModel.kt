@@ -436,6 +436,45 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             PockRefAction.CloseScene -> sceneController.onCloseScene()
             is PockRefAction.SelectImage -> transformController.selectImage(action.imageId)
             PockRefAction.Deselect -> transformController.deselect()
+            is PockRefAction.FlashSelection -> _uiState.update {
+                // V_NOW (P2-C3): set the one-shot
+                // flash marker so the renderer can
+                // briefly tint the matching image.
+                // The marker is allowed to naturally
+                // expire; the renderer reads
+                // `now - atMs` per frame and renders
+                // alpha = 0 once the elapsed exceeds
+                // 200ms, so no reducer-side clear is
+                // needed. See
+                // [PockRefUiState.selectionFlash]
+                // for the full rationale.
+                it.copy(
+                    selectionFlash = com.pockref.app.model.SelectionFlash(
+                        imageId = action.imageId,
+                        atMs = System.currentTimeMillis(),
+                    ),
+                )
+            }
+            PockRefAction.TickSelectionSheet -> _uiState.update {
+                // V_NOW (SelectionBottomSheet "弹不出来"
+                // 修复): bump the monotonically
+                // increasing counter that the
+                // [SelectionBottomSheet] keys a
+                // [kotlinx.coroutines.LaunchedEffect]
+                // on. The counter changes on every
+                // image-tap event, which forces
+                // `sheetState.show()` to be called
+                // even after the user has previously
+                // dismissed the sheet (where the M3
+                // 1.2 ModalBottomSheet's built-in
+                // auto-show LaunchedEffect has
+                // already fired once and won't re-
+                // fire because the SheetState
+                // instance is the same). See
+                // [PockRefUiState.selectionSheetShowTick]
+                // for the full rationale.
+                it.copy(selectionSheetShowTick = it.selectionSheetShowTick + 1)
+            }
             PockRefAction.DismissBottomRightPanel -> _uiState.update {
                 if (it.bottomRightPanelExpanded) {
                     it.copy(bottomRightPanelExpanded = false)
@@ -462,6 +501,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(canvasOffset = action.offset, fittedImageId = null)
             }
             is PockRefAction.ZoomCanvas -> transformController.zoomCanvas(action.scaleChange, action.focus)
+            is PockRefAction.SetCanvasZoom -> transformController.setCanvasZoom(action.scale)
             is PockRefAction.TransformSelectedImage -> transformController.transformSelectedImage(action.scaleChange, action.rotationChange, action.pan)
             is PockRefAction.SetColorAdjust -> transformController.updateColorAdjust(action.brightness, action.contrast, action.saturation)
             PockRefAction.RotateLeft -> transformController.rotateSelected(-90f)
@@ -552,7 +592,6 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.SetMinimapZoomScale -> setMinimapZoomScale(action.scale)
             PockRefAction.SetMenuBarsCollapsed -> collapseMenuBarsOnWindowBlur()
             PockRefAction.RestoreMenuBarsOnFocus -> restoreMenuBarsOnWindowFocus()
-            is PockRefAction.SetSelectionToolbarHidden -> setSelectionToolbarHidden(action.hidden)
             is PockRefAction.SetSettingsSheetOpen -> setSettingsSheetOpen(action.open)
             is PockRefAction.SetSettingsTab -> setSettingsTab(action.tab)
             is PockRefAction.SnapJustCommitted -> setSnapHighlight(action.highlight)
@@ -563,15 +602,6 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.SetSpenMode -> setSpenMode(action.mode)
             is PockRefAction.SetAutoSaveIntervalMs -> setAutoSaveIntervalMs(action.intervalMs)
             is PockRefAction.SetAutoSaveEnabled -> setAutoSaveEnabled(action.enabled)
-            is PockRefAction.ShowContextMenu -> _uiState.update {
-                it.copy(contextMenu = com.pockref.app.model.ContextMenuState(
-                    anchorScreen = action.anchorScreen,
-                    targetImageIds = action.targetImageIds,
-                ))
-            }
-            PockRefAction.DismissContextMenu -> _uiState.update {
-                it.copy(contextMenu = null)
-            }
         }
     }
 
@@ -816,10 +846,6 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun setSelectionToolbarHidden(hidden: Boolean) {
-        if (_uiState.value.selectionToolbarHidden == hidden) return
-        _uiState.update { it.copy(selectionToolbarHidden = hidden) }
-    }
 
     private fun setBackgroundPreset(preset: BackgroundPreset) {
         if (preset == BackgroundPreset.Custom) {
