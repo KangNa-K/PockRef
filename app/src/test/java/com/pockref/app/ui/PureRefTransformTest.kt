@@ -185,7 +185,47 @@ class PockRefTransformTest {
     }
 
     @Test
-    fun transform_scaleClampedToMaxTen() {
+    fun transform_scaleAroundArbitraryPivot_keepsPivotFixed() {
+        // V_NOW (user spec "双指缩放选中图片"): the
+        // dispatch layer passes the two-finger
+        // centroid (in world coordinates) as the
+        // scale pivot. Verifies that whatever
+        // pivot we hand the helper, the pivot
+        // point itself doesn't move under uniform
+        // scale + identity rotation. We do this
+        // by comparing the helper's pre/post
+        // output for a 2× scale around the
+        // midpoint of the image (not its centre)
+        // — the midpoint must be invariant
+        // while the centre must double its
+        // distance from the pivot.
+        val a = img(
+            "a",
+            center = Offset(20f, 0f),
+            displayW = 10f,
+            displayH = 10f,
+        )
+        val pivot = Offset(0f, 0f)
+        val out = transformImageAroundPivot(
+            image = a,
+            pivot = pivot,
+            scaleChange = 2f,
+            rotationChange = 0f,
+            pan = Offset.Zero,
+        )
+        // Centre doubled (10 → 20 from pivot).
+        assertEquals(40f, out.center.x, epsilon)
+        assertEquals(0f, out.center.y, epsilon)
+        assertEquals(2f, out.scale, epsilon)
+    }
+
+    @Test
+    fun transform_scaleClampedToMaxEight() {
+        // V_NOW: per-image scale clamp range is now
+        // [0.1, 8.0] (= 10%..800% of the image's
+        // intrinsic size) per the user's spec
+        // "缩放范围限制为图片原始尺寸的 10%（最小）
+        // 至 800%（最大）". Was [0.05, 10].
         val a = img("a", scale = 1f)
         val out = transformImageAroundPivot(
             image = a,
@@ -194,11 +234,12 @@ class PockRefTransformTest {
             rotationChange = 0f,
             pan = Offset.Zero,
         )
-        assertEquals(10f, out.scale, epsilon)
+        assertEquals(8.0f, out.scale, epsilon)
     }
 
     @Test
-    fun transform_scaleClampedToMinZeroPointZeroFive() {
+    fun transform_scaleClampedToMinZeroPointOne() {
+        // V_NOW: see transform_scaleClampedToMaxEight.
         val a = img("a", scale = 1f)
         val out = transformImageAroundPivot(
             image = a,
@@ -207,7 +248,7 @@ class PockRefTransformTest {
             rotationChange = 0f,
             pan = Offset.Zero,
         )
-        assertEquals(0.05f, out.scale, epsilon)
+        assertEquals(0.1f, out.scale, epsilon)
     }
 
     @Test
@@ -311,19 +352,21 @@ class PockRefTransformTest {
 
     @Test
     fun groupScaleFactor_oneClamped_scalesOthersProportionally() {
-        // a is at scale 9.5; factor 2.0 would clamp to 10.
-        // effective = 10 / 9.5 ≈ 1.0526
-        val a = img("a", scale = 9.5f)
+        // V_NOW: clamp range is [0.1, 8.0]. a is at
+        // scale 7.5; factor 2.0 would clamp to 8.0.
+        // effective = 8.0 / 7.5 ≈ 1.0667.
+        val a = img("a", scale = 7.5f)
         val b = img("b", scale = 1f)
         val factor = computeGroupScaleFactor(listOf(a, b), 2f)
-        assertEquals(10f / 9.5f, factor, epsilon)
+        assertEquals(8.0f / 7.5f, factor, epsilon)
     }
 
     @Test
     fun groupScaleFactor_clampsDownwardWhenTooSmall() {
-        // a is at scale 0.05; factor 0.5 would clamp to 0.025 → 0.05.
-        // effective = 0.05 / 0.05 = 1.0 (i.e. "don't scale a at all").
-        val a = img("a", scale = 0.05f)
+        // V_NOW: clamp range is [0.1, 8.0]. a is at
+        // scale 0.1; factor 0.5 would clamp to 0.05 → 0.1.
+        // effective = 0.1 / 0.1 = 1.0 (i.e. "don't scale a at all").
+        val a = img("a", scale = 0.1f)
         val b = img("b", scale = 1f)
         val factor = computeGroupScaleFactor(listOf(a, b), 0.5f)
         assertEquals(1f, factor, epsilon)

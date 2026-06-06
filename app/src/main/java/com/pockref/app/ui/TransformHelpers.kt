@@ -148,7 +148,13 @@ internal fun transformImageAroundPivot(
     if (!hasScale && !hasRotation) {
         return image.copy(center = image.center + pan)
     }
-    val newScale = (image.scale * scaleChange).coerceIn(0.05f, 10f)
+    // V_NOW (user spec "双指缩放选中图片"): per-image scale
+    // clamped to [0.1, 8.0] = 10% .. 800% of the image's
+    // intrinsic size. This matches the spec's bound (the
+    // previous 0.05..10 was a wider safety range that let
+    // images become tiny / huge and destabilised the
+    // floating layer's aspect math).
+    val newScale = (image.scale * scaleChange).coerceIn(0.1f, 8.0f)
     val effectiveScale = if (hasScale) newScale / image.scale else 1f
 
     val rad = if (hasRotation) Math.toRadians(rotationChange.toDouble()) else 0.0
@@ -436,7 +442,11 @@ internal fun scaleImageAroundPivot(
     pivot: Offset,
     factor: Float,
 ): SceneImage {
-    val newScale = (image.scale * factor).coerceIn(0.05f, 10f)
+    // V_NOW: clamp range updated to [0.1, 8.0] = 10%..800% of
+    // the image's intrinsic size (was [0.05, 10]). Keeps the
+    // scale-only helper consistent with
+    // [transformImageAroundPivot].
+    val newScale = (image.scale * factor).coerceIn(0.1f, 8.0f)
     val effectiveFactor = newScale / image.scale
     val dx = image.center.x - pivot.x
     val dy = image.center.y - pivot.y
@@ -507,7 +517,7 @@ internal fun reorderZIndex(
 
 /**
  * Compute the "effective" scale factor when scaling multiple images at
- * once. If any image would clamp against the [0.05, 10] range, the
+ * once. If any image would clamp against the [0.1, 8.0] range, the
  * effective factor for the group is reduced so the most-clamped image
  * lands exactly at the boundary. Mirrors the production behavior in
  * [PockRefViewModelTransform.scaleSelected] / `transformSelectedImage`.
@@ -517,7 +527,7 @@ internal fun computeGroupScaleFactor(
     requested: Float,
 ): Float {
     if (selected.isEmpty()) return 1f
-    val newScaleByImage = selected.associate { it.id to (it.scale * requested).coerceIn(0.05f, 10f) }
+    val newScaleByImage = selected.associate { it.id to (it.scale * requested).coerceIn(0.1f, 8.0f) }
     val anyClamped = selected.any { img ->
         val raw = img.scale * requested
         val clamped = newScaleByImage[img.id]!!

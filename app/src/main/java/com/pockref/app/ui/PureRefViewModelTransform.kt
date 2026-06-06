@@ -372,6 +372,34 @@ internal fun computeSceneDiff(oldState: PockRefUiState, newState: PockRefUiState
  * changed. Returns `null` when nothing material changed.
  */
 private fun buildImageUpdate(oldImg: SceneImage, newImg: SceneImage): SceneDiff.UpdateImage? {
+    // V_NOW: pixel-level fields (imageBytes, intrinsicWidth/Height,
+    // imageByteOffset/Length, mimeType, name, locked, zIndex) are NOT
+    // tracked by UpdateImage. If any of them changed (e.g. after a crop
+    // operation), the field-level diff would lose those changes on undo —
+    // the user would see a stretched image because displaySize reverts
+    // but the bitmap bytes / intrinsic dimensions stay at the cropped
+    // values. Return null so computeSceneDiff falls through to
+    // ReplaceImages, which preserves the full SceneImage on both sides.
+    if (oldImg.intrinsicWidth != newImg.intrinsicWidth ||
+        oldImg.intrinsicHeight != newImg.intrinsicHeight ||
+        oldImg.imageByteOffset != newImg.imageByteOffset ||
+        oldImg.imageByteLength != newImg.imageByteLength ||
+        oldImg.mimeType != newImg.mimeType ||
+        oldImg.locked != newImg.locked ||
+        oldImg.zIndex != newImg.zIndex
+    ) {
+        return null
+    }
+    // imageBytes is a ByteArray — compare by content to avoid O(n²)
+    // structural equality on every diff, but only when the sizes differ
+    // (same size + same intrinsic dims → bytes are almost certainly the
+    // same; different size → definitely changed).
+    if (oldImg.imageBytes.size != newImg.imageBytes.size &&
+        oldImg.imageBytes.isNotEmpty() && newImg.imageBytes.isNotEmpty()
+    ) {
+        return null
+    }
+
     val oldCenter = if (oldImg.center != newImg.center) oldImg.center else null
     val oldSize = if (oldImg.displaySize != newImg.displaySize) oldImg.displaySize else null
     val oldRot = if (oldImg.rotationDegrees != newImg.rotationDegrees) oldImg.rotationDegrees else null
@@ -560,7 +588,6 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     // inactivity timer. Tapping an image is
                     // the explicit user action to bring it
                     // back.
-                    selectionToolbarHidden = false,
                 )
             }
             val updated = state.selectedImageIds.toMutableSet().apply {
@@ -659,6 +686,19 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         val nextId = stacked[nextIndex]
         selectImage(nextId)
         bringImageToFront(nextId)
+        // V_NOW: in single-select mode, every image tap
+        // should pop the SelectionBottomSheet. In
+        // multi-select mode, tapping toggles selection
+        // without popping the sheet — the sheet only
+        // appears on long-press of an already-selected
+        // image (handled in the pointer input gesture
+        // handler). Bump the show-tick only when NOT in
+        // multi-select / box-select mode.
+        if (!state.multiSelectMode && !state.boxSelectMode) {
+            mainVm._uiState.update {
+                it.copy(selectionSheetShowTick = it.selectionSheetShowTick + 1)
+            }
+        }
     }
 
     internal fun beginImageDrag(imageId: String) {
@@ -938,8 +978,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     }
 
     internal fun zoomCanvas(scaleChange: Float, focus: Offset) {
-        // [focus] parameter is intentionally ignored. The two-finger
-        // vertical SLIDE gesture (PockRefApp.kt) and the no-selection
+        // [focus] parameter is intentionally ignored. The no-selection
         // pinch / rotate gestures all dispatch [ZoomCanvas] expecting
         // the zoom to anchor on the **canvas geometric center** —
         // that is the only behaviour the user spec'd ("固定为画布可视
@@ -971,7 +1010,21 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         }
     }
 
-    internal fun transformSelectedImage(scaleChange: Float, rotationChange: Float, pan: Offset) {
+    /**
+     * Set canvas zoom to an absolute scale value, anchoring
+     * on the canvas visual center. Used by the minimap
+     * long-press zoom slider.
+     */
+    internal fun setCanvasZoom(scale: Float) {
+        mainVm._uiState.update { state ->
+            val newScale = scale.coerceIn(0.1f, 10f)
+            val scaleRatio = newScale / state.canvasScale
+            val newOffset = state.canvasOffset * scaleRatio
+            state.copy(canvasScale = newScale, canvasOffset = newOffset, fittedImageId = null)
+        }
+    }
+
+    internal fun transformSelectedImage(scaleChange: Float, rotationChange: Float, pan: Offset, worldPivot: Offset? = null) {
         val stateBefore = mainVm._uiState.value
         val allSelectedIds = stateBefore.selectedImageIds.ifEmpty {
             stateBefore.selectedImageId?.let(::setOf).orEmpty()
@@ -1066,19 +1119,134 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
             val selected = images.filter { it.id in selectedIds }
             if (selected.isEmpty()) return@updateSceneForGesture this
 
-            val pivot = calculateTransformPivot(selected)
+            // V_NOW (user spec "双指缩放选中图片"): the
+            // scale pivot. When [worldPivot] is provided
+            // (the two-finger pinch path passes the centroid
+            // in world coordinates), we use it as the
+            // scale anchor instead of the AABB-centre
+            // default. Multi-select still pivots the
+            // whole group at its AABB centre and then
+            // adds a scene-space pan offset to translate
+            // the post-scale AABB centre onto
+            // [worldPivot] — that way all members of the
+            // group scale around the same world point.
+            //
+            // AABB FALLBACK: if the centroid is wildly
+            // outside the AABB (e.g. the user pinched
+            // far from the selection in canvas
+            // background), we treat it as "anchored at
+            // the centroid" but quietly use the AABB
+            // centre instead — otherwise the pan
+            // correction would translate the group by
+            // a huge amount and visibly "snap" the
+            // selection to the finger location. The
+            // threshold is 1.5× the AABB half-diagonal,
+            // which gives the user some slack (pinch
+            // just outside the AABB still works) but
+            // caps the worst-case drift.
+            val aabb = if (selected.size == 1) {
+                val s = selected.first()
+                val hW = s.displaySize.width * s.scale / 2f
+                val hH = s.displaySize.height * s.scale / 2f
+                AabbBox(s.center, hW, hH)
+            } else {
+                var left = Float.POSITIVE_INFINITY
+                var right = Float.NEGATIVE_INFINITY
+                var top = Float.POSITIVE_INFINITY
+                var bottom = Float.NEGATIVE_INFINITY
+                for (img in selected) {
+                    val hW = img.displaySize.width * img.scale / 2f
+                    val hH = img.displaySize.height * img.scale / 2f
+                    val l = img.center.x - hW; val r = img.center.x + hW
+                    val t = img.center.y - hH; val b = img.center.y + hH
+                    if (l < left) left = l
+                    if (r > right) right = r
+                    if (t < top) top = t
+                    if (b > bottom) bottom = b
+                }
+                AabbBox(
+                    center = Offset((left + right) / 2f, (top + bottom) / 2f),
+                    halfW = (right - left) / 2f,
+                    halfH = (bottom - top) / 2f,
+                )
+            }
             val effectiveScale = computeGroupScaleFactor(selected, scaleChange)
-            val panInScene = pan / canvasScale
+            val (scalePivot, extraPanInScene) = if (worldPivot == null) {
+                // Legacy path — toolbar [ScaleUp] /
+                // [ScaleDown] buttons don't pass a
+                // focal point, so the AABB centre is
+                // the only sensible anchor.
+                Pair(aabb.center, Offset.Zero)
+            } else {
+                val pivotDelta = worldPivot - aabb.center
+                val aabbDiag = kotlin.math.hypot(aabb.halfW, aabb.halfH)
+                val worldTooFar = pivotDelta.getDistance() > aabbDiag * 1.5f
+                if (worldTooFar) {
+                    // Centroid is far outside the AABB
+                    // — fall back to AABB centre to
+                    // avoid a huge "snap-to-finger"
+                    // translation when the user
+                    // releases. The user's pinch was
+                    // still honored at the rate of
+                    // [scaleChange] around the AABB
+                    // centre.
+                    Pair(aabb.center, Offset.Zero)
+                } else {
+                    // Pivot at worldPivot. For
+                    // multi-select, scale around the
+                    // AABB centre then pan so the
+                    // post-scale AABB centre lands on
+                    // [worldPivot] (the centroid the
+                    // user's fingers were on).
+                    //
+                    // The pivot "moves" from aabb.center
+                    // to worldPivot under scale [s];
+                    // the displacement is
+                    // (worldPivot - aabb.center) in
+                    // world units. The compensation
+                    // that keeps [worldPivot] visually
+                    // fixed is:
+                    //   pan = (aabb.center - worldPivot) * (1 - 1/s)
+                    //       = (aabb.center - worldPivot) * (s-1) / s
+                    // For single-image we just use
+                    // [worldPivot] as the pivot
+                    // directly (no pan correction
+                    // needed — [transformImageAroundPivot]
+                    // already keeps the pivot fixed).
+                    if (selected.size == 1) {
+                        Pair(worldPivot, Offset.Zero)
+                    } else {
+                        val pan = (aabb.center - worldPivot) * ((effectiveScale - 1f) / effectiveScale)
+                        Pair(aabb.center, pan)
+                    }
+                }
+            }
+            val panInScene = pan / canvasScale + extraPanInScene
 
             copy(
                 images = images.map { image ->
                     if (image.id !in selectedIds) image
-                    else transformImageAroundPivot(image, pivot, effectiveScale, effectiveDelta, panInScene)
+                    else transformImageAroundPivot(image, scalePivot, effectiveScale, effectiveDelta, panInScene)
                 },
                 angleSnapGuide = newGuide,
             )
         }
     }
+
+    /**
+     * V_NOW (user spec "双指缩放选中图片"): local helper
+     * struct that pairs an AABB's centre with its half-
+     * extent on each axis. Used by the transform pivot
+     * selection logic above to decide whether the
+     * two-finger centroid is close enough to the AABB
+     * to be used as a pivot, or far enough that we
+     * should silently fall back to the AABB centre.
+     */
+    private data class AabbBox(
+        val center: Offset,
+        val halfW: Float,
+        val halfH: Float,
+    )
 
     /**
      * Arm a coroutine on the main VM's `viewModelScope` that fires
