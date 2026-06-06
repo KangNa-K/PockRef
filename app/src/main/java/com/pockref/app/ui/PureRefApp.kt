@@ -8,6 +8,8 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.view.HapticFeedbackConstants
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResultLauncher
@@ -88,8 +90,15 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LinearScale
 import androidx.compose.material.icons.rounded.Lock
-// LockOpen import removed: V_NOW unified the lock button to
-// always use the closed padlock with active=blue. The only
+import androidx.compose.material.icons.rounded.LockOpen
+// LockOpen import: V_NOW the single-image-locked
+// panel uses the OPEN padlock to convey "tap to
+// unlock" — distinct from the multi-select panel
+// which uses the closed padlock (active=blue when
+// the whole batch is locked). The two states are
+// visually distinguishable so the user can never be
+// in doubt about whether tapping the button will
+// lock or unlock.
 // previous LockOpen usage was the all-locked sub-mode at
 // the old line 1312; now that branch also uses Lock with
 // active=allLocked.
@@ -149,11 +158,16 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -166,6 +180,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.shadow
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -195,6 +211,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.ui.graphics.ImageBitmap
@@ -222,18 +239,16 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
-
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
-
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateOffsetAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.shrinkHorizontally
@@ -241,7 +256,9 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -289,9 +306,56 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-private enum class ImageTransformMode { NONE, SLIDE, SCALE, ROTATE }
-private const val SCALE_THRESHOLD = 12f
-private const val ROTATE_THRESHOLD = 10f
+private enum class ImageTransformMode { NONE, SCALE, ROTATE }
+// V_NOW (user feedback "P1-B4 mode 切换 cooldown"):
+// see [modeCommitTimeMs] in [PockRefCanvas]'s pointer
+// loop. [MODE_COOLDOWN_MS] is the wall-clock window
+// after a SCALE / ROTATE commit during which
+// the transform-mode decision is short-circuited
+// (we trust the already-committed mode). 500 ms is
+// the current value; raise it if user reports
+// mid-gesture mode flips, lower it if the user
+// can't recover from a wrong-mode commit.
+private const val MODE_COOLDOWN_MS = 500L
+// V_NOW (user feedback "P1-B3 SCALE / ROTATE
+// 阈值单位统一"): the two thresholds in this file
+// (SCALE / ROTATE) use two DIFFERENT unit
+// systems (dp, %, °) and a future reader / tuner will
+// not know which constant is in which unit without
+// grep'ing the call site. The renamed *_PERCENT /
+// *_DEG / *_DP suffixes below are unit-tag aliases;
+// the legacy un-tagged names are kept as a
+// deprecation bridge to avoid breaking anything that
+// might still reference them. (Verified no other file
+// in the codebase references the un-tagged names —
+// grep `SCALE_THRESHOLD\b` / `ROTATE_THRESHOLD\b`
+// across app/ returns only this file.)
+//
+// Tuning guide:
+//   SCALE_THRESHOLD_PERCENT : increase → require more
+//                          zoom-out (or zoom-in) cumulative
+//                          deviation from 1.0 before the
+//                          pinch commits. 12% means a pinch
+//                          that ends with fingers 12% closer
+//                          or further apart than at down
+//                          will commit. 5% is "tip of the
+//                          fingers" precision; 20% is
+//                          deliberate.
+//   ROTATE_THRESHOLD_DEG : increase → require more
+//                          cumulative rotation before the
+//                          gesture commits. 10° is the
+//                          current setting, calibrated to
+//                          "I meant to rotate" (not
+//                          "my fingers drifted").
+private const val SCALE_THRESHOLD_PERCENT = 12f
+private const val ROTATE_THRESHOLD_DEG = 10f
+// Legacy un-tagged aliases (kept for any 3rd-party
+// reading the file; can be removed once a
+// code-search confirms no external reference).
+@Suppress("unused")
+private const val SCALE_THRESHOLD = SCALE_THRESHOLD_PERCENT
+@Suppress("unused")
+private const val ROTATE_THRESHOLD = ROTATE_THRESHOLD_DEG
 
 // V_NOW: locked-image affordance colors, hoisted to file
 // scope. The locked indicator (the red border + halo around
@@ -306,34 +370,34 @@ private const val ROTATE_THRESHOLD = 10f
 private val LockedStrokeColor: Color = Color(0xFFE57373)
 private val LockedGlowColor: Color = Color(0x55E57373)
 
-// How long a single touch must stay stationary before it counts as
-// a long-press. Material default is 500ms; a touch artist would
-// expect a bit less so the menu feels responsive, so we use 400ms.
-// Must be long enough that a quick tap or a slow drag never
-// accidentally fires the menu.
-private const val LONG_PRESS_THRESHOLD_MS = 400L
-// Max pixel travel within the long-press window that still counts
-// as "stationary". A finger drift of 1–2 px is normal; anything
-// more means the user is dragging, not holding. 8px mirrors the
-// existing tap-tolerance constant used elsewhere in this file.
-private const val LONG_PRESS_SLOP_PX = 8f
-// Pixels of vertical centroid travel before a two-finger gesture
-// commits to SLIDE mode (canvas zoom via two-finger vertical slide).
-// Picked above the typical touch jitter floor so a stationary
-// two-finger touch doesn't accidentally commit, and well below a
-// deliberate stroke (a few tens of px is already a clear intent).
-private const val SLIDE_THRESHOLD = 24f
-// Per-pixel sensitivity for the slide-to-zoom mapping. A 100px upward
-// slide = 1.10x (10% zoom in); a 1000px upward slide = 2.0x. Tuned so a
-// casual swipe gives a meaningful but not jarring zoom step.
-// V6 SLIDE sensitivity: 1f/2000f means 200px of vertical
-// centroid movement → 0.1x step (factor 1±0.1). Reverse
-// precision at this step is 0.01x (1.0 → 1.1 → 0.99),
-// at the user spec's "<0.01x" threshold. If precision
-// becomes a complaint, lower the divisor (e.g. 1f/3000f
-// gives 0.0044x error) — at the cost of larger gestures
-// for the same zoom amount.
-private const val SLIDE_ZOOM_PER_PX = 1f / 2000f
+// V_NOW (user feedback "P0-A1 阈值按 density 缩放"):
+// the previous thresholds were raw pixel constants, set
+// when the project assumed ~160 dpi (24 px ≈ 3.8 mm).
+// On the Galaxy Tab S10+ (340 dpi, 2.125× the 160 dpi
+// baseline), the *old pixel values* are now too small
+// in mm and trigger on natural hand jitter:
+//
+//   old value   old@160dpi  old@340dpi   new (dp)   new@340dpi
+//   DRAG_TAP       4f         4 px         8 dp       17 px     ← scale UP: 0.3→0.5 mm (was a 6× undershoot)
+//   TAP_MAX_DRAG   8f         8 px        12 dp       26 px     ← scale UP: 0.5→0.8 mm
+//   GESTURE_MOVED  4f         4 px         8 dp       17 px     ← scale UP (multi-finger "any finger moved")
+//   EDGE_SCROLL   20f        20 px        48 dp      102 px     ← scale UP: 0.6→1.4 mm (was way too easy to hit)
+//   DOUBLE_TAP    20f        20 px        32 dp       68 px     ← scale UP: 0.6→1.0 mm
+//   SCALE        12f        12 %         12 % (unchanged — already unit-agnostic)
+//   ROTATE       10f        10°          10°  (unchanged)
+//
+// The constants below are dp values; the gesture handler
+// at the call site multiplies by [LocalDensity.current.density]
+// to get the actual pixel threshold. The dp numbers
+// are calibrated to "human-perceived" millimetres on
+// a 340 dpi tablet: 8 dp ≈ 0.5 mm hand jitter floor,
+// 48 dp edge zone ≈ 1.4 mm "I'm at the edge" intent.
+private const val DRAG_TAP_THRESHOLD_DP = 8f
+private const val TAP_MAX_DRAG_DP = 12f
+private const val EDGE_AUTO_SCROLL_THRESHOLD_DP = 48f
+private const val GESTURE_MOVED_THRESHOLD_DP = 8f
+private const val DOUBLE_TAP_MAX_DIST_DP = 32f
+private const val DOUBLE_TAP_MAX_INTERVAL_MS = 400L
 
 // --- Render-perf tuning ----------------------------------------------------
 // Extra padding (in screen pixels) added on every side of the world-space
@@ -511,6 +575,34 @@ fun PockRefApp(
         val currentIds = state.images.map { it.id }.toSet()
         canvasBitmapCache.keys.filterNot { it in currentIds }.forEach { key ->
             canvasBitmapCache.remove(key)
+        }
+        onDispose { }
+    }
+    // Invalidate cached bitmaps when an image's bytes or intrinsic
+    // dimensions change (e.g. after crop or undo of crop). The
+    // pipeline skips images already in the cache, so without this
+    // eviction the old bitmap persists and the user sees the wrong
+    // image (e.g. stretched after undo of a crop on a rotated image).
+    // V_NOW: the previous logic only checked [imageBytes.size] and
+    // required [newSize > 0], which missed two critical cases:
+    //   1. Undo of crop: imageBytes goes from non-empty back to empty
+    //      (the image reverts to the imageByteOffset path). newSize = 0
+    //      failed the > 0 guard, so the cropped bitmap stayed cached.
+    //   2. Intrinsic dimension change without byte-size change: rare
+    //      but possible (e.g. same compressed size, different pixels).
+    // The fix: track (imageBytes.size, intrinsicWidth, intrinsicHeight)
+    // as the cache-invalidation key. Any change to any of these three
+    // evicts the cached bitmap for that image.
+    val imageCacheKeys = remember { mutableStateMapOf<String, Triple<Int, Int, Int>>() }
+    DisposableEffect(state.images.map { it.id to Triple(it.imageBytes.size, it.intrinsicWidth, it.intrinsicHeight) }) {
+        val newKeys = state.images.associate { it.id to Triple(it.imageBytes.size, it.intrinsicWidth, it.intrinsicHeight) }
+        newKeys.forEach { (id, newKey) ->
+            val oldKey = imageCacheKeys[id]
+            if (oldKey != null && oldKey != newKey) {
+                // Image bytes or intrinsic dimensions changed — evict stale cache
+                canvasBitmapCache.remove(id)
+            }
+            imageCacheKeys[id] = newKey
         }
         onDispose { }
     }
@@ -1043,23 +1135,66 @@ fun PockRefApp(
             )
         } else {
             if (state.cropImageId != null) {
+                // V_NOW (M3 sheet chrome, user feedback "裁切界面的视觉风格
+                // 要跟现在选区弹出后整体窗口的展示风格保持一致"): the
+                // previous 0.5-alpha black scrim is removed —
+                // SelectionBottomSheet uses
+                // `scrimColor = Color.Transparent`, and the
+                // crop overlay now matches that. The previous
+                // scrim was a separate [Box] (NOT the
+                // [ModalBottomSheet]'s built-in scrim — the
+                // crop never used ModalBottomSheet, it was a
+                // plain [Column] inside a [BoxScope] with the
+                // scrim drawn explicitly here). Removing it
+                // means the main canvas is now fully visible
+                // behind the floating crop layer, which is
+                // what the user asked for ("整体窗口的展示风格
+                // 保持一致").
+                //
+                // The crop overlay's bottom toolbar is a
+                // CUSTOM [Surface] with M3 sheet chrome
+                // (28dp top corners, surface color solid,
+                // 0dp tonalElevation, 32x4dp drag handle,
+                // 560dp max width) — visually identical to a
+                // [ModalBottomSheet] but WITHOUT its scrim's
+                // touch-interception, so the floating image
+                // layer stays interactive (the user can drag
+                // crop handles while the toolbar is up).
+                // [ModalBottomSheet] would have been the
+                // natural choice but its built-in scrim
+                // intercepts ALL touches outside the sheet
+                // content, blocking drag interactions on
+                // the floating crop layer above.
                 CropOverlay(
                     state = state,
                     onAction = onAction,
+                    bitmapCache = canvasBitmapCache,
+                    // V_NOW: try the decoder first (same
+                    // [RandomAccessFile] handle the main
+                    // canvas uses for streaming decode), then
+                    // fall back to the lazy loader (used by
+                    // the ViewModel for batch operations like
+                    // [commitCrop]). This mirrors
+                    // [PureRefViewModel.resolveImageBytes]'s
+                    // precedence so the crop preview and the
+                    // committed crop see the same bytes.
+                    imageBytesResolver = { off, len ->
+                        imageDecoder?.readImageBytes(off, len)
+                            ?: imageLazyLoader?.readImageBytes(off, len)
+                    },
                 )
             } else if (state.selectedImageIds.isNotEmpty()) {
-                // Unified selection-mode floating toolbar.
-                // Renders the single-select icon set when
-                // exactly 1 image is selected, the multi-
-                // select icon set (collapsed / expanded)
-                // when 2+ are selected, and nothing when
-                // nothing is selected. The kind is computed
-                // inside the composable from
-                // [PockRefUiState.selectedImageIds] — no
-                // separate mode flag is needed and the
-                // toolbar re-renders automatically as the
-                // count crosses the 1 / 2 boundary.
-                SelectionFloatingToolbar(
+                // V_NOW (P2-C1): M3 ModalBottomSheet
+                // replaces the legacy
+                // SelectionFloatingToolbar. Visibility
+                // is derived from
+                // [state.selectedImageIds.size] — the
+                // sheet raises whenever the user has any
+                // selection and is dismissed via the
+                // close ✕, drag handle, or scrim tap.
+                // See the SelectionBottomSheet KDoc
+                // for the full design contract.
+                SelectionBottomSheet(
                     state = state,
                     onAction = onAction,
                 )
@@ -1183,14 +1318,6 @@ fun PockRefApp(
                 onDismiss = { onAction(PockRefAction.CancelRenameScene) },
             )
         }
-        state.contextMenu?.let { menu ->
-            SelectionContextMenu(
-                state = state,
-                menu = menu,
-                onAction = onAction,
-                onDismiss = { onAction(PockRefAction.DismissContextMenu) },
-            )
-        }
         if (state.isDragOver) {
             Box(
                 modifier = Modifier
@@ -1232,350 +1359,80 @@ fun PockRefApp(
 }
 
 /**
- * Long-press context menu shown after the user holds a finger on a
- * selected image. Six icon-only buttons in the order requested by
- * the user: rotate left, rotate right, duplicate, bring to front,
- * send to back, toggle lock, delete. The menu surfaces the lock
- * state by showing a closed-vs-open padlock icon, and the button
- * row is wide enough to host all 7 entries without scrolling.
+ * V_NOW (user feedback "P2-C1 SelectionFloatingToolbar 改成
+ * bottom sheet"): the previous SelectionFloatingToolbar
+ * was a M3 Surface card anchored to a top-left position
+ * computed by [selectionToolbarAnchor] (relative to the
+ * selected image's screen AABB) with offset animation
+ * by [clampSelectionToolbarOffset]. The 5-second auto-
+ * hide timer, draggable box-collapse affordance, and
+ * Alignment.TopStart alignment all made the floating
+ * card a high-risk accidental-trigger surface — a
+ * multi-finger pinch landing near the toolbar's 4
+ * corners could easily cause SelectImage / Deselect
+ * while the user only meant to scale the selection.
  *
- * Anchored at the long-press touch position. The exact pixel is
- * passed in via [menu].anchorScreen]; we center the menu horizontally
- * on it and push down enough that the row sits under the finger
- * rather than over it (finger occlusion of the button row is
- * worse than a small offset). Screen edges are clamped so the menu
- * never bleeds outside the device.
- *
- * Each action dispatches its [PockRefAction] and then dismisses
- * the menu via [onDismiss]. The dismissal is separate from the
- * action dispatch so the same handler can be reused for keyboard /
- * accessibility activations that don't auto-dismiss.
+ * The replacement is an M3 [ModalBottomSheet] with the
+ * following design decisions (per the user's
+ * "之前提到的建议全做" confirmation, mockup at
+ * ~/Desktop/pockref-selection-bottom-sheet-mockup.html):
+ *   - Scrim 0.32 alpha + tap-scrim-to-dismiss (same
+ *     [Color.Black.copy(alpha = 0.32f)] as
+ *     [BatchOptimizeProgressOverlay]).
+ *   - 12-action grid (4 cols × 3 rows) for unlocked
+ *     selections, 4-action fixed panel for the
+ *     single-image-locked case.
+ *   - Drag handle 32×4dp, slide-down to dismiss.
+ *   - Title bar with "已选 N 张" + close ✕ button.
+ *   - Bottom row: single / multi select mode toggle
+ *     (so the user can switch selection mode
+ *     without leaving the sheet).
+ *   - The sheet height "jumps" between the
+ *     unlocked (12 buttons, ~280dp) and locked
+ *     (4 buttons, ~120dp) layouts — the user
+ *     explicitly chose (a.1 in the design review)
+ *     to keep the height-jump as a visual anchor
+ *     for selection-state change.
+ *   - Closing the sheet does NOT cancel the
+ *     selection (user decision c.1). Re-tapping
+ *     the same image re-raises the sheet.
+ *   - All the "anchor to selected image" / "5s
+ *     auto-hide" / "toolbarHidden state" logic is
+ *     REMOVED. Visibility is purely derived from
+ *     [state.selectedImageIds.size] (non-zero =
+ *     sheet is open; user dismisses it → user
+ *     re-selects the same image → sheet re-raises).
+ *     The old `state.selectionToolbarHidden` field
+ *     and `PockRefAction.SetSelectionToolbarHidden`
+ *     action are also removed.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun BoxScope.SelectionContextMenu(
-    state: PockRefUiState,
-    menu: com.pockref.app.model.ContextMenuState,
-    onAction: (PockRefAction) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val density = LocalDensity.current
-    val viewportW = state.canvasViewportSize.width
-    val viewportH = state.canvasViewportSize.height
-    // 7 icons × 48dp each + 6×8dp gaps + 24dp horizontal padding =
-    // ~408dp wide. Pre-compute it once so the edge-clamp below
-    // uses a real number, not a Layout-intrinsic measurement
-    // (which would only be available inside Modifier.layout).
-    val menuWidthDp = 7 * 48 + 6 * 8 + 24
-    val menuHeightDp = 48 + 16 // 48 button + 16 padding
-    val menuWidthPx = with(density) { menuWidthDp.dp.toPx() }
-    val menuHeightPx = with(density) { menuHeightDp.dp.toPx() }
-    // Clamp inside the screen so the menu never bleeds off the
-    // right or bottom edges. The down position itself might be
-    // near an edge (long-pressing on an image at the right side of
-    // a portrait canvas), and we'd rather shift the menu left/up
-    // than let it clip.
-    val centeredX = (menu.anchorScreen.x - menuWidthPx / 2f)
-        .coerceIn(8f, (viewportW - menuWidthPx - 8f).coerceAtLeast(8f))
-    val belowFingerY = (menu.anchorScreen.y + 24f)
-        .coerceIn(8f, (viewportH - menuHeightPx - 8f).coerceAtLeast(8f))
-
-    Box(
-        modifier = Modifier
-            .align(Alignment.TopStart)
-            .offset(
-                x = with(density) { centeredX.toDp() },
-                y = with(density) { belowFingerY.toDp() },
-            ),
-    ) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xEE1A1A1A),
-            shadowElevation = 8.dp,
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                // 1. rotate left
-                ContextMenuIcon(
-                    icon = Icons.AutoMirrored.Rounded.RotateLeft,
-                    contentDescription = "左旋",
-                ) {
-                    onAction(PockRefAction.RotateLeft)
-                    onDismiss()
-                }
-                // 2. rotate right
-                ContextMenuIcon(
-                    icon = Icons.AutoMirrored.Rounded.RotateRight,
-                    contentDescription = "右旋",
-                ) {
-                    onAction(PockRefAction.RotateRight)
-                    onDismiss()
-                }
-                // 3. duplicate
-                ContextMenuIcon(
-                    icon = Icons.Rounded.ContentCopy,
-                    contentDescription = "复制",
-                ) {
-                    onAction(PockRefAction.DuplicateSelected)
-                    onDismiss()
-                }
-                // 4. bring to front
-                ContextMenuIcon(
-                    icon = Icons.Rounded.FlipToFront,
-                    contentDescription = "置顶",
-                ) {
-                    onAction(PockRefAction.BringToFront)
-                    onDismiss()
-                }
-                // 5. send to back
-                ContextMenuIcon(
-                    icon = Icons.Rounded.FlipToBack,
-                    contentDescription = "置底",
-                ) {
-                    onAction(PockRefAction.SendToBack)
-                    onDismiss()
-                }
-                // 6. lock / unlock
-                // V_NOW: padlock icon stays as the closed
-                // [Icons.Rounded.Lock] regardless of state
-                // (no more Lock↔LockOpen swap), matching the
-                // floating selection toolbar's policy. The
-                // click target's purpose ("toggle the lock
-                // state of the long-pressed image") is
-                // unchanged — only the resulting state
-                // differs, and the surrounding UI (e.g. the
-                // red locked-indicator on the canvas) carries
-                // that affordance.
-                ContextMenuIcon(
-                    icon = Icons.Rounded.Lock,
-                    contentDescription = "锁定",
-                ) {
-                    onAction(PockRefAction.ToggleLockSelected)
-                    onDismiss()
-                }
-                // 7. delete
-                ContextMenuIcon(
-                    icon = Icons.Rounded.Delete,
-                    contentDescription = "删除",
-                ) {
-                    onAction(PockRefAction.DeleteSelected)
-                    onDismiss()
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ContextMenuIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    tint: Color = Color.White,
-    onClick: () -> Unit,
-) {
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier.size(48.dp),
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            tint = tint,
-            modifier = Modifier.size(24.dp),
-        )
-    }
-}
-
-/**
- * Unified selection-mode floating toolbar.
- *
- * The user's spec for this iteration collapses the previous
- * three-mode model (SINGLE / MULTI / BOX) into a single
- * "image selection" mode whose content is driven entirely
- * by the current selection size:
- *
- * - 0 selected  → toolbar is hidden (no Surface drawn at all)
- * - 1 selected  → single-image actions: Flip / Crop / Reset /
- *                 Grayscale / Export / Delete
- * - 2+ selected → multi-image actions (collapsed by default):
- *                 SwapHoriz / Grayscale / Delete / Expand;
- *                 expanded adds SwapVert / Lock / Reset /
- *                 Duplicate / 4-way Align / Export / Delete /
- *                 Collapse.
- *
- * The kind is computed inline from
- * [PockRefUiState.selectedImageIds] — no separate mode
- * flag, no action needed to "enter" multi-select. The user
- * just selects more images and the toolbar re-renders.
- */
-@Composable
-private fun BoxScope.SelectionFloatingToolbar(
+private fun SelectionBottomSheet(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
 ) {
     val selectedCount = state.selectedImageIds.size
     if (selectedCount == 0) return
-    // V_NOW: window-blur collapse. The other two chrome
-    // surfaces (top toolbar / bottom-right action panel)
-    // own dedicated boolean state fields that the blur
-    // reducer flips to false, so their visibility tracks
-    // [state.topToolbarExpanded] / [state.bottomRightPanelExpanded]
-    // directly. The SelectionFloatingToolbar is special:
-    // its visibility is *derived* from [selectedCount],
-    // not a standalone state field, so it has nothing
-    // for the blur reducer to flip. Instead we gate
-    // composition on a dedicated flag, [menuBarsCollapsed],
-    // that the blur reducer sets to true and that the
-    // focus side deliberately does NOT clear (per the
-    // "不主动恢复" spec — the user must re-select the
-    // image to bring the toolbar back). The 3 modes
-    // (single / multi / box) all share this early-return
-    // because they all live inside this composable.
-    if (state.menuBarsCollapsed) return
-    // V_NOW: auto-hide after 5s of inactivity. Same
-    // early-return pattern as [menuBarsCollapsed] above.
-    // The user taps an image to bring the toolbar back
-    // (selectImage resets selectionToolbarHidden = false).
-    if (state.selectionToolbarHidden) return
+    // V_NOW: do NOT early-return on menuBarsCollapsed.
+    // M3 ModalBottomSheet creates a popup window that
+    // briefly steals window focus from the Activity.
+    // This triggers onWindowFocusChanged(false) →
+    // SetMenuBarsCollapsed → menuBarsCollapsed = true.
+    // If we early-return here, the ModalBottomSheet is
+    // removed from composition, the popup disappears,
+    // window focus returns → RestoreMenuBarsOnFocus →
+    // menuBarsCollapsed = false → the sheet re-enters
+    // composition → popup steals focus again → infinite
+    // loop. The user sees rapid flickering at the bottom
+    // of the screen. The menuBarsCollapsed flag is meant
+    // for the legacy SelectionFloatingToolbar (a
+    // non-modal overlay), not for a modal dialog.
 
-    val density = LocalDensity.current
-    val edgePaddingPx = with(density) { 8.dp.toPx() }
-    val fallbackWidth = with(density) { 44.dp.toPx() }
-    // Multi-select expanded panel is ~12 buttons tall; the
-    // fallback needs to be tall enough that the offset
-    // clamp picks a sensible initial position. Single-
-    // select is 6 buttons, the single fallback of 280dp
-    // worked for the original toolbar; for the merged
-    // toolbar we use a midpoint that covers both shapes.
-    val fallbackHeight = with(density) { 320.dp.toPx() }
-    val statusBarTopPx = WindowInsets.statusBars.getTop(density).toFloat()
-    val navBarBottomPx = WindowInsets.navigationBars.getBottom(density).toFloat()
-    val anchor = selectionToolbarAnchor(state) ?: return
-    var toolbarSize by remember { mutableStateOf(IntSize.Zero) }
-    val viewportWidth = state.canvasViewportSize.width
-    val viewportHeight = state.canvasViewportSize.height
-    val targetOffset = clampSelectionToolbarOffset(
-        anchor = anchor,
-        gapPx = with(density) { 14.dp.toPx() },
-        toolbarWidth = if (toolbarSize.width > 0) toolbarSize.width.toFloat() else fallbackWidth,
-        toolbarHeight = if (toolbarSize.height > 0) toolbarSize.height.toFloat() else fallbackHeight,
-        viewportWidth = viewportWidth,
-        viewportHeight = viewportHeight,
-        topInset = statusBarTopPx,
-        bottomInset = navBarBottomPx,
-        edgePadding = edgePaddingPx,
-    )
-    val animatedOffset by animateOffsetAsState(
-        targetValue = targetOffset,
-        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
-        label = if (selectedCount >= 2) "multiselect-toolbar-offset" else "selection-toolbar-offset",
-    )
-
-    // V_NOW (single-select collapse/expand): the toolbar's
-    // expanded state is now hoisted to the function scope
-    // (was previously INSIDE the multi-select branch, so it
-    // reset every time the count crossed the 1↔2 boundary).
-    // The [key(selectedCount)] below forces a reset on every
-    // count change, so the user starts collapsed in whichever
-    // mode they just entered. Hoisting also lets the single-
-    // select branch share the same expand/collapse machinery
-    // (was a 6-button flat list before this commit, no
-    // collapse affordance at all — user feedback was "the
-    // previous single-select collapsed floating menu bar is
-    // missing, restore it").
-    // V_NOW: "每次点击图片都是默认显示折叠后的单选悬浮菜单栏"
-    // (用户要求)。原 `remember(selectedCount) { mutableStateOf(false) }`
-    // 只在 [selectedCount] 变时 reset — 单选切另一张图时
-    // (selectedCount 保持 1,只 [selectedImageId] 变) 不会重置,
-    // 用户从 expanded 视图点另一张图会看到 toolbar 保持展开,
-    // 跟"折叠默认"语义不符。
-    //
-    // 改成: 单纯 `remember { false }` + `LaunchedEffect` 在
-    // [selectedImageId] 或 [selectedCount] 任意一个变时 force-reset。
-    // 两个 key 一起 cover:
-    //   - 0→1 / 1→0 / 1→2 / 2→1 等 count 变化 (老逻辑就有)
-    //   - 1→1 单选切另一张图 (selectedImageId 变) — 新加
-    //   - 2→1 多选切回单选 (count 变)
-    //   - 任意状态下 toggle 多选模式(此时通常 count 也不变
-    //     因为 retainedPrimary 兜底,不会误 reset)
-    var expanded by remember { mutableStateOf(false) }
-    LaunchedEffect(state.selectedImageId, selectedCount) {
-        expanded = false
-    }
-
-    // V_NOW: 5-second auto-hide timer. When the toolbar
-    // is visible and no button has been pressed for 5s,
-    // dispatch [SetSelectionToolbarHidden(true)] so the
-    // toolbar disappears. Tapping an image (selectImage)
-    // resets selectionToolbarHidden = false, bringing it
-    // back. Toolbar button presses reset this timer by
-    // updating [lastToolbarInteractionMs] (see the
-    // wrapper below). Uses the same polling pattern as
-    // the top-toolbar's 3s auto-collapse to avoid
-    // LaunchedEffect key churn.
-    var lastToolbarInteractionMs by remember {
-        mutableLongStateOf(System.currentTimeMillis())
-    }
-    LaunchedEffect(selectedCount) {
-        if (selectedCount > 0) {
-            lastToolbarInteractionMs = System.currentTimeMillis()
-            while (true) {
-                val elapsed = System.currentTimeMillis() - lastToolbarInteractionMs
-                if (elapsed >= 5000L) {
-                    onAction(PockRefAction.SetSelectionToolbarHidden(true))
-                    break
-                }
-                val waitMs = (5000L - elapsed).coerceIn(100L, 1000L)
-                delay(waitMs)
-            }
-        }
-    }
-
-    // Group-state derived fields for the multi-select
-    // toggle buttons. Single-select (selectedCount == 1)
-    // only reads the single image so these are unused
-    // there; the call sites are inside the multi branch.
-    val allGrayscale = state.selectedImageIds.isNotEmpty() &&
-        state.selectedImageIds.all { id ->
-            state.images.firstOrNull { it.id == id }
-                ?.colorAdjust?.saturation?.let { it <= -0.9f } == true
-        }
-    val allLocked = state.selectedImageIds.isNotEmpty() &&
-        state.selectedImageIds.all { id ->
-            state.images.firstOrNull { it.id == id }?.locked == true
-        }
-    val allFlippedV = state.selectedImageIds.isNotEmpty() &&
-        state.selectedImageIds.all { id ->
-            state.images.firstOrNull { it.id == id }?.flipY == true
-        }
-    // V_NOW: horizontal-flip active-state check. Mirrors
-    // [allFlippedV] but for the X axis — used by the
-    // horizontal-flip button (now using [Icons.Rounded.Flip]
-    // per user spec) to show its "every selected image is
-    // already flipped" state in primary tint.
-    val allFlippedH = state.selectedImageIds.isNotEmpty() &&
-        state.selectedImageIds.all { id ->
-            state.images.firstOrNull { it.id == id }?.flipX == true
-        }
-    // V_NOW: locked-panel gate. When EVERY selected image is
-    // locked the toolbar swaps to a fixed 4-button panel (灰度 /
-    // 解锁 / 导出图片 / 删除) with NO expand/collapse — crop / pinch /
-    // rotate / flip / box-select / transform are all no-ops on
-    // locked images, so exposing those controls would be
-    // misleading. Grayscale + export + delete remain meaningful
-    // (don't touch the image's pose, or are explicit destructive
-    // acts), and unlock is the single most important control in
-    // this mode — the whole reason the user is here.
-    //
-    // activeSelectedIds uses the legacy [selectedImageId]
-    // fallback so a single-image selection (where
-    // [selectedImageIds] is empty) is recognised as locked when
-    // the lone [selectedImageId] points at a locked image.
-    // Without this, single-locked selections stay on the
-    // unlocked panel and the user can still tap "裁切" /
-    // "左旋" etc. — the locked mode never kicks in.
+    // Group-state derived fields (single-image-locked panel
+    // is gated to "exactly 1 image selected AND that image
+    // is locked" — matches the legacy SelectionFloatingToolbar
+    // behaviour).
     val activeSelectedIds = state.selectedImageIds.ifEmpty {
         state.selectedImageId?.let(::setOf).orEmpty()
     }
@@ -1583,529 +1440,1056 @@ private fun BoxScope.SelectionFloatingToolbar(
         activeSelectedIds.all { id ->
             state.images.firstOrNull { it.id == id }?.locked == true
         }
+    val allGrayscale = state.selectedImageIds.isNotEmpty() &&
+        state.selectedImageIds.all { id ->
+            state.images.firstOrNull { it.id == id }
+                ?.colorAdjust?.saturation?.let { it <= -0.9f } == true
+        }
+    val allFlippedH = state.selectedImageIds.isNotEmpty() &&
+        state.selectedImageIds.all { id ->
+            state.images.firstOrNull { it.id == id }?.flipX == true
+        }
+    // V_NOW (bug fix): the locked panel no longer
+    // requires selectedCount == 1. The legacy
+    // SelectionFloatingToolbar only showed the locked
+    // 4-button panel for the single-image-locked
+    // case, but in multi-select mode, if every
+    // selected image is locked the panel should also
+    // switch to the locked variant (水平反转/灰度/
+    // 解锁/导出/删除) — otherwise the user has no
+    // way to UNLOCK the batch (解锁 lives only in
+    // the locked panel). The `allSelectedLocked` check
+    // already correctly handles "all N are locked" for
+    // any N, so we just drop the `&& selectedCount
+    // == 1` constraint.
+    val isLockedPanel = allSelectedLocked
 
-    // V_NOW: wrap onAction so every toolbar button press
-    // resets the 5s auto-hide timer. Without this, pressing
-    // a button wouldn't refresh [lastToolbarInteractionMs]
-    // and the toolbar could auto-hide mid-interaction.
-    val toolbarOnAction: (PockRefAction) -> Unit = { action ->
-        lastToolbarInteractionMs = System.currentTimeMillis()
-        onAction(action)
+    // Wrap in key(tick) so that after the user dismisses
+    // the sheet and taps an image again, the
+    // ModalBottomSheet is re-created with a fresh
+    // SheetState (M3's built-in LaunchedEffect then
+    // calls show() on the new state).
+    key(state.selectionSheetShowTick) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // Track whether the sheet should remain in the
+    // composition tree. M3 ModalBottomSheet keeps its
+    // popup window alive even when sheetState is
+    // Hidden, and that popup intercepts ALL touch
+    // events across the entire screen. If we just
+    // call sheetState.hide() in onDismissRequest,
+    // the popup stays and the app becomes
+    // unresponsive. Setting showSheet = false
+    // removes the ModalBottomSheet from the
+    // composition tree entirely, destroying the
+    // popup and restoring touch to the canvas.
+    var showSheet by remember { mutableStateOf(true) }
+
+    // V_NOW (B 智能避让 — actual sheet height):
+    // capture the sheet's content height in real
+    // time via `onSizeChanged` on the content Column.
+    // The earlier constant `280.dp` was a rough
+    // estimate of the old 12-button panel height,
+    // but the new 5+5 layout shrinks the grid to
+    // ~88dp and the locked-panel-5 shrinks to
+    // ~50dp, so the real sheet height varies
+    // between ~140dp (5+5 unlocked) and ~110dp
+    // (5-button locked). Using the constant for
+    // both over-pans on the locked panel and
+    // under-pans on the unlocked panel — the user
+    // noticed the safe-zone avoidance was using
+    // "the wrong size" and the sheet still nibbled
+    // the bottom row of images on the locked
+    // panel.
+    //
+    // The state is hoisted OUTSIDE the `key(tick)`
+    // block so it persists across sheet-show
+    // recreations: first sheet show uses a
+    // fallback (the constant), subsequent shows
+    // use the measured value. The fallback is
+    // harmless on the first show (just a slightly
+    // off safe zone); the LaunchedEffect re-runs
+    // on the next tick and uses the now-measured
+    // value. After 1-2 sheet show cycles, the
+    // value is stable.
+    val sheetContentHeightPx = remember {
+        androidx.compose.runtime.mutableFloatStateOf(0f)
     }
 
-    Surface(
-        modifier = Modifier
-            .align(Alignment.TopStart)
-            .offset {
-                IntOffset(
-                    x = animatedOffset.x.roundToInt(),
-                    y = animatedOffset.y.roundToInt(),
+    // V_NOW (B 智能避让): when the sheet pops up,
+    // auto-pan the canvas so the selected image's
+    // AABB is centered in the "safe zone" above the
+    // sheet (the upper (viewportHeight - sheetHeight)
+    // region). Without this, images in the bottom
+    // ~280dp of the screen get occluded by the
+    // sheet's chrome + the 0.32-alpha scrim, hiding
+    // both the selected-image blue stroke and the
+    // C3 fade-in flash.
+    //
+    // Animation: 300ms tween (matches the sheet's
+    // own slide-in tween, so canvas pan and sheet
+    // slide land in sync). Each frame the Animatable
+    // dispatches PockRefAction.SetCanvasOffsetFromMinimap
+    // — same action the minimap uses, which sets
+    // canvasOffset directly without the 200px-per-step
+    // clamp that PockRefAction.PanCanvas has. We
+    // use this action so the per-frame interpolation
+    // is fully respected (otherwise the clamp would
+    // cause the pan to stutter at 200px/frame).
+    val density = LocalDensity.current
+    val safeMarginPx = with(density) { 16.dp.toPx() }
+    val fallbackSafeZonePx = with(density) { 280.dp.toPx() }
+    val safeZoneHeightPx = sheetContentHeightPx.floatValue
+        .takeIf { it > 0f } ?: fallbackSafeZonePx
+        val canvasOffsetAnim = remember {
+            androidx.compose.animation.core.Animatable(
+                initialValue = Offset.Zero,
+                typeConverter = Offset.VectorConverter,
+            )
+        }
+        // V_NOW (B 智能避让 — restore-on-dismiss): remember
+        // the canvas offset at the moment the auto-pan
+        // fires, so when the user dismisses the sheet we
+        // can animate the canvas BACK to the pre-pan
+        // position. Without this restore, dismissing the
+        // sheet leaves the canvas in the "避开 sheet" position
+        // even though the sheet is gone, so the user has to
+        // manually scroll back to where they were before the
+        // selection.
+        //
+        // Scoped INSIDE the `key(tick)` block so the
+        // remember re-initializes on every sheet-show tick:
+        // each fresh sheet-show captures a new pre-pan offset
+        // (the user's true position BEFORE the auto-pan
+        // kicked in this round), and stale values from a
+        // previous show cycle can't leak through.
+        val preSheetPanOffset = remember {
+            androidx.compose.runtime.mutableStateOf<Offset?>(null)
+        }
+        // Auto-pan: when the sheet pops up, slide the
+        // canvas so the selected AABB is in the safe zone.
+        LaunchedEffect(state.selectionSheetShowTick) {
+            if (selectedCount == 0) {
+                preSheetPanOffset.value = null
+                return@LaunchedEffect
+            }
+            val startOffset = state.canvasOffset
+            val targetDeltaY = computePanDeltaToSafeZoneY(
+                state = state,
+                safeZoneHeightPx = safeZoneHeightPx,
+                safeMarginPx = safeMarginPx,
+            )
+            if (targetDeltaY == 0f) {
+                // The AABB is already in the safe zone — no
+                // pan needed. Don't save a pre-pan offset
+                // (there was no pan to undo) so the dismiss-
+                // restore LaunchedEffect below is a no-op.
+                preSheetPanOffset.value = null
+                return@LaunchedEffect
+            }
+            val targetOffset = Offset(
+                x = startOffset.x,
+                y = startOffset.y + targetDeltaY,
+            )
+            // Snapshot the pre-pan offset BEFORE the
+            // animateTo so the dismiss-restore can find
+            // the user's original position. This must come
+            // after the targetDeltaY == 0f guard above so
+            // a "didn't actually pan" cycle doesn't leave
+            // a stale offset that gets restored on a
+            // future dismiss.
+            preSheetPanOffset.value = startOffset
+            // Animate the canvas offset from the current
+            // value to the target, dispatching each frame
+            // to SetCanvasOffsetFromMinimap so the reducer
+            // commits the new offset. Use the same 300ms
+            // tween the sheet uses for its slide-in so the
+            // two motions land in sync (M3's "shared axis"
+            // pattern: sheet slides up + canvas slides
+            // down on the same easing curve).
+            canvasOffsetAnim.snapTo(startOffset)
+            canvasOffsetAnim.animateTo(
+                targetValue = targetOffset,
+                animationSpec = androidx.compose.animation.core.tween(
+                    durationMillis = 300,
+                    easing = FastOutSlowInEasing,
+                ),
+            ) {
+                onAction(
+                    PockRefAction.SetCanvasOffsetFromMinimap(this.value),
                 )
             }
-            .widthIn(min = 40.dp)
-            .onSizeChanged { toolbarSize = it },
-        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-        tonalElevation = Dimens.ToolbarElevation,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
+        }
+        // V_NOW (dynamic avoidance — sheet drag): when the
+        // user drags the sheet to resize it (half-expand,
+        // full-expand, or any intermediate position), the
+        // occlusion area changes in real time. This effect
+        // watches the sheet's current offset and recomputes
+        // the canvas pan so the selected AABB stays in the
+        // safe zone above the sheet's current top edge.
+        // Uses snapshotFlow to observe sheetState.offset
+        // (a State<Float> that updates on every drag frame).
+        LaunchedEffect(showSheet, state.selectionSheetShowTick) {
+            if (!showSheet) return@LaunchedEffect
+            snapshotFlow { sheetState.requireOffset() }
+                .collect { sheetOffset ->
+                    // sheetOffset = distance from sheet bottom
+                    // to screen bottom. The visible sheet height
+                    // = sheetContentHeight - (sheetOffset when
+                    // fully hidden). But simpler: the sheet's
+                    // top edge in screen coords =
+                    // viewportHeight - sheetOffset.
+                    // So the occlusion height = sheetOffset.
+                    val currentOcclusionPx = sheetOffset
+                        .takeIf { it > 0f } ?: safeZoneHeightPx
+                    val targetDeltaY = computePanDeltaToSafeZoneY(
+                        state = state,
+                        safeZoneHeightPx = currentOcclusionPx,
+                        safeMarginPx = safeMarginPx,
+                    )
+                    if (targetDeltaY != 0f) {
+                        val current = state.canvasOffset
+                        val target = Offset(
+                            x = current.x,
+                            y = current.y + targetDeltaY,
+                        )
+                        onAction(
+                            PockRefAction.SetCanvasOffsetFromMinimap(target),
+                        )
+                    }
+                }
+        }
+        // V_NOW (B 智能避让 — restore-on-dismiss): when
+        // the user closes the sheet (X / 收起 / scrim tap
+        // all funnel into `showSheet = false`), animate
+        // the canvas back to the pre-pan offset captured
+        // above. M3 1.2's own ModalBottomSheet has a 200ms
+        // slide-out tween; we use the same 300ms FastOutSlowIn
+        // curve for the canvas restore so the two motions
+        // land in sync (sheet slides down + canvas slides
+        // up on the same easing).
+        //
+        // The Animatable handles mid-animation cancellation
+        // gracefully: if the user dismisses the sheet before
+        // the auto-pan animation finishes, this effect's
+        // `snapTo(current)` captures the mid-pan position
+        // and the `animateTo(saved)` reverses from there
+        // instead of jumping to a known state. So fast-
+        // fingered dismiss doesn't produce a visual glitch.
+        //
+        // We clear `preSheetPanOffset` after the restore
+        // so the next show-then-dismiss cycle starts from
+        // a fresh capture (and so a no-op restore on a
+        // "show didn't actually pan" cycle doesn't
+        // accidentally animate the canvas to a stale
+        // position).
+        LaunchedEffect(showSheet) {
+            if (showSheet) return@LaunchedEffect
+            val saved = preSheetPanOffset.value
+            preSheetPanOffset.value = null
+            if (saved == null) return@LaunchedEffect
+            val current = state.canvasOffset
+            if (current == saved) return@LaunchedEffect
+            canvasOffsetAnim.snapTo(current)
+            canvasOffsetAnim.animateTo(
+                targetValue = saved,
+                animationSpec = androidx.compose.animation.core.tween(
+                    durationMillis = 300,
+                    easing = FastOutSlowInEasing,
+                ),
+            ) {
+                onAction(
+                    PockRefAction.SetCanvasOffsetFromMinimap(this.value),
+                )
+            }
+        }
+        if (showSheet) {
+        ModalBottomSheet(
+        onDismissRequest = {
+            showSheet = false
+        },
+        sheetState = sheetState,
+        // V_NOW: scrim is now Color.Transparent
+        // (was Color.Black.copy(alpha=0.32f)). Per
+        // user spec — the visual mask above the
+        // sheet was getting in the way of the
+        // auto-pan animation and made the canvas
+        // look "dimmed" while interacting. The
+        // scrim's touch handling still works
+        // (tapping outside the sheet dismisses it
+        // via M3's onDismissRequest) — only the
+        // visual color is gone. M3's Scrim
+        // composable treats `Color.Transparent`
+        // as a "specified" color (it's a defined
+        // Color constant, not Color.Unspecified),
+        // so the alpha animation still runs and
+        // the pointerInput still intercepts touches;
+        // it just paints nothing.
+        scrimColor = Color.Transparent,
+        sheetMaxWidth = 560.dp,
+        dragHandle = {
+            // V_NOW (mockup §04): 32×4dp rounded
+            // handle at the top centre, 12dp from
+            // the top of the sheet. M3 default is
+            // a slightly bigger handle; we keep
+            // the PockRef custom to match the
+            // M3 spec for large components.
+            Box(
+                modifier = Modifier
+                    .padding(vertical = 10.dp)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 32.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color(0xFFC1C7CE)),
+                )
+            }
+        },
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 0.dp,
     ) {
         Column(
-            modifier = Modifier.padding(vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+                // V_NOW (B 智能避让 — actual sheet
+                // height): `onSizeChanged` on the sheet
+                // content Column captures the actual
+                // pixel height of the rendered sheet,
+                // which is then read by the auto-pan
+                // LaunchedEffect above via
+                // [sheetContentHeightPx]. This is
+                // scoped inside the `key(tick)` block
+                // — the remember() above (outside
+                // the key) is what persists across
+                // key re-fires; the onSizeChanged here
+                // just writes to it. The first show
+                // uses the 280dp fallback (a
+                // conservative over-estimate); the
+                // second show onward uses the
+                // measured value, so the safe-zone
+                // avoidance tracks both the 5+5
+                // unlocked panel and the 5-button
+                // locked panel correctly.
+                .onSizeChanged { size ->
+                    if (size.height > 0f) {
+                        sheetContentHeightPx.floatValue =
+                            size.height.toFloat()
+                    }
+                },
         ) {
-            // V_NOW (user bug report): the locked panel ONLY
-            // applies when the user has selected exactly ONE
-            // image and that image is locked. When 2+ images
-            // are selected and they're all locked, fall
-            // through to the multi-select toolbar — the
-            // multi-select toolbar's 锁定 button can flip the
-            // whole batch's lock state (it's already
-            // `active = allLocked` in the collapsed multi-
-            // select view, so the user sees the same "all
-            // locked, tap to unlock" affordance in either
-            // place). The locked panel is reserved for the
-            // "I'm looking at a single locked image, help me
-            // unlock it" scenario — the 4-button no-expand
-            // shape there makes that intent obvious.
-            if (allSelectedLocked && selectedCount == 1) {
-                // ===== V_NOW locked panel — exactly 4 buttons, no
-                // expand / collapse, no rotation / crop / box-
-                // select / transform controls (all no-ops on
-                // locked images). Order per user spec: 水平反转 /
-                // 灰度 / 解锁 / 删除. The red double-stroke
-                // indicator on every locked image (see
-                // [PockRefCanvas]'s draw loop) carries the
-                // "this image is locked" affordance.
-                // =====
-                // 1. 水平反转 (horizontal flip) — locked images
-                //    still respond to flip (it doesn't change
-                //    pose in the locked sense, just mirroring
-                //    the pixels). Pre-8d9d74e the toolbar used
-                //    horizontal flip too; the user wants the
-                //    Flip icon to match.
-                ToolbarActionItem(
-                    icon = Icons.Rounded.Flip,
-                    contentDescription = "水平反转",
-                    active = allFlippedH,
-                ) { toolbarOnAction(PockRefAction.FlipHorizontal) }
-                // 2. Grayscale (still meaningful on locked images;
-                //    doesn't touch the image's pose).
-                ToolbarActionItem(
-                    icon = Icons.Rounded.Layers,
-                    contentDescription = "灰度",
-                    active = allGrayscale,
-                    onClick = { toolbarOnAction(PockRefAction.ConvertToGrayscale) },
+            // Title bar.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "已选 $selectedCount 张",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
-                // 3. V_NOW: Lock — closed padlock, active=blue.
-                //    The user spec is "无论激活没激活都是直显示
-                //    🔒的图标,激活锁定时按钮就变蓝": the lock
-                //    button's icon is the closed padlock in
-                //    BOTH single-select and multi-select (and
-                //    here in the all-locked sub-mode), and the
-                //    state is conveyed by the active tint, not
-                //    by swapping Lock↔LockOpen. The previous
-                //    LockOpen in this branch was the one
-                //    remaining inconsistency with the rest of
-                //    the project. [allLocked] is true by
-                //    construction in this branch (the if-guard
-                //    above checks it), so [active = allLocked]
-                //    always evaluates to true here and the
-                //    button renders in primary/blue. Click
-                //    toggles the lock (which, in this branch,
-                //    means unlocking — but the icon/tint
-                //    policy is now uniform across the project).
-                ToolbarActionItem(
-                    icon = Icons.Rounded.Lock,
-                    contentDescription = "锁定",
-                    active = allLocked,
-                ) { toolbarOnAction(PockRefAction.ToggleLockSelected) }
-                // 4. Delete — fixed slot, no colour hint, same
-                //    chrome token as the rest of the locked
-                //    panel. Trash icon + fixed slot position
-                //    carry the "danger" semantics.
-                ToolbarActionItem(
-                    icon = Icons.Rounded.Delete,
-                    contentDescription = "删除",
-                ) { toolbarOnAction(PockRefAction.DeleteSelected) }
-            } else if (selectedCount == 1) {
-                // V_NOW: single-select now mirrors the
-                // 4+8 expandable panel the project used
-                // pre-8d9d74e. The user's spec for the
-                // expanded set is (in order):
-                //   1. 镜像   (FlipVertical)
-                //   2. 裁切   (Crop)
-                //   3. 灰度   (Grayscale)
-                //   4. 锁定   (Lock / Unlock)
-                //   5. 向左旋转 90 度 (RotateLeft)
-                //   6. 向右旋转 90 度 (RotateRight)
-                //   7. 复原图片 (ResetTransform)
-                //   8. 复制   (Duplicate)
-                //   9. 导出图片 (Export)
-                //  10. 删除   (Delete)
-                //  11. 收起   (Collapse)
-                // The collapsed set keeps the 4 most
-                // common (mirror / crop / grayscale /
-                // delete) + the Expand toggle, matching
-                // the old 4+8 shape the user is
-                // remembering. Same 200ms
-                // expandVertically / shrinkVertically
-                // tween as the multi branch so the two
-                // panels feel like one motion when the
-                // count crosses 1 ↔ 2.
-                val singleImage = state.images
-                    .firstOrNull { it.id == state.selectedImageId }
-                val isGrayscale = singleImage
-                    ?.colorAdjust?.saturation?.let { it <= -0.9f } == true
-                val isLocked = singleImage?.locked == true
-                AnimatedVisibility(
-                    visible = !expanded,
-                    enter = expandVertically(
-                        animationSpec = tween(200, easing = FastOutSlowInEasing),
-                    ),
-                    exit = shrinkVertically(
-                        animationSpec = tween(200, easing = FastOutSlowInEasing),
-                    ),
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // V_NOW: 多选模式开关 — 单选 toolbar 第一个按钮。
-                        // 单选模式下,点图就重置选择(只有当前图被选);
-                        // 想累积选多张必须先打开这个 toggle,
-                        // 之后每点一张图都会 add 到 selection 而不是 replace。
-                        // Icon swap 跟之前的 BoxSelectToggleButton 一致:
-                        // 开 = CheckBox 蓝,关 = CheckBoxOutlineBlank 灰。
-                        // dispatch 走 [ToggleMultiSelectMode],reducer
-                        // 会保留当前 selectedImageId / selectedImageIds
-                        // (见 PockRefViewModelSelection.toggleMultiSelectMode
-                        // 的 retainedPrimary 逻辑)。
-                        ToolbarActionItem(
-                            icon = if (state.multiSelectMode) {
-                                Icons.Rounded.CheckBox
-                            } else {
-                                Icons.Rounded.CheckBoxOutlineBlank
-                            },
-                            contentDescription = "多选模式",
-                            active = state.multiSelectMode,
-                        ) { toolbarOnAction(PockRefAction.ToggleMultiSelectMode) }
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Flip,
-                            contentDescription = "水平反转",
-                            active = singleImage?.flipX == true,
-                        ) { toolbarOnAction(PockRefAction.FlipHorizontal) }
-                        ToolbarActionItem(Icons.Rounded.Crop, "裁剪") {
-                            toolbarOnAction(PockRefAction.EnterCropMode)
-                        }
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Layers,
-                            contentDescription = "灰度",
-                            active = isGrayscale,
-                            onClick = { toolbarOnAction(PockRefAction.ConvertToGrayscale) },
+                if (isLockedPanel) {
+                    Spacer(Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                    ) {
+                        Text(
+                            text = "锁定",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                         )
-                        ToolbarActionItem(Icons.Rounded.Delete, "删除") {
-                            toolbarOnAction(PockRefAction.DeleteSelected)
-                        }
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.ExpandMore,
-                            contentDescription = "展开",
-                        ) { expanded = true }
                     }
                 }
-                AnimatedVisibility(
-                    visible = expanded,
-                    enter = expandVertically(
-                        animationSpec = tween(200, easing = FastOutSlowInEasing),
-                    ),
-                    exit = shrinkVertically(
-                        animationSpec = tween(200, easing = FastOutSlowInEasing),
-                    ),
+                Spacer(Modifier.weight(1f))
+                // V_NOW (A+第二轮): title bar's right
+                // side now hosts the single/multi-select
+                // mode toggle (moved from the bottom
+                // row, which is gone entirely). The X
+                // close button was removed per user
+                // spec — the scrim tap still dismisses
+                // the sheet via M3's onDismissRequest,
+                // and there's no other dismissal path
+                // (the user wanted the X out). The mode
+                // toggle stays visible at the top so
+                // the user can switch modes from any
+                // selection state without scrolling.
+                Text(
+                    text = "选择模式",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(8.dp))
+                SheetModeToggle(
+                    singleSelected = !state.multiSelectMode,
+                    onSingle = { onAction(PockRefAction.ToggleMultiSelectMode) },
+                    onMulti = { onAction(PockRefAction.ToggleMultiSelectMode) },
+                )
+            }
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                thickness = 1.dp,
+            )
+            Spacer(Modifier.height(14.dp))
+
+            // Action grid. Two layouts based on
+            // [isLockedPanel]: the legacy
+            // SelectionFloatingToolbar used the
+            // "single-image-locked" 4-button panel
+            // (灰度 / 解锁 / 导出 / 删除 — no
+            // expand/collapse, no transform
+            // controls) and the "everything else"
+            // 12-button grid. We keep that exact
+            // split here.
+            if (isLockedPanel) {
+                // V_NOW: locked panel is now 5 buttons in
+                // a single row (was 4 — added 导出 between
+                // 解锁 and 删除). At 560dp max width with
+                // 5 buttons at 4dp spacing + 2dp horizontal
+                // padding each, column width lands at
+                // ~108dp — fits "水平反转" (4 chars) with
+                // ~50dp slack per column. Same 40dp button
+                // style as the unlocked grid for visual
+                // consistency between the two panel variants.
+                //
+                // The unlock button stays "active" (filled
+                // tonal) so the user can see the lock
+                // state at a glance — this is the only
+                // active=true button in the sheet and
+                // serves as the visual anchor.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // 0. V_NOW: 多选模式开关 — 跟 collapsed 同款,
-                        // 提到 水平反转 之前(变成 expanded 的 #1)。
-                        ToolbarActionItem(
-                            icon = if (state.multiSelectMode) {
-                                Icons.Rounded.CheckBox
-                            } else {
-                                Icons.Rounded.CheckBoxOutlineBlank
-                            },
-                            contentDescription = "多选模式",
-                            active = state.multiSelectMode,
-                        ) { toolbarOnAction(PockRefAction.ToggleMultiSelectMode) }
-                        // 1. 水平反转 (horizontal flip)
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Flip,
-                            contentDescription = "水平反转",
-                            active = singleImage?.flipX == true,
-                        ) { toolbarOnAction(PockRefAction.FlipHorizontal) }
-                        // 2. 裁切
-                        ToolbarActionItem(Icons.Rounded.Crop, "裁剪") {
-                            toolbarOnAction(PockRefAction.EnterCropMode)
-                        }
-                        // 3. 灰度
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Layers,
-                            contentDescription = "灰度",
-                            active = isGrayscale,
-                            onClick = { toolbarOnAction(PockRefAction.ConvertToGrayscale) },
-                        )
-                        // 4. 锁定 (lock toggle) — V_NOW: icon
-                        //    stays as the closed padlock regardless
-                        //    of state, the "active" tint (primary /
-                        //    blue) carries the "this image is
-                        //    currently locked" affordance. The
-                        //    previous Lock↔LockOpen swap was
-                        //    confusing because the click target's
-                        //    purpose ("lock the image") is
-                        //    unchanged — only the resulting state
-                        //    differs. Now: padlock + blue = locked,
-                        //    padlock + chrome = unlocked.
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Lock,
-                            contentDescription = "锁定",
-                            active = isLocked,
-                        ) { toolbarOnAction(PockRefAction.ToggleLockSelected) }
-                        // 5. 向左旋转 90 度
-                        ToolbarActionItem(
-                            icon = Icons.AutoMirrored.Rounded.RotateLeft,
-                            contentDescription = "向左旋转 90 度",
-                        ) { toolbarOnAction(PockRefAction.RotateLeft) }
-                        // 6. 向右旋转 90 度
-                        ToolbarActionItem(
-                            icon = Icons.AutoMirrored.Rounded.RotateRight,
-                            contentDescription = "向右旋转 90 度",
-                        ) { toolbarOnAction(PockRefAction.RotateRight) }
-                        // 7. 复原图片
-                        ToolbarActionItem(Icons.Rounded.RestartAlt, "复原图片") {
-                            toolbarOnAction(PockRefAction.ResetTransform)
-                        }
-                        // 8. 复制
-                        ToolbarActionItem(Icons.Rounded.ContentCopy, "复制") {
-                            toolbarOnAction(PockRefAction.DuplicateSelected)
-                        }
-                        // 9. 导出图片
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Save,
-                            contentDescription = "导出图片",
-                            active = false,
-                            onClick = { toolbarOnAction(PockRefAction.ExportSelected) },
-                        )
-                        // 10. 删除
-                        ToolbarActionItem(Icons.Rounded.Delete, "删除") {
-                            toolbarOnAction(PockRefAction.DeleteSelected)
-                        }
-                        // 11. 收起
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.ExpandLess,
-                            contentDescription = "收起",
-                        ) { expanded = false }
-                    }
+                    SheetActionButton(
+                        icon = Icons.Rounded.Flip,
+                        label = "水平反转",
+                        modifier = Modifier.weight(1f),
+                        onClick = { onAction(PockRefAction.FlipHorizontal) },
+                    )
+                    SheetActionButton(
+                        icon = Icons.Rounded.Layers,
+                        label = "灰度",
+                        active = allGrayscale,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onAction(PockRefAction.ConvertToGrayscale) },
+                    )
+                    SheetActionButton(
+                        icon = Icons.Rounded.LockOpen,
+                        label = "解锁",
+                        active = true,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onAction(PockRefAction.ToggleLockSelected) },
+                    )
+                    SheetActionButton(
+                        icon = Icons.Rounded.Save,
+                        label = "导出",
+                        modifier = Modifier.weight(1f),
+                        onClick = { onAction(PockRefAction.ExportSelected) },
+                    )
+                    SheetActionButton(
+                        icon = Icons.Rounded.Delete,
+                        label = "删除",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onAction(PockRefAction.DeleteSelected) },
+                    )
                 }
             } else {
-                // Multi-select (selectedCount >= 2): collapsed /
-                // expanded panel via [expanded] local state.
-                // Collapsed = 4 buttons (SwapHoriz / Grayscale /
-                // Delete / Expand); expanded = 12 buttons (see
-                // the [MultiSelectFloatingToolbar] history for
-                // the full set + the swap-out / mirror /
-                // align / lock etc. rationale).
-                // V_NOW: [expanded] is now hoisted to the
-                // function scope (above the if/else), keyed on
-                // [selectedCount] so it auto-resets when the
-                // count crosses the 1↔2 boundary — entering
-                // single mode starts collapsed, same for
-                // multi mode.
-                AnimatedVisibility(
-                    visible = !expanded,
-                    enter = expandVertically(
-                        animationSpec = tween(200, easing = FastOutSlowInEasing),
-                    ),
-                    exit = shrinkVertically(
-                        animationSpec = tween(200, easing = FastOutSlowInEasing),
-                    ),
+                // V_NOW (A+第三轮 — 5+5 重新排):
+                // Two equal-width rows of 5 actions each
+                // (per user feedback "4+6 太奇怪了,
+                // 改成 5+5"). 5-per-row at 560dp max width
+                // lands at ~112dp/column, which fits the
+                // longest label ("左旋 90°" / "右旋 90°" ≈
+                // 55dp label) plus the 18dp icon with
+                // comfortable padding.
+                //
+                // Row split (per user spec — single/multi
+                // panel uses the same 5+5 layout):
+                //   Row 1 (top): 水平反转 / 裁切 / 左旋 / 右旋 / 复原
+                //   Row 2 (bot): 复制 / 灰度 / 锁定 / 导出 / 删除
+                //
+                // The grouping now puts "transform" actions
+                // (水平反转 / 左旋 / 右旋 / 复原) in row 1
+                // alongside 裁切 (also a transform), and
+                // "filter/property/export" actions (复制 /
+                // 灰度 / 锁定 / 导出 / 删除) in row 2.
+                // The row order matches the
+                // frequency-of-use mental model: the user
+                // usually wants to fiddle with orientation
+                // first, then with the rest.
+                //
+                // No bottom row anymore — the single/multi
+                // mode toggle moved to the title-bar's
+                // right side, and the X close button was
+                // removed (per user spec). Dismissal is
+                // exclusively via the scrim tap. The
+                // trailing Spacer + Divider that used to
+                // separate the action grid from the
+                // (now-gone) bottom row are also removed,
+                // so the sheet ends right at the action
+                // grid's bottom edge.
+                val gridModifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+                val row1 = listOf(
+                    SheetActionSpec(Icons.Rounded.Flip, "水平反转", allFlippedH) {
+                        onAction(PockRefAction.FlipHorizontal)
+                    },
+                    SheetActionSpec(Icons.Rounded.Crop, "裁切", false) {
+                        onAction(PockRefAction.EnterCropMode)
+                    },
+                    SheetActionSpec(Icons.AutoMirrored.Rounded.RotateLeft, "左旋 90°", false) {
+                        onAction(PockRefAction.RotateLeft)
+                    },
+                    SheetActionSpec(Icons.AutoMirrored.Rounded.RotateRight, "右旋 90°", false) {
+                        onAction(PockRefAction.RotateRight)
+                    },
+                    SheetActionSpec(Icons.Rounded.RestartAlt, "复原", false) {
+                        onAction(PockRefAction.ResetTransform)
+                    },
+                )
+                val row2 = listOf(
+                    SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
+                        onAction(PockRefAction.DuplicateSelected)
+                    },
+                    SheetActionSpec(Icons.Rounded.Layers, "灰度", allGrayscale) {
+                        onAction(PockRefAction.ConvertToGrayscale)
+                    },
+                    SheetActionSpec(Icons.Rounded.Lock, "锁定", false) {
+                        onAction(PockRefAction.ToggleLockSelected)
+                    },
+                    SheetActionSpec(Icons.Rounded.Save, "导出", false) {
+                        onAction(PockRefAction.ExportSelected)
+                    },
+                    SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
+                        onAction(PockRefAction.DeleteSelected)
+                    },
+                )
+                Column(
+                    modifier = gridModifier,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // V_NOW: 4 buttons per user spec —
-                        // 水平反转 / 灰度 / 锁定 / 删除. Save +
-                        // ExpandMore dropped from the collapsed
-                        // state; lock added so users can flip
-                        // the whole batch's lock state without
-                        // expanding. Horizontal-flip icon uses
-                        // the pre-8d9d74e [Icons.Rounded.Flip]
-                        // (the "previous style" the user asked
-                        // to bring back), not [SwapHoriz].
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Flip,
-                            contentDescription = "水平反转",
-                            active = allFlippedH,
-                        ) { toolbarOnAction(PockRefAction.FlipHorizontal) }
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Layers,
-                            contentDescription = "灰度",
-                            active = allGrayscale,
-                            onClick = { toolbarOnAction(PockRefAction.ConvertToGrayscale) },
-                        )
-                        // V_NOW: 锁定 — closed padlock always,
-                        // active=blue when every selected is
-                        // already locked. No more Lock↔LockOpen
-                        // swap; the click target's purpose
-                        // ("toggle the lock state of the
-                        // selection") is unchanged.
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Lock,
-                            contentDescription = "锁定",
-                            active = allLocked,
-                        ) { toolbarOnAction(PockRefAction.ToggleLockSelected) }
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.Delete,
-                            contentDescription = "删除",
-                        ) { toolbarOnAction(PockRefAction.DeleteSelected) }
-                        // V_NOW: 5th button — 展开. Tapping
-                        // flips [expanded] to true, which
-                        // triggers the AnimatedVisibility swap
-                        // into the 12-button expanded panel
-                        // (see below). Mirrors the single-
-                        // select collapsed layout (which has
-                        // had the 5th ExpandMore since 8c3244b
-                        // restored it per user feedback).
-                        ToolbarActionItem(
-                            icon = Icons.Rounded.ExpandMore,
-                            contentDescription = "展开",
-                        ) { expanded = true }
-                    }
-                }
-                AnimatedVisibility(
-                    visible = expanded,
-                    enter = expandVertically(
-                        animationSpec = tween(200, easing = FastOutSlowInEasing),
-                    ),
-                    exit = shrinkVertically(
-                        animationSpec = tween(200, easing = FastOutSlowInEasing),
-                    ),
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // V_NOW: horizontal-flip (was vertical).
-                            // Same per-user-spec swap as the single-
-                            // select and collapsed-multi toolbars —
-                            // pre-8d9d74e project used horizontal
-                            // flip in the toolbar, vertical flip was
-                            // a post-merge accident.
-                            ToolbarActionItem(
-                                icon = Icons.Rounded.Flip,
-                                contentDescription = "水平反转",
-                                active = allFlippedH,
-                                onClick = { toolbarOnAction(PockRefAction.FlipHorizontal) },
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        row1.forEach { spec ->
+                            SheetActionButton(
+                                icon = spec.icon,
+                                label = spec.label,
+                                active = spec.active,
+                                tint = spec.tint,
+                                modifier = Modifier.weight(1f),
+                                onClick = spec.onClick,
                             )
-                            ToolbarActionItem(
-                                icon = Icons.Rounded.Layers,
-                                contentDescription = "灰度",
-                                active = allGrayscale,
-                                onClick = { toolbarOnAction(PockRefAction.ConvertToGrayscale) },
-                            )
-                            // V_NOW: 锁定 — closed padlock always,
-                            // active=blue when every selected image
-                            // is already locked. Lock↔LockOpen swap
-                            // dropped per user spec (the click
-                            // target's purpose is unchanged, the
-                            // state is conveyed by the active tint).
-                            ToolbarActionItem(
-                                icon = Icons.Rounded.Lock,
-                                contentDescription = "锁定",
-                                active = allLocked,
-                            ) { toolbarOnAction(PockRefAction.ToggleLockSelected) }
-                            ToolbarActionItem(
-                                Icons.Rounded.RestartAlt,
-                                "复原",
-                            ) { toolbarOnAction(PockRefAction.ResetTransform) }
-                            ToolbarActionItem(
-                                Icons.Rounded.ContentCopy,
-                                "复制",
-                            ) { toolbarOnAction(PockRefAction.DuplicateSelected) }
-                            ToolbarActionItem(
-                                Icons.Rounded.VerticalAlignTop,
-                                "向上对齐",
-                            ) { toolbarOnAction(PockRefAction.BatchAlign(AlignMode.ALIGN_TOP)) }
-                            ToolbarActionItem(
-                                Icons.Rounded.VerticalAlignBottom,
-                                "向下对齐",
-                            ) { toolbarOnAction(PockRefAction.BatchAlign(AlignMode.ALIGN_BOTTOM)) }
-                            ToolbarActionItem(
-                                Icons.Rounded.AlignHorizontalLeft,
-                                "向左对齐",
-                            ) { toolbarOnAction(PockRefAction.BatchAlign(AlignMode.ALIGN_LEFT)) }
-                            ToolbarActionItem(
-                                Icons.Rounded.AlignHorizontalRight,
-                                "向右对齐",
-                            ) { toolbarOnAction(PockRefAction.BatchAlign(AlignMode.ALIGN_RIGHT)) }
-                            ToolbarActionItem(
-                                icon = Icons.Rounded.Save,
-                                contentDescription = "导出选中图片",
-                                active = false,
-                                onClick = { toolbarOnAction(PockRefAction.ExportSelected) },
-                            )
-                            ToolbarActionItem(
-                                icon = Icons.Rounded.Delete,
-                                contentDescription = "删除",
-                            ) { toolbarOnAction(PockRefAction.DeleteSelected) }
-                            ToolbarActionItem(
-                                icon = Icons.Rounded.ExpandLess,
-                                contentDescription = "收起",
-                            ) { expanded = false }
                         }
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        row2.forEach { spec ->
+                            SheetActionButton(
+                                icon = spec.icon,
+                                label = spec.label,
+                                active = spec.active,
+                                tint = spec.tint,
+                                modifier = Modifier.weight(1f),
+                                onClick = spec.onClick,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
+    }  // if (showSheet)
+    }  // key(state.selectionSheetShowTick)
 }
 
+/**
+ * V_NOW (A+按钮重分类): Helper data class so the two
+ * action tiers (4 primary / 6 secondary) can be passed
+ * to inline `forEach` blocks inside [SelectionBottomSheet]
+ * without bloating the parent Composable with 10
+ * separate lambdas. The old `SheetActionGrid` helper
+ * (12 actions chunked into 3 rows of 4) is no longer
+ * used since the 4+6 layout is rendered as two direct
+ * `Row`s in the caller.
+ */
+private data class SheetActionSpec(
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val label: String,
+    val active: Boolean,
+    val tint: Color? = null,
+    val onClick: () -> Unit,
+)
 
 @Composable
-private fun ToolbarActionItem(
+private fun SheetActionButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
+    label: String,
+    modifier: Modifier = Modifier,
     active: Boolean = false,
-    // V11: caller-supplied tint wins (used for the red delete
-    // button). When null, falls back to the active/inactive
-    // primary-vs-onSurfaceVariant logic below. Default
-    // `null` keeps every existing call site source-
-    // compatible — only the multi-select toolbar's delete
-    // buttons pass an explicit red tint.
-    //
-    // V12a: applied via [IconButton]'s `colors.contentColor`
-    // instead of the child [Icon]'s `tint` param. The
-    // long-press context menu's [ContextMenuIcon] uses
-    // `Icon(tint = ...)` and renders red correctly; the
-    // multi-select toolbar's [ToolbarActionItem] was using
-    // the same `Icon(tint = ...)` shape but the user's
-    // device showed black — likely a tint-render-order
-    // quirk specific to [IconButton]'s [LocalContentColor]
-    // provider (which wraps the Icon in a
-    // [CompositionLocalProvider] that wins over the Icon's
-    // own `tint` in some build of the M3 ripple). Setting
-    // the color at the [IconButton] level — which is what
-    // M3 actually applies as the Icon's default `tint`
-    // via the local — sidesteps the override entirely.
     tint: Color? = null,
     onClick: () -> Unit,
 ) {
     val resolvedTint = tint ?: if (active) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.onSurfaceVariant
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier
-            .size(36.dp)
-            .minimumInteractiveComponentSize(),
-        colors = IconButtonDefaults.iconButtonColors(
-            contentColor = resolvedTint,
-        ),
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .background(
+                if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                else Color.Transparent,
+            )
+            // V_NOW (A+按钮重分类 — compact 40dp): was
+            // 12dp vertical / 4dp horizontal (old 64dp
+            // button). Now 4dp vertical / 2dp horizontal
+            // so the total height lands at ~40dp (4+18+2+
+            // 11sp label ≈ 35dp + 5dp slack). Matches M3
+            // `IconButtonDefaults.smallIconButtonSize`
+            // (40dp) which is the toolbar icon button
+            // standard. The 48dp minimum touch target is
+            // enforced by `minimumInteractiveComponentSize`
+            // in the parent Box's modifier chain.
+            .padding(vertical = 4.dp, horizontal = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Icon(
-            icon,
-            contentDescription = contentDescription,
-            modifier = Modifier.size(20.dp),
+            imageVector = icon,
+            contentDescription = label,
+            tint = resolvedTint,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
         )
     }
 }
 
 @Composable
+private fun SheetModeToggle(
+    singleSelected: Boolean,
+    onSingle: () -> Unit,
+    onMulti: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(3.dp),
+    ) {
+        SheetModeChip(
+            text = "单选",
+            selected = singleSelected,
+            onClick = { if (!singleSelected) onSingle() },
+        )
+        SheetModeChip(
+            text = "多选",
+            selected = !singleSelected,
+            onClick = { if (singleSelected) onMulti() },
+        )
+    }
+}
+
+@Composable
+private fun SheetModeChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val bg = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent
+    val fg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 5.dp),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = fg,
+        )
+    }
+}
+
+
+@Composable
 private fun BoxScope.CropOverlay(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
+    bitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    // V_NOW: callback that reads the raw image bytes for a
+    // disk-backed [SceneImage] (the [imageByteOffset] /
+    // [imageByteLength] path). Returns null if the bytes
+    // cannot be resolved for any reason. The previous
+    // design only read [SceneImage.imageBytes] (which is
+    // populated for newly-imported images but EMPTY for
+    // images re-loaded from a saved `.pur` scene — those
+    // go through the [SceneImageDecoder] / [PurFileParser]
+    // path, leaving [imageBytes] = empty but
+    // [imageByteOffset] / [imageByteLength] valid). The
+    // caller (CanvasPanel) wires this to the same
+    // resolver used by [commitCrop] in the ViewModel.
+    imageBytesResolver: (imageByteOffset: Int, imageByteLength: Int) -> ByteArray?,
 ) {
     val cropImage = state.images.find { it.id == state.cropImageId } ?: return
     val viewport = state.canvasViewportSize
     if (viewport.width <= 0f || viewport.height <= 0f) return
 
+    // V_NOW: the floating crop layer used to render only a
+    // neutral surface color (a gray rectangle) with the
+    // selection chrome on top. The user reported "选定图片后
+    // 使用裁切工具时，显示的界面是这样的" with a screenshot
+    // showing a huge gray box that didn't visually correspond
+    // to the actual selected image on the main canvas — the
+    // gray box is the [MaterialTheme.colorScheme.surface]
+    // background, with no bitmap ever drawn inside it. The
+    // CropRect math was correct, but the user had no way to
+    // tell what they were cropping. The fix: look up the
+    // cached decoded bitmap for [cropImage.id] (same cache
+    // the main canvas uses) and fall back to a one-shot
+    // decode of [cropImage.imageBytes] if the cache entry
+    // hasn't arrived yet (e.g. user just imported the image
+    // and the ImageDecodePipeline hasn't streamed the
+    // thumbnail). The bitmap is then drawn into the chrome
+    // canvas as the first paint operation, so the selection
+    // overlay, dim, border, grid, handles, and crop rect all
+    // align on top of the actual image.
+    val cached = bitmapCache[cropImage.id]?.second
+    val fallback by produceState<ImageBitmap?>(
+        initialValue = cached,
+        key1 = cropImage.id,
+    ) {
+        if (value == null) {
+            // V_NOW: prefer the resolver callback (handles
+            // disk-backed .pur images) and only fall back
+            // to inline [cropImage.imageBytes] if the
+            // resolver returns null AND the image has
+            // inline bytes. The previous code only checked
+            // [cropImage.imageBytes.isNotEmpty()] which is
+            // FALSE for disk-backed images — that's the
+            // "image not rendered" bug the user reported.
+            val resolved: ByteArray? = when {
+                cropImage.imageByteOffset >= 0 && cropImage.imageByteLength > 0 ->
+                    imageBytesResolver(cropImage.imageByteOffset, cropImage.imageByteLength)
+                cropImage.imageBytes.isNotEmpty() -> cropImage.imageBytes
+                else -> null
+            }
+            if (resolved != null && resolved.isNotEmpty()) {
+                value = withContext(Dispatchers.IO) {
+                    android.graphics.BitmapFactory.decodeByteArray(
+                        resolved,
+                        0,
+                        resolved.size,
+                    )?.asImageBitmap()
+                }
+            }
+        }
+    }
+    val displayBitmap = cached ?: fallback
+
     val density = LocalDensity.current
     val touchPadding = with(density) { 28.dp.toPx() }
     val handleRadius = with(density) { 10.dp.toPx() }
 
+    // V_NOW (floating-layer crop UI per user spec
+    // "裁切图片应以悬浮层形式显示"): the cropping picture
+    // is no longer rendered as a fullscreen overlay that
+    // follows the image's position on the main canvas. It's
+    // now a dedicated floating layer anchored in the upper
+    // half of the safe area (status bar to toolbar), with
+    // the bottom toolbar (取消 / 应用 + aspect chips) pinned
+    // to the safe-area bottom.
+    //
+    // V_NOW (user feedback "裁剪打开就是这个页面" + the
+    // previous screenshot showed the bottom toolbar COMPLETELY
+    // missing): the previous layout had the floating layer
+    // and the toolbar as TWO SIBLINGS in a BoxScope:
+    //   - Floating Box: Modifier.align(Alignment.Center)
+    //   - Toolbar Column: Modifier.align(Alignment.BottomCenter)
+    // BoxScope.Center is the CENTER of the parent Box
+    // (= the WHOLE WINDOW, status bar + nav bar included
+    // because [PockRefApp]'s outer Scaffold has
+    // `contentWindowInsets = WindowInsets(0)`). The toolbar
+    // pinned to the BOTTOM of the same Box. With maxLayerH
+    // computed as `viewport.h - 200dp - 32dp` and
+    // `viewport.h` = window full height (incl. ~80dp of
+    // system bars on SM-X810), the floating layer's bottom
+    // edge landed at ~window.h / 2 + 200dp = 600dp-ish, and
+    // the toolbar's top edge sat at ~window.h - 130dp =
+    // 700dp-ish. Result: the floating layer's bottom + its
+    // 16dp shadow OVERLAPPED the toolbar's top by ~70dp
+    // (covering the entire chips row + half the button
+    // row) and the user saw "no toolbar at all" in the
+    // screenshot.
+    //
+    // New layout: the entire CropOverlay is wrapped in a
+    // single Column inside this BoxScope. The Column is
+    // split into TWO rows:
+    //   - Row 1: [Box(weight(1f))] — upper area, takes all
+    //     remaining space ABOVE the toolbar, the floating
+    //     layer is centered in this row with
+    //     [contentAlignment = Alignment.Center]
+    //   - Row 2: [Column] — bottom toolbar, fixed height
+    //     ~130dp
+    // The Column itself is given
+    // `windowInsetsPadding(WindowInsets.systemBars)` so its
+    // layout region is the SAFE AREA (status bar above,
+    // nav bar below) — the floating layer can never
+    // overlap the status bar / nav bar, and the toolbar
+    // sits flush against the nav bar with its own nav-bar
+    // padding (which becomes a no-op once the outer
+    // padding has already applied it). The
+    // [Modifier.windowInsetsPadding(WindowInsets.navigationBars)]
+    // on the inner toolbar Column is kept as a belt-and-
+    // suspenders in case a future caller drops the outer
+    // safe-area padding.
+    //
+    // `maxLayerH` is now derived from the SAFE height
+    // (window minus status bar minus nav bar) minus the
+    // toolbar reserved minus safety margins. Combined with
+    // the weight-row layout, the floating layer can
+    // NEVER overlap the toolbar — they're in disjoint
+    // parent rows.
+    val safetyMarginPx = with(density) { 16.dp.toPx() }
+    val sideMarginPx = with(density) { 16.dp.toPx() }
+    // V_NOW: bumped from 200dp → 280dp (user feedback "完全
+    // 无法使用" + screenshot showed the floating layer
+    // dominating the screen, the toolbar compressed to a
+    // single cramped row of chips + buttons, and the 8
+    // crop handles stretching almost to the screen
+    // edges). The previous 200dp reservation only
+    // covered the [chip row ≈ 48dp] + [button row ≈
+    // 64dp] = 112dp of toolbar chrome, leaving a mere
+    // 88dp of "padding" for the visible gap between
+    // floating-layer bottom and toolbar top. On a 1752px-
+    // tall landscape device that gap shrunk to 0-20dp on
+    // the user's screenshot, with the floating layer's
+    // own 16dp shadow + 16dp safety margin further
+    // crushing the toolbar's visible space. 280dp adds
+    // 80dp of buffer so the floating layer has clear
+    // breathing room above the toolbar regardless of
+    // font-scale settings that might make the chip row
+    // wrap to a taller multi-line layout.
+    val toolbarReserved = 280.dp
+    val minLayerSide = 120.dp
+    val sideMargin = 16.dp
+    val safetyMargin = 16.dp
+    // V_NOW (user feedback "图片显示不全"): ROOT CAUSE
+    // FIX — the previous code computed [layerW] / [layerH]
+    // in PIXELS (mixing `viewport.width` from
+    // [onSizeChanged] which reports px, with
+    // `with(density) { X.dp.toPx() }` margins), then
+    // passed those px values back into [Modifier.size] as
+    // `with(density) { layerW.toDp() }`. The chain
+    // [Float (px) → Float.toDp() → Dp.value = px →
+    // Dp.toPx(density) = px * density] doubled the
+    // effective size at @density 2.0. The Box the user
+    // saw was 2× the intended layer size, so the
+    // [Canvas] inside reported [size] that was also 2×
+    // too large — its [fitScale = maxOf(...)] overshot,
+    // the image's height projected to ~ 2× the canvas
+    // height, and the top + bottom of the image were
+    // clipped outside the canvas bounds, producing the
+    // "图片显示不全" the user reported.
+    //
+    // Fix: drive the ENTIRE layer size chain in
+    // [Dp] from the start — convert the [IntSize] from
+    // [onSizeChanged] to dp ONCE, then size in dp, then
+    // [Modifier.size] receives plain dp values (no more
+    // `toDp()` round-trip). The math below is unitless
+    // ratio math, but the inputs and outputs are dp.
+    val viewportDpW: Dp = with(density) { viewport.width.toFloat().toDp() }
+    val viewportDpH: Dp = with(density) { viewport.height.toFloat().toDp() }
+    val statusBarPx: Int = WindowInsets.statusBars.getTop(density)
+    val navBarPx: Int = WindowInsets.navigationBars.getBottom(density)
+    val statusBarDp: Dp = with(density) { statusBarPx.toFloat().toDp() }
+    val navBarDp: Dp = with(density) { navBarPx.toFloat().toDp() }
+    val safeHeight = (viewportDpH - statusBarDp - navBarDp).coerceAtLeast(minLayerSide)
+    val maxLayerW = (viewportDpW - sideMargin * 2f).coerceAtLeast(minLayerSide)
+    val maxLayerH = (safeHeight - toolbarReserved - safetyMargin * 2f).coerceAtLeast(minLayerSide)
+    // V_NOW (user feedback "使用裁切工具裁切旋转过后的图片，
+    // 裁切图片显示不全"): the previous code used the
+    // image's INTRINSIC aspect (no rotation) to size the
+    // layer. When the image is rotated on the canvas
+    // (e.g. `cropImage.rotationDegrees` ≠ 0), the
+    // canvas's visual AABB is taller OR wider than the
+    // unrotated intrinsic — the layer was sized for the
+    // unrotated image, but the [Canvas] below renders the
+    // image ROTATED + cover-fit into that smaller layer.
+    // Result: the rotated image's four corners poked
+    // outside the layer, the layer's rounded-corner clip
+    // cropped them, and the user saw a tilted image with
+    // big empty "layer-coloured" wedges in the middle.
+    //
+    // Fix: size the layer to the image's ROTATED
+    // AABB aspect. For an angle θ around the image
+    // centre, the AABB is
+    //   aabbW = |bmpW·cos θ| + |bmpH·sin θ|
+    //   aabbH = |bmpW·sin θ| + |bmpH·cos θ|
+    //   aabbAspect = aabbW / aabbH
+    // The cover-fit's [fitScale = layerH / bmpH] is
+    // unchanged (verified algebraically — see the
+    // drawImage site comment), and the rotated AABB
+    // lines up exactly with the layer rectangle, so
+    // every pixel of the rotated image is visible.
+    // Flips ([cropImage.flipX/Y]) don't change the
+    // AABB, so we don't fold them into the aspect.
+    val bmpW = cropImage.intrinsicWidth.toFloat()
+    val bmpH = cropImage.intrinsicHeight.toFloat()
+    // V_NOW (user feedback "裁切旋转过后的图片，裁切图片
+    // 显示不全"): the rotation we render with in this
+    // overlay is [state.cropRotation] — the CROP TOOL'S
+    // INTERNAL rotation, NOT [cropImage.rotationDegrees].
+    //
+    // [cropImage.rotationDegrees] is the image's pose on
+    // the main canvas (set by the user's pinch-rotate
+    // gesture). [state.cropRotation] is a SEPARATE state
+    // field that the crop tool owns: it starts at 0f
+    // when [EnterCropMode] fires (PockRefViewModelScene
+    // line 695: `cropRotation = 0f` in the entry reducer)
+    // and is incremented by the user tapping the rotate
+    // buttons INSIDE the crop overlay.
+    //
+    // The bug the user just hit: the previous code read
+    // `cropImage.rotationDegrees` (always non-zero when
+    // the image was rotated on the canvas) and sized
+    // the layer to that AABB aspect, but then [drawImage]
+    // ALSO rotated by `cropImage.rotationDegrees` — so
+    // the layer was sized for a tilted AABB AND the
+    // image was rendered tilted to match, producing the
+    // "image covers the layer but the layer is too tall
+    // to fit" mis-alignment the user reported.
+    //
+    // The crop overlay is meant to show the image as if
+    // it were freshly loaded (rotation = 0 by default,
+    // the user can rotate the crop overlay independently
+    // if they want to crop a different orientation). The
+    // canvas's existing rotation is preserved in
+    // [cropImage.rotationDegrees] on the resulting
+    // [SceneImage] — the commitCrop reducer adds the
+    // tool's [cropRotation] to the canvas's
+    // [rotationDegrees] so the user's on-canvas rotation
+    // is never lost. So here in the overlay we only
+    // care about the crop tool's internal rotation.
+    val cropRotation = state.cropRotation
+    val imgAspect: Float = if (cropRotation == 0f) {
+        bmpW / bmpH
+    } else {
+        val rad = Math.toRadians(cropRotation.toDouble())
+        val cosA = kotlin.math.abs(kotlin.math.cos(rad)).toFloat()
+        val sinA = kotlin.math.abs(kotlin.math.sin(rad)).toFloat()
+        val aabbW = bmpW * cosA + bmpH * sinA
+        val aabbH = bmpW * sinA + bmpH * cosA
+        aabbW / aabbH
+    }
+    // V_NOW (user feedback "图片显示不全"): the previous
+    // formula used `coerceAtLeast(minLayerSide)` on the
+    // *secondary* axis alone. When the image's aspect
+    // was extreme (very tall OR very wide), the
+    // floor on the secondary axis broke the panel's
+    // aspect ratio — the panel no longer matched the
+    // image's aspect, so the image's [fitScale] = min(...)
+    // projection letterboxed inside the panel, leaving
+    // blank "layer-coloured" bars around the picture.
+    //
+    // New formula: the panel's aspect ratio is STRICTLY
+    // pinned to [imgAspect]. When the secondary axis
+    // hits the [minLayerSide] floor, we RECOMPUTE
+    // the binding axis to keep the ratio (the panel
+    // may then slightly exceed [maxLayerH] / [maxLayerW]
+    // — accepted because dropping below the floor would
+    // make the panel unusably small for tap targets).
+    val layerW: Dp
+    val layerH: Dp
+    if (maxLayerW / maxLayerH > imgAspect) {
+        // Available rect wider than image — height is
+        // the binding constraint. Width is derived.
+        var w = maxLayerH * imgAspect
+        if (w < minLayerSide) {
+            // Floor forces W up — recompute H to keep aspect.
+            w = minLayerSide
+            val h = w / imgAspect
+            layerW = w
+            layerH = h.coerceAtMost(maxLayerH).coerceAtLeast(minLayerSide)
+        } else {
+            layerW = w
+            layerH = maxLayerH
+        }
+    } else {
+        // Available rect taller than image — width is the
+        // binding constraint. Height is derived.
+        var h = maxLayerW / imgAspect
+        if (h < minLayerSide) {
+            h = minLayerSide
+            val w = h * imgAspect
+            layerH = h
+            layerW = w.coerceAtMost(maxLayerW).coerceAtLeast(minLayerSide)
+        } else {
+            layerW = maxLayerW
+            layerH = h
+        }
+    }
+    val currentLayerW by rememberUpdatedState(layerW)
+    val currentLayerH by rememberUpdatedState(layerH)
+
     val currentCropImage by rememberUpdatedState(cropImage)
-    val currentCanvasScale by rememberUpdatedState(state.canvasScale)
-    val currentCanvasOffset by rememberUpdatedState(state.canvasOffset)
-    val currentViewport by rememberUpdatedState(viewport)
     val currentCropRect by rememberUpdatedState(state.cropRect)
     val currentCropAspect by rememberUpdatedState(state.cropAspect)
     val currentOnAction by rememberUpdatedState(onAction)
 
     var dragEdge by remember { mutableStateOf<String?>(null) }
 
+    // V_NOW: [calcScreenCoords] now operates in FLOATING
+    // LAYER coordinates instead of VIEWPORT coordinates.
+    // The [CropRect] is still a 0..1 normalized selection
+    // over the image, but the projection target changed
+    // from "the image's position on the main canvas" to
+    // "the floating layer's top-left = (0, 0)". The
+    // returned tuple stays the same shape ([l, t, r, b,
+    // layerW, layerH]) so the existing drag-handler math
+    // (dx = dragAmount.x / imgW etc.) still works without
+    // per-branch changes. The previous code read
+    // [state.canvasScale] / [state.canvasOffset] / the
+    // image's display size / position to project onto the
+    // main canvas — those are intentionally discarded
+    // because the floating layer is independent of the
+    // canvas transform (the user can pan/zoom the main
+    // canvas without moving the crop layer).
     fun calcScreenCoords(): FloatArray {
-        val img = currentCropImage
-        val vp = currentViewport
-        val scale = currentCanvasScale
-        val offset = currentCanvasOffset
         val cr = currentCropRect
-        val cxOff = vp.width / 2f + offset.x
-        val cyOff = vp.height / 2f + offset.y
-        val imgW = img.displaySize.width * img.scale * scale
-        val imgH = img.displaySize.height * img.scale * scale
-        val imgL = cxOff + img.center.x * scale - imgW / 2f
-        val imgT = cyOff + img.center.y * scale - imgH / 2f
+        // Convert Dp to px — pointerInput coordinates are in
+        // pixels, so the crop rect must also be in pixels for
+        // hit-testing and drag math to work correctly.
+        val lw: Float = with(density) { currentLayerW.toPx() }
+        val lh: Float = with(density) { currentLayerH.toPx() }
         return floatArrayOf(
-            imgL + cr.left * imgW,
-            imgT + cr.top * imgH,
-            imgL + cr.right * imgW,
-            imgT + cr.bottom * imgH,
-            imgW,
-            imgH,
+            cr.left * lw,
+            cr.top * lh,
+            cr.right * lw,
+            cr.bottom * lh,
+            lw,
+            lh,
         )
     }
 
@@ -2113,9 +2497,55 @@ private fun BoxScope.CropOverlay(
         return aspect.ratioW / aspect.ratioH * (img.intrinsicHeight.toFloat() / img.intrinsicWidth.toFloat())
     }
 
-    Canvas(
+    // 1. Outer Column — wraps the entire CropOverlay in
+    //    the safe area (status bar above, nav bar below).
+    //    Split into [weight(1f) upper area for the
+    //    floating layer] + [fixed-height bottom toolbar].
+    Column(
         modifier = Modifier
             .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.systemBars),
+    ) {
+        // 1a. Upper area — `weight(1f)` consumes all
+        //     remaining space above the toolbar. The
+        //     floating Box is centered in this row via
+        //     `contentAlignment = Alignment.Center` so the
+        //     layer is visually centered in the upper
+        //     half, with no risk of overlap with the
+        //     toolbar below (different parent rows).
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
+            // 1b. Floating image layer — anchored in the
+            //     center of the upper area. The
+            //     [pointerInput] is on this Box so drag
+            //     events flow naturally; the [shadow] /
+            //     [background] / [clip] chain applies the
+            //     iOS-PiP card silhouette. The 16dp shadow
+            //     is decorative (no layout cost); with
+            //     [clip = false] it would otherwise show
+            //     rectangular corners outside the rounded
+            //     clip, so we pass the matching shape
+            //     explicitly.
+            Box(
+                modifier = Modifier
+                    .size(
+                        width = layerW,
+                        height = layerH,
+                    )
+                    .shadow(
+                        elevation = 16.dp,
+                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+                        clip = false,
+                    )
+                    .background(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            )
+            .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragStart = { start ->
@@ -2283,105 +2713,345 @@ private fun BoxScope.CropOverlay(
                 )
             },
     ) {
-        val c = calcScreenCoords()
-        val cL = c[0]; val cT = c[1]; val cR = c[2]; val cB = c[3]
-        val cW = cR - cL; val cH = cB - cT
+        // V_NOW: render the actual cropped image as the
+        // bottom layer inside the chrome canvas. The layer's
+        // aspect is sized to match the image's intrinsic
+        // aspect (see [imgAspect] / `layerW` / `layerH`
+        // computation above), so a FIT draw of the decoded
+        // bitmap fills the layer exactly. Rotation / flip
+        // from the [SceneImage] transform fields are applied
+        // with the same pivot as the main canvas's
+        // [drawSceneImage] so the preview matches what the
+        // user saw on the main canvas before tapping the
+        // crop tool. The dim / border / grid / handles paint
+        // on top of this image so the user can see both
+        // the picture AND the crop overlay at the same time.
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val c = calcScreenCoords()
+            val cL = c[0]; val cT = c[1]; val cR = c[2]; val cB = c[3]
+            val cW = cR - cL; val cH = cB - cT
 
-        drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(0f, 0f), size = Size(cL, size.height))
-        drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cR, 0f), size = Size(size.width - cR, size.height))
-        drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cL, 0f), size = Size(cW, cT))
-        drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cL, cB), size = Size(cW, size.height - cB))
-        drawRect(
-            color = Color.White,
-            topLeft = Offset(cL, cT),
-            size = Size(cW, cH),
-            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
-        )
-        val gridColor = Color.White.copy(alpha = 0.35f)
-        for (i in 1..2) {
-            val fx = cL + cW * i / 3f
-            drawLine(gridColor, Offset(fx, cT), Offset(fx, cB), strokeWidth = 1f)
-            val fy = cT + cH * i / 3f
-            drawLine(gridColor, Offset(cL, fy), Offset(cR, fy), strokeWidth = 1f)
-        }
-        val cornerLen = 28f
-        val cornerW = 4f
-        val cornerColor = Color.White
-        val cornerPairs = listOf(
-            Offset(cL, cT) to listOf(Offset(cornerLen, 0f), Offset(0f, cornerLen)),
-            Offset(cR, cT) to listOf(Offset(-cornerLen, 0f), Offset(0f, cornerLen)),
-            Offset(cL, cB) to listOf(Offset(cornerLen, 0f), Offset(0f, -cornerLen)),
-            Offset(cR, cB) to listOf(Offset(-cornerLen, 0f), Offset(0f, -cornerLen)),
-        )
-        cornerPairs.forEach { (corner, dirs) ->
-            dirs.forEach { dir ->
-                drawLine(cornerColor, corner, corner + dir, strokeWidth = cornerW)
+            if (displayBitmap != null) {
+                val bmpW = displayBitmap.width.toFloat()
+                val bmpH = displayBitmap.height.toFloat()
+                // V_NOW (user feedback "裁切旋转过后的图片，
+                // 裁切图片显示不全"): for a rotated image,
+                // the image's VISUAL footprint is its
+                // rotated AABB — `(aabbW, aabbH)`, not the
+                // intrinsic `(bmpW, bmpH)`. The cover-fit
+                // has to compute [fitScale] from the AABB
+                // dimensions, otherwise the post-rotation
+                // image AABB overshoots the layer.
+                //
+                // Why: with intrinsic fit
+                //   fitScale = max(layerW / bmpW, layerH / bmpH)
+                // and a 9:16 portrait image (bmpW/bmpH =
+                // 0.5625) rotated 15° around its centre, the
+                // AABB becomes
+                //   aabbW = 0.5625*cos 15 + 1*sin 15 ≈ 0.802
+                //   aabbH = 0.5625*sin 15 + 1*cos 15 ≈ 1.112
+                // (normalised to bmpH = 1). The layer, sized
+                // to aabbW/aabbH ≈ 0.721, is e.g. 720×1000dp
+                // instead of the original intrinsic 9:16
+                // ratio. With the OLD intrinsic-based
+                // [fitScale = max(720 / bmpW, 1000 / bmpH)] =
+                // 1000 / bmpH, the bitmap draws at
+                // bmpH*fitScale = 1000 (touches the layer
+                // top + bottom) but bmpW*fitScale = 562.5
+                // (well under the 720dp layer width). After
+                // rotating 15° around the layer centre, the
+                // rotated image's AABB = 1000*1.112 = 1112dp
+                // tall and 562.5*1.112 ≈ 625dp wide, which
+                // exceeds the 1000dp layer height. The 56dp
+                // overshoot is clipped by the layer's
+                // rounded-corner clip → the user sees
+                // empty "layer-coloured" wedges in the
+                // middle of the image.
+                //
+                // The CORRECT fitScale makes the rotated
+                // image's AABB line up with the layer:
+                //   fitScale = max(layerW / aabbW, layerH / aabbH)
+                // Algebraically: layerW / aabbW = layerH /
+                // aabbH (both equal to the layer / aabb
+                // size ratio), so the max is just that one
+                // value. With that scale, the rotated
+                // image's AABB = (layerW, layerH) — the
+                // image's four rotated corners land exactly
+                // on the layer's four corners, every pixel
+                // visible, no clipping, no wedges.
+                //
+                // Flips don't change the AABB so we keep
+                // them out of the AABB math (they only
+                // change which way the pixels face inside
+                // the rotated AABB).
+                val aabbW: Float
+                val aabbH: Float
+                if (cropRotation == 0f) {
+                    aabbW = bmpW
+                    aabbH = bmpH
+                } else {
+                    val rad = Math.toRadians(cropRotation.toDouble())
+                    val cosA = kotlin.math.abs(kotlin.math.cos(rad)).toFloat()
+                    val sinA = kotlin.math.abs(kotlin.math.sin(rad)).toFloat()
+                    aabbW = bmpW * cosA + bmpH * sinA
+                    aabbH = bmpW * sinA + bmpH * cosA
+                }
+                val fitScale = maxOf(size.width / aabbW, size.height / aabbH)
+                val drawW = bmpW * fitScale
+                val drawH = bmpH * fitScale
+                val offX = (size.width - drawW) / 2f
+                val offY = (size.height - drawH) / 2f
+                rotate(
+                    degrees = cropRotation,
+                    pivot = Offset(size.width / 2f, size.height / 2f),
+                ) {
+                    scale(
+                        scaleX = if (cropImage.flipX) -1f else 1f,
+                        scaleY = if (cropImage.flipY) -1f else 1f,
+                        pivot = Offset(size.width / 2f, size.height / 2f),
+                    ) {
+                        drawImage(
+                            image = displayBitmap,
+                            dstOffset = IntOffset(offX.toInt(), offY.toInt()),
+                            dstSize = IntSize(drawW.toInt().coerceAtLeast(1), drawH.toInt().coerceAtLeast(1)),
+                        )
+                    }
+                }
+            }
+
+            drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(0f, 0f), size = Size(cL, size.height))
+            drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cR, 0f), size = Size(size.width - cR, size.height))
+            drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cL, 0f), size = Size(cW, cT))
+            drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cL, cB), size = Size(cW, size.height - cB))
+            drawRect(
+                color = Color.White,
+                topLeft = Offset(cL, cT),
+                size = Size(cW, cH),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
+            )
+            val gridColor = Color.White.copy(alpha = 0.35f)
+            for (i in 1..2) {
+                val fx = cL + cW * i / 3f
+                drawLine(gridColor, Offset(fx, cT), Offset(fx, cB), strokeWidth = 1f)
+                val fy = cT + cH * i / 3f
+                drawLine(gridColor, Offset(cL, fy), Offset(cR, fy), strokeWidth = 1f)
+            }
+            val cornerLen = 28f
+            val cornerW = 4f
+            val cornerColor = Color.White
+            val cornerPairs = listOf(
+                Offset(cL, cT) to listOf(Offset(cornerLen, 0f), Offset(0f, cornerLen)),
+                Offset(cR, cT) to listOf(Offset(-cornerLen, 0f), Offset(0f, cornerLen)),
+                Offset(cL, cB) to listOf(Offset(cornerLen, 0f), Offset(0f, -cornerLen)),
+                Offset(cR, cB) to listOf(Offset(-cornerLen, 0f), Offset(0f, -cornerLen)),
+            )
+            cornerPairs.forEach { (corner, dirs) ->
+                dirs.forEach { dir ->
+                    drawLine(cornerColor, corner, corner + dir, strokeWidth = cornerW)
+                }
+            }
+            val handlePositions = listOf(
+                Offset(cL, cT), Offset(cR, cT), Offset(cL, cB), Offset(cR, cB),
+                Offset((cL + cR) / 2f, cT), Offset((cL + cR) / 2f, cB),
+                Offset(cL, (cT + cB) / 2f), Offset(cR, (cT + cB) / 2f),
+            )
+            handlePositions.forEach { pos ->
+                drawCircle(color = Color.White, radius = handleRadius, center = pos)
+                drawCircle(color = Color(0xFF2196F3), radius = handleRadius - 3f, center = pos)
             }
         }
-        val handlePositions = listOf(
-            Offset(cL, cT), Offset(cR, cT), Offset(cL, cB), Offset(cR, cB),
-            Offset((cL + cR) / 2f, cT), Offset((cL + cR) / 2f, cB),
-            Offset(cL, (cT + cB) / 2f), Offset(cR, (cT + cB) / 2f),
-        )
-        handlePositions.forEach { pos ->
-            drawCircle(color = Color.White, radius = handleRadius, center = pos)
-            drawCircle(color = Color(0xFF2196F3), radius = handleRadius - 3f, center = pos)
         }
     }
 
-    Column(
+    // 1c. Bottom toolbar — second (and last) child of the
+    //     outer safe-area Column above. Sits flush against
+    //     the safe-area bottom (= just above the nav bar
+    //     thanks to the outer `windowInsetsPadding(systemBars)`).
+    //     The two rows are: the aspect chip row
+    //     (1:1 / 4:3 / 3:2 / 16:9 / 9:16 / 自由) and the
+    //     action button row (取消 / 应用).
+    //
+    // V_NOW (M3 sheet chrome, user feedback "裁切界面的视觉风格
+    // 要跟现在选区弹出后整体窗口的展示风格保持一致"): the
+    // toolbar is now a custom [Surface] styled to match
+    // [SelectionBottomSheet]'s [ModalBottomSheet] chrome:
+    //   - shape = RoundedCornerShape(topStart = 28.dp,
+    //     topEnd = 28.dp) — M3 sheet standard top corners
+    //     (was 12dp [ChromeCornerRadius], a "card" shape)
+    //   - color = MaterialTheme.colorScheme.surface solid —
+    //     no alpha tint (was 0.92-alpha, a frosted look
+    //     that competed with the canvas image behind)
+    //   - tonalElevation = 0.dp — M3 sheet default
+    //     (was 3.dp, a "card" elevation)
+    //   - widthIn(max = 560.dp) + [Alignment.CenterHorizontally] —
+    //     M3 sheet caps its width on tablets so the panel
+    //     doesn't span the full 1750dp landscape width
+    //     (was fillMaxWidth, the toolbar stretched to the
+    //     screen edges)
+    //   - 32x4dp drag handle at the top — matches
+    //     [SelectionBottomSheet]'s handle (M3 spec for
+    //     large component bottom sheets)
+    //   - bottom padding 12dp (was vertical 8dp, which
+    //     compressed the action row into the chrome)
+    //
+    // V_NOW (M3 sheet vs ModalBottomSheet): the obvious
+    // choice would be to swap this [Surface] for a real
+    // [ModalBottomSheet] (the same component the selection
+    // sheet uses), but [ModalBottomSheet]'s built-in scrim
+    // intercepts ALL touches outside the sheet content
+    // (even with `scrimColor = Color.Transparent` —
+    // M3's Scrim composable still receives the touch and
+    // dismisses on tap). For the SELECTION sheet this is
+    // correct (canvas should be inert while the sheet is
+    // up). For CROP the user MUST be able to drag the
+    // floating image's crop handles WHILE the toolbar is
+    // visible, so a touch-intercepting scrim is fatal.
+    // The custom [Surface] reproduces the sheet chrome
+    // (handle / corners / color / elevation / max width)
+    // without the scrim, keeping the floating image
+    // fully interactive. The redundant
+    // `windowInsetsPadding(navigationBars)` is removed
+    // (the parent Column already pads against
+    // [WindowInsets.systemBars]).
+    Surface(
         modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .windowInsetsPadding(WindowInsets.navigationBars),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .widthIn(max = 560.dp)
+            .fillMaxWidth()
+            .align(Alignment.CenterHorizontally),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.dp,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+                .padding(bottom = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            CropAspect.entries.forEach { aspect ->
-                FilterChip(
-                    selected = state.cropAspect == aspect,
-                    onClick = { onAction(PockRefAction.SetCropAspect(aspect)) },
-                    label = { Text(aspect.label, style = MaterialTheme.typography.labelSmall) },
+            // V_NOW: 32x4dp drag handle at top centre,
+            // matching [SelectionBottomSheet]'s handle.
+            // M3 1.2's default handle is slightly larger;
+            // we keep the 32x4dp custom to match the
+            // M3 spec for large component bottom sheets
+            // (and the existing [SelectionBottomSheet]).
+            Box(
+                modifier = Modifier
+                    .padding(vertical = 10.dp)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 32.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(Color(0xFFC1C7CE)),
                 )
             }
-        }
 
-        // V_NOW (user request): rotation row removed. The
-        // [向左旋转 90°] / [向右旋转 90°] / [0°] display
-        // controls are gone from the crop interface; the
-        // user wants a leaner crop UI that just crops (no
-        // embedded rotation). The underlying
-        // [PockRefAction.SetCropRotation] / [PockRefUiState.cropRotation]
-        // / [SceneController.setCropRotation] infrastructure
-        // is left intact (in case rotation is restored later
-        // via a different affordance); only the UI rendering
-        // and the user-facing controls are removed.
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            FilledTonalButton(
-                onClick = { onAction(PockRefAction.CancelCrop) },
-                modifier = Modifier.size(width = 120.dp, height = 48.dp),
+            // V_NOW (user feedback "完全无法使用" + screenshot
+            // showed the toolbar compressed to a single row):
+            // wrap the chip row + button row in a fixed-height
+            // [Column] with a 12dp [Spacer] between them so
+            // the two rows are GUARANTEED to render as two
+            // separate visual rows regardless of font scale
+            // or chip-row wrap behaviour. The [Spacer] (vs
+            // relying on the implicit 0dp gap between the two
+            // [Row]s) ensures the layout doesn't degenerate to
+            // a single line on a constrained-height parent.
+            //
+            // V_NOW (chip layout): [Arrangement.spacedBy(8.dp)]
+            // replaces the previous [SpaceEvenly] so the
+            // chips read as a visually-grouped "ratio picker"
+            // (uniform 8dp gap between siblings) rather than
+            // getting pushed to the screen edges by
+            // SpaceEvenly's "distribute remaining space"
+            // semantics. 8dp is M3's recommended chip-row
+            // spacing.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text("取消")
+                CropAspect.entries.forEach { aspect ->
+                    FilterChip(
+                        selected = state.cropAspect == aspect,
+                        onClick = { onAction(PockRefAction.SetCropAspect(aspect)) },
+                        label = { Text(aspect.label, style = MaterialTheme.typography.labelSmall) },
+                    )
+                }
             }
-            Button(
-                onClick = { onAction(PockRefAction.CommitCrop) },
-                modifier = Modifier.size(width = 120.dp, height = 48.dp),
+
+            // V_NOW (user request): rotation row removed. The
+            // [向左旋转 90°] / [向右旋转 90°] / [0°] display
+            // controls are gone from the crop interface; the
+            // user wants a leaner crop UI that just crops (no
+            // embedded rotation). The underlying
+            // [PockRefAction.SetCropRotation] / [PockRefUiState.cropRotation]
+            // / [SceneController.setCropRotation] infrastructure
+            // is left intact (in case rotation is restored later
+            // via a different affordance); only the UI rendering
+            // and the user-facing controls are removed.
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // V_NOW (user feedback "检查下方取消和应用按钮
+            // 是否符合 material3"): the M3 standard for
+            // a "dismiss + confirm" action pair is
+            //   - **Confirm (应用)** = [Button] / Filled
+            //     (primary, the affirmative action)
+            //   - **Dismiss (取消)** = [TextButton]
+            //     (text-only, the lesser action)
+            // with both buttons RIGHT-ALIGNED in the row
+            // (the M3 dialog / bottom-sheet action bar
+            // convention — the primary action sits at the
+            // end of the visual flow so the thumb lands on
+            // it after reading the content from left to
+            // right).
+            //
+            // The previous layout had [FilledTonalButton]
+            // for 取消 (= the same "primary filled" visual
+            // weight as 应用), which broke the M3
+            // primary-vs-secondary hierarchy AND used
+            // [SpaceEvenly] which pushed the two buttons
+            // to opposite screen edges with a useless
+            // empty gap in the middle. The new layout:
+            //   - 取消 → [TextButton] (text only, no fill)
+            //   - 应用 → [Button] (kept; primary filled)
+            //   - both right-aligned via
+            //     [Spacer(Modifier.weight(1f))]
+            //   - 8dp gap between the two buttons so the
+            //     pair reads as a group
+            //   - 16dp horizontal padding to leave breathing
+            //     room from the screen edge
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(20.dp))
-                Text("应用", modifier = Modifier.padding(start = 6.dp))
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = { onAction(PockRefAction.CancelCrop) },
+                ) {
+                    Text("取消")
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = { onAction(PockRefAction.CommitCrop) },
+                ) {
+                    Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Text("应用", modifier = Modifier.padding(start = 6.dp))
+                }
             }
         }
     }
+    }  // <-- closes the outer safe-area Column (L2504) wrapping
+       //     the upper `Box(weight(1f))` (floating image) +
+       //     the bottom toolbar [Surface]. The original
+       //     block had this close at the end of the closing
+       //     brace stack; the new block must include it to
+       //     match the function's brace structure.
 }
 
 /**
@@ -2646,6 +3316,32 @@ private fun BoxScope.MinimapChrome(
     // timestamp is the call-site update, not the polling
     // loop reading it.
 
+    // V_NOW: long-press zoom slider state shared by both
+    // collapsed and expanded minimap branches.
+    val zoomSliderActive = remember { mutableStateOf(false) }
+    val hapticFeedback = LocalHapticFeedback.current
+    val currentOnAction by rememberUpdatedState(onAction)
+    val currentCanvasScale by rememberUpdatedState(state.canvasScale)
+
+    // Morph progress: 0f = minimap, 1f = zoom slider.
+    // 200ms ease-out for dismiss; 300ms emphasized for appear.
+    val morphProgress by animateFloatAsState(
+        targetValue = if (zoomSliderActive.value) 1f else 0f,
+        animationSpec = if (zoomSliderActive.value) {
+            tween(durationMillis = 300, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))
+        } else {
+            tween(durationMillis = 200, easing = FastOutSlowInEasing)
+        },
+        label = "minimapToSlider",
+    )
+
+    // Slider height: inverse relationship with zoom.
+    // 25% → 200dp, 100% → 120dp, 400% → 60dp.
+    // Linear interpolation: h = 200 - (scale - 0.25) / (4.0 - 0.25) * 140
+    val sliderHeightDp by remember {
+        derivedStateOf { 200f - (currentCanvasScale - 0.25f) / (4.0f - 0.25f) * 140f }
+    }
+
     if (state.minimapCollapsed) {
         // V_NOW (iOS PiP-style minimap — position
         // preservation): the bar is positioned via
@@ -2812,7 +3508,36 @@ private fun BoxScope.MinimapChrome(
                         onDoubleTap = {
                             onAction(PockRefAction.SetMinimapCollapsed(false))
                         },
+                        onLongPress = {
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                            zoomSliderActive.value = true
+                        },
                     )
+                }
+                // Drag on slider to zoom
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (!zoomSliderActive.value) return@awaitEachGesture
+                        down.consume()
+                        var lastY = down.position.y
+                        do {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { change ->
+                                change.consume()
+                                if (zoomSliderActive.value) {
+                                    val dy = lastY - change.position.y
+                                    lastY = change.position.y
+                                    // 0.05x per 10px → 0.005x per px
+                                    val scaleDelta = dy * 0.005f
+                                    val newScale = (currentCanvasScale + scaleDelta).coerceIn(0.25f, 4.0f)
+                                    currentOnAction(PockRefAction.SetCanvasZoom(newScale))
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
+                        // Finger released — dismiss slider
+                        zoomSliderActive.value = false
+                    }
                 },
         ) {
             CollapsedMinimapIcon(
@@ -2821,112 +3546,26 @@ private fun BoxScope.MinimapChrome(
                     onAction(PockRefAction.SetMinimapCollapsed(false))
                 },
             )
+            // Zoom slider overlay (cross-fades over the
+            // collapsed bar when long-press activates)
+            if (morphProgress > 0.01f) {
+                MinimapZoomSlider(
+                    modifier = Modifier.graphicsLayer(alpha = morphProgress),
+                    sliderHeightDp = sliderHeightDp,
+                    canvasScale = currentCanvasScale,
+                )
+            }
         }
     } else {
-        // Full minimap panel. Outer Box carries the
-        // V_NOW: long-press-drag-to-move AND
-        // two-finger pinch-to-zoom are BOTH DISABLED
-        // by user spec "minimap 去掉长按功能" +
-        // "minimap 禁止自由调整大小". The panel
-        // is anchored at its [Alignment.BottomStart]
-        // default position (24dp inset, 24dp above
-        // bottom edge) for the entire session —
-        // no drag, no zoom, no lift animation. The
-        // [graphicsLayer] block is a no-op identity
-        // transform; the [onSizeChanged] still
-        // captures panel size for the [offset]
-        // alignment math but no [localPosition]
-        // mutation ever happens.
-        //
-        // The inner is the existing [CanvasMinimap]
-        // (which keeps its own canvas-pan-by-drag
-        // gesture for panning the MAIN view, NOT
-        // moving the minimap panel — see the
-        // coexistence note at the call site).
+        // Full minimap panel.
+        // Double-tap collapses to dock bar.
+
         androidx.compose.foundation.layout.Box(
             modifier = Modifier
-                // V_NOW (alignment fix — minimap
-                // bottom = FAB bottom): the box
-                // is anchored to
-                // [Alignment.BottomStart] with
-                // 24dp inset (via [Modifier.padding]),
-                // so the box's bottom edge is
-                // ALWAYS at
-                // [parentHeight - 24dp] regardless
-                // of the box's measured size. The
-                // previous design used a
-                // fixed [estimatedMinimapSize] =
-                // 200dp placeholder in the
-                // default-position math
-                // (top-left = (24,
-                // parentHeight - 200 - 24)),
-                // which left the box's bottom
-                // edge at
-                // [parentHeight - 24 - 200 + actualH]
-                // when the actual panel was
-                // smaller than 200dp — visibly
-                // higher than the FAB. The new
-                // design reads the post-layout
-                // [IntSize] via [Modifier.onSizeChanged]
-                // and converts [localPosition]
-                // (screen-coord top-left) into
-                // an offset RELATIVE to the
-                // aligned position, so the
-                // box's screen-coord top-left
-                // is still exactly
-                // [localPosition.value]. Drag
-                // math, persistence, dock
-                // detection — all unchanged.
                 .align(Alignment.BottomStart)
                 .padding(start = Dimens.CornerInset, bottom = Dimens.CornerInset)
                 .onSizeChanged { panelActualSize.value = it }
                 .offset {
-                    // V_NOW (alignment fix v2 — Box size
-                    // includes padding): the previous
-                    // version of this expression was
-                    //
-                    //   alignedY = parentHeight - 24 - panelActualSize.value.height
-                    //
-                    // which over-subtracted 24dp. The
-                    // reason: [Modifier.padding(start,
-                    // bottom)] wraps the box's INNER
-                    // content; the box's outer size
-                    // is [child + padding] =
-                    // [child + 24 in both width and
-                    // height], so
-                    // [panelActualSize.value.height]
-                    // reports [childHeight + 24] —
-                    // NOT [childHeight]. Subtracting
-                    // 24 again double-counted the
-                    // bottom padding and the child
-                    // ended up 24dp short of
-                    // [parentHeight - 24]. The
-                    // corrected formula
-                    //
-                    //   alignedY = parentHeight - panelActualSize.value.height
-                    //
-                    // yields [parentHeight - childHeight
-                    // - 24] = exactly the child
-                    // top-left Y at the
-                    // bottom-aligned default, so
-                    // [localPosition.value] ==
-                    // (24, parentHeight - childHeight
-                    // - 24) at the default and the
-                    // child bottom lands at exactly
-                    // [parentHeight - 24], aligned
-                    // flush with the FAB.
-                    // V_NOW (alignment fix): when the
-                    // minimap is at its default position
-                    // (Unspecified = never dragged), the
-                    // align+padding already positions the
-                    // box correctly at BottomStart with
-                    // 24dp inset. The offset should be
-                    // zero so the box stays at that
-                    // aligned position. When the user
-                    // has dragged the minimap, we
-                    // convert the screen-coord
-                    // localPosition to an offset
-                    // relative to the aligned position.
                     if (state.minimapPosition == Offset.Unspecified) {
                         IntOffset.Zero
                     } else {
@@ -2939,68 +3578,13 @@ private fun BoxScope.MinimapChrome(
                     }
                 }
                 .graphicsLayer {
-                    // V_NOW: identity transform — the
-                    // panel is a static
-                    // [Alignment.BottomStart] surface
-                    // that draws with its raw size +
-                    // a fixed 2dp shadow (matching the
-                    // previous idle-state shadow).
-                    // Pinch-zoom + long-press-lift
-                    // scale animations are removed by
-                    // user spec. No [Modifier.scaleX/Y]
-                    // write, no [shadowElevation] lerp.
-                    shadowElevation = 2.dp.toPx()
+                    shadowElevation = 0f
                 }
-                // V_NOW: long-press drag handler is
-                // REMOVED by user spec "minimap 去掉
-                // 长按功能". The panel stays anchored
-                // at its [Alignment.BottomStart]
-                // default position. No pointerInput
-                // is attached to the outer panel
-                // Box anymore — the panel has zero
-                // touch interactivity of its own
-                // (the inner [CanvasMinimap] keeps
-                // its own canvas-pan-by-drag for
-                // panning the MAIN view, which
-                // doesn't conflict with this
-                // "panel stays still" rule).
-                // V_NOW: two-finger pinch-to-zoom is
-                // DISABLED by user spec "minimap 禁止
-                // 自由调整大小". The panel size is
-                // fixed by the scene-bbox math in
-                // [CanvasMinimap] (60dp..200dp).
-                // The previous [detectTransformGestures]
-                // pointerInput, [liveZoom] state, and
-                // [SetMinimapZoomScale] dispatch are
-                // removed from this UI layer. The
-                // data layer (PockRefAction /
-                // AppPreferences / ViewModel reducer)
-                // is preserved so a future re-enable
-                // is a UI-only restoration, and
-                // existing users' persisted
-                // `minimap_zoom_scale` SharedPreferences
-                // key is harmlessly ignored.
-                //
-                // V_NOW (iOS PiP-style): double-tap on
-                // the expanded panel collapses to the
-                // bar at the current position. The
-                // user spec is "在面板上双击就收回
-                // 小白条", matching the iOS PiP
-                // double-tap-to-toggle behavior. The
-                // dock-edge detection on long-press
-                // drag is preserved for the
-                // drag-to-edge case; double-tap is
-                // the complement (panel still in the
-                // middle of the screen, just want to
-                // hide it without moving it). On
-                // double-tap, [minimapCollapsed]
-                // flips to true and
-                // [minimapDockEdge] is set to the
-                // nearest edge so the bar appears
-                // docked.
+                // Long-press activates zoom slider; double-tap collapses
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
+                            zoomSliderActive.value = false
                             val pos = localPosition.value
                             val nearestEdge = when {
                                 pos.x < currentParentWidth / 2f ->
@@ -3011,33 +3595,102 @@ private fun BoxScope.MinimapChrome(
                             onAction(PockRefAction.SetMinimapDockEdge(nearestEdge))
                             onAction(PockRefAction.SetMinimapCollapsed(true))
                         },
+                        onLongPress = {
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                            zoomSliderActive.value = true
+                        },
                     )
+                }
+                // Drag on slider to zoom
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (!zoomSliderActive.value) return@awaitEachGesture
+                        down.consume()
+                        var lastY = down.position.y
+                        do {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { change ->
+                                change.consume()
+                                if (zoomSliderActive.value) {
+                                    val dy = lastY - change.position.y
+                                    lastY = change.position.y
+                                    val scaleDelta = dy * 0.005f
+                                    val newScale = (currentCanvasScale + scaleDelta).coerceIn(0.25f, 4.0f)
+                                    currentOnAction(PockRefAction.SetCanvasZoom(newScale))
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
+                        // Finger released — dismiss slider
+                        zoomSliderActive.value = false
+                    }
                 },
         ) {
             CanvasMinimap(
                 state = state,
                 onAction = onAction,
-                modifier = Modifier,
+                modifier = Modifier.graphicsLayer(alpha = 1f - morphProgress),
                 isCollapsed = false,
                 onExpand = {},
-                // V_NOW (0-frame pinch lag fix): the
-                // panel SIZE is no longer
-                // parameter-driven. Pinch zoom
-                // is applied by the outer
-                // [Modifier.graphicsLayer.scaleX/Y]
-                // in the [MinimapChrome]
-                // wrapper, which scales the
-                // panel's DRAW output without
-                // re-running layout. The panel
-                // base size here is the
-                // scene-bbox-derived [60dp,
-                // 200dp] — draw-time scaling
-                // produces the visual 0.5×
-                // – 2.0× range the user
-                // pinches for, with 0-frame
-                // latency.
             )
+            // Zoom slider overlay (cross-fades over the
+            // minimap when long-press activates)
+            if (morphProgress > 0.01f) {
+                MinimapZoomSlider(
+                    modifier = Modifier.graphicsLayer(alpha = morphProgress),
+                    sliderHeightDp = sliderHeightDp,
+                    canvasScale = currentCanvasScale,
+                )
+            }
         }
+    }
+}
+
+/**
+ * Floating vertical zoom slider that replaces the minimap
+ * on long-press. M3 visual specs:
+ * - Container: 8dp wide, 4dp corner radius,
+ *   surfaceContainerHighest background, 3dp elevation
+ * - Indicator: 2dp wide, primary color, fills from
+ *   bottom to the current zoom position
+ * - Height: inverse to zoom (25%=200dp, 100%=120dp,
+ *   400%=60dp)
+ * - Zoom label at top
+ */
+@Composable
+private fun MinimapZoomSlider(
+    modifier: Modifier = Modifier,
+    sliderHeightDp: Float,
+    canvasScale: Float,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val density = LocalDensity.current
+
+    Box(
+        modifier = modifier
+            .width(8.dp)
+            .height(with(density) { sliderHeightDp.dp.toPx().toDp() })
+            .shadow(3.dp, RoundedCornerShape(4.dp))
+            .background(
+                colorScheme.surfaceContainerHighest,
+                RoundedCornerShape(4.dp),
+            ),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        // Filled indicator: 2dp wide, primary color.
+        // Height proportional to zoom position
+        // (0.25 = 0%, 4.0 = 100%).
+        val fillFraction = ((canvasScale - 0.25f) / (4.0f - 0.25f))
+            .coerceIn(0f, 1f)
+        Box(
+            modifier = Modifier
+                .width(2.dp)
+                .fillMaxHeight(fillFraction)
+                .background(
+                    colorScheme.primary,
+                    RoundedCornerShape(1.dp),
+                ),
+        )
     }
 }
 
@@ -4351,6 +5004,14 @@ private fun PockRefCanvas(
     onAction: (PockRefAction) -> Unit,
     imageLazyLoader: com.pockref.app.data.PurFileParser? = null,
     imageDecoder: com.pockref.app.data.SceneImageDecoder? = null,
+    // V_NOW (user feedback "P0-A1 阈值按 density 缩放"):
+    // [LocalDensity.current] is a @Composable getter, but the
+    // gesture handler runs inside [pointerInput { awaitEachGesture }]
+    // which is NOT a @Composable scope. We read density here
+    // (composable scope) and forward it into the handler closure.
+    // The `density` variable is then used by the threshold
+    // conversion at the start of each gesture below.
+    density: androidx.compose.ui.unit.Density = LocalDensity.current,
     // V2: hover-magnifier progress, computed at the
     // [PockRefApp] level so the same value is read by
     // both the in-canvas magnifier and the
@@ -4701,6 +5362,50 @@ private fun PockRefCanvas(
     val lockedStrokeColor = LockedStrokeColor
     val lockedGlowColor = LockedGlowColor
 
+    // V_NOW (P2-C3): drive the selection-flash alpha
+    // off a Compose State so the Canvas re-draws every
+    // ~16ms while the 200ms flash is active. We can't
+    // compute alpha from `System.currentTimeMillis()`
+    // inside [DrawScope] alone — the draw lambda is
+    // only re-invoked when a state it READS changes,
+    // and `now()` is not a state read. The pattern
+    // below uses [produceState] keyed on
+    // [state.selectionFlash] so a brand-new flash
+    // (or a null → non-null transition) launches a
+    // coroutine that updates `flashAlphaNow` for
+    // 200ms, then leaves it at 0f.
+    //
+    // The flash alpha curve is 0.1 → 0.5 over the
+    // first 100ms, 0.5 → 0.0 over the next 100ms,
+    // then 0 (see also [drawSceneImage] which
+    // re-derives the curve from the same elapsed-ms
+    // computation; the state is read inside the draw
+    // lambda so the Canvas re-invalidates each tick).
+    val flashAlphaNow by produceState(
+        initialValue = 0f,
+        key1 = state.selectionFlash,
+    ) {
+        val flash = state.selectionFlash
+        if (flash == null) {
+            value = 0f
+            return@produceState
+        }
+        val startMs = flash.atMs
+        while (true) {
+            val elapsed = System.currentTimeMillis() - startMs
+            if (elapsed >= 200L) {
+                value = 0f
+                break
+            }
+            value = if (elapsed < 100L) {
+                0.1f + 0.4f * (elapsed / 100f)
+            } else {
+                0.5f * (1f - (elapsed - 100L) / 100f)
+            }
+            kotlinx.coroutines.delay(16L)
+        }
+    }
+
     Canvas(
         modifier = modifier
             .background(state.backgroundColor)
@@ -4747,10 +5452,38 @@ private fun PockRefCanvas(
                         }
                     }
                     down.consume()
+                    // If the crop overlay is active, skip all
+                    // canvas gesture processing so touches on
+                    // the dimmed mask area don't accidentally
+                    // select / drag images behind the overlay.
+                    if (currentState.cropImageId != null) return@awaitEachGesture
                     val downPos = down.position
                     val downTime = System.currentTimeMillis()
                     val s = currentState
                     val hitId = hitTestImage(s, downPos, Size(size.width.toFloat(), size.height.toFloat()))
+
+                    // V_NOW (user feedback "P0-A1 阈值按 density
+                    // 缩放"): the file-scope *DP constants (e.g.
+                    // [DRAG_TAP_THRESHOLD_DP])
+                    // are interpreted in "device-independent
+                    // pixels" and need to be multiplied by the
+                    // current screen density to get the raw
+                    // pixel values the pointer math uses. We
+                    // capture [density] once per gesture (not
+                    // per frame) so a configuration change mid-
+                    // gesture would still let the gesture run to
+                    // completion under the values it started
+                    // with — the next gesture picks up the new
+                    // density. [density] is forwarded in from
+                    // the [PockRefCanvas] composable scope
+                    // because [LocalDensity.current] is not
+                    // callable inside a non-@Composable
+                    // [awaitEachGesture] body.
+                    val dragTapThresholdPx = with(density) { DRAG_TAP_THRESHOLD_DP.dp.toPx() }
+                    val tapMaxDragPx = with(density) { TAP_MAX_DRAG_DP.dp.toPx() }
+                    val gestureMovedThresholdPx = with(density) { GESTURE_MOVED_THRESHOLD_DP.dp.toPx() }
+                    val doubleTapMaxDistPx = with(density) { DOUBLE_TAP_MAX_DIST_DP.dp.toPx() }
+                    val edgeAutoScrollThresholdPx = with(density) { EDGE_AUTO_SCROLL_THRESHOLD_DP.dp.toPx() }
 
                     var activeDragImageId: String? = null
                     var dragCanvas = false
@@ -4758,6 +5491,13 @@ private fun PockRefCanvas(
                     var lassoStart: Offset? = null
                     var boxSelectStart: Offset? = null
                     var boxSelectDragging = false
+                    // V_NOW: long-press on a selected image in
+                    // multi-select mode triggers the
+                    // SelectionBottomSheet. Track whether the
+                    // long-press has already fired for this
+                    // gesture so it doesn't re-fire on
+                    // subsequent move events.
+                    var longPressFired = false
 
                     // S Pen button binding. The side button on the
                     // Galaxy Tab S Pen reports as `PointerType.Stylus`
@@ -4855,7 +5595,8 @@ private fun PockRefCanvas(
                             // *visibility*, so it's still pickable.
                             // Only direct drag is blocked.
                             val hitImage = s.images.firstOrNull { it.id == hitId }
-                            if (hitImage?.locked != true) {
+                            val moveEnabled = isGestureEnabled(s.gestureToggles, GestureId.MOVE_IMAGE)
+                            if (hitImage?.locked != true && moveEnabled) {
                                 activeDragImageId = hitId
                             }
                         }
@@ -4871,20 +5612,34 @@ private fun PockRefCanvas(
                     }
 
                     var transformMode = ImageTransformMode.NONE
+                    // V_NOW (user feedback "P1-B4 mode 切换 cooldown"):
+                    // once a two-finger gesture commits to
+                    // SCALE / ROTATE, don't let it
+                    // flip-flop to a different mode in the
+                    // next [MODE_COOLDOWN_MS] ms. The
+                    // motivation: a user is in the middle
+                    // of a pinch-scale (committed) and their
+                    // fingers naturally drift a few extra
+                    // millimetres of vertical travel on frame
+                    // 5-6. Without the cooldown the
+                    // mode would flip mid-way
+                    // and the user would see "the image I
+                    // was scaling suddenly started rotating"
+                    // with no clean way
+                    // to recover. With the cooldown the
+                    // committed mode sticks for the full
+                    // window of the gesture. The value
+                    // 500 ms was picked because the
+                    // typical two-finger gesture on a
+                    // tablet runs 800-1500 ms end-to-end, so
+                    // 500 ms of "lock" leaves plenty of room
+                    // for the user to finish the gesture
+                    // before the next gesture starts.
+                    var modeCommitTimeMs: Long = 0L
                     var previousDistance = 0f
                     var previousAngle = 0f
                     var initialZoom = 1f
                     var initialRotation = 0f
-                    // Slide-mode tracking. initialCentroidY is the y of
-                    // the two-finger centroid at gesture start, so we
-                    // can compute per-frame deltas in the same way the
-                    // existing pinch/rotate path computes cumulative
-                    // zoom/rotation. totalSlideY is the running
-                    // accumulator used to decide whether the gesture
-                    // has committed to SLIDE yet (see [SLIDE_THRESHOLD]).
-                    var initialCentroidY = 0f
-                    var totalSlideY = 0f
-                    var previousCentroidY = 0f
                     var transformStarted = false
                     var dragStarted = false
                     var totalDrag = Offset.Zero
@@ -4903,19 +5658,6 @@ private fun PockRefCanvas(
                     // pan speed.
                     lastPointerPosState.value = downPos
                     autoScrollEligibleState.value = false
-                    // Long-press detection. While the finger is
-                    // stationary and the gesture hasn't otherwise
-                    // committed (drag, transform, lasso, etc.), we
-                    // arm a timer; if it fires we pop the context
-                    // menu for the image under the down position.
-                    // [lastMoveTimeMs] is the timestamp of the most
-                    // recent event where the finger moved more than
-                    // [LONG_PRESS_SLOP_PX] — "stationary" means
-                    // (now - lastMoveTimeMs) > threshold. [longPressFired]
-                    // is a one-shot latch so a single hold triggers at
-                    // most one menu.
-                    var lastMoveTimeMs = downTime
-                    var longPressFired = false
                     // Multi-finger tap detection. [peakPointerCount]
                     // is the max simultaneous fingers during this
                     // gesture (used to distinguish 2-finger tap
@@ -4950,7 +5692,7 @@ private fun PockRefCanvas(
                         }
                         if (!gestureMoved) {
                             gestureMoved = changes.any { change ->
-                                (change.position - change.previousPosition).getDistance() > 4f
+                                (change.position - change.previousPosition).getDistance() > gestureMovedThresholdPx
                             }
                         }
 
@@ -4964,6 +5706,88 @@ private fun PockRefCanvas(
                             dragCanvas = false
                             lassoActive = false
 
+                            // V_NOW (user spec "双指缩放选中图片"):
+                            // Hit-test ONLY at the start of the
+                            // two-finger gesture (before
+                            // [transformStarted]). Once the gesture
+                            // has committed to a mode (SCALE /
+                            // ROTATE), we must NOT
+                            // re-evaluate — otherwise a canvas
+                            // zoom that pushes an image under a
+                            // finger would hijack the gesture
+                            // mid-stroke, switching from "zoom
+                            // canvas" to "zoom image" without the
+                            // user's intent.
+                            if (changes.size >= 2 && !transformStarted) {
+                                val viewportSize = Size(
+                                    size.width.toFloat(),
+                                    size.height.toFloat(),
+                                )
+                                val cs = currentState
+                                // V_NOW (P1-B2): a fingertip on a
+                                // touch screen has a 6-12 dp
+                                // contact patch. When two
+                                // fingers come down and a
+                                // fingertip lands *just* on
+                                // the visual edge of an
+                                // image, the user almost
+                                // never means "grab this
+                                // image" — they mean "I'm
+                                // pinching in the area
+                                // around it". Shrink the
+                                // multi-touch hit rectangle
+                                // by 8 dp on every side
+                                // (~0.5 mm on 340 dpi) so
+                                // the edge zone falls into
+                                // the empty area and
+                                // doesn't accidentally
+                                // replace the selection
+                                // with the just-edged image.
+                                val twoFingerHitInsetPx = with(density) { 8.dp.toPx() }
+                                val hitP0 = hitTestImage(cs, changes[0].position, viewportSize, twoFingerHitInsetPx)
+                                val hitP1 = hitTestImage(cs, changes[1].position, viewportSize, twoFingerHitInsetPx)
+                                // Two fingers on different images → ignore
+                                if (hitP0 != null && hitP1 != null && hitP0 != hitP1) {
+                                    changes.forEach { it.consume() }
+                                    continue
+                                }
+                                val nonSelectedHit = listOfNotNull(hitP0, hitP1)
+                                    .firstOrNull { it !in cs.selectedImageIds }
+                                if (nonSelectedHit != null) {
+                                    currentOnAction(PockRefAction.SelectImage(nonSelectedHit))
+                                    // V_NOW (SelectionBottomSheet
+                                    // "弹不出来" 修复): also bump
+                                    // the show-tick. The two-
+                                    // finger down SelectImage
+                                    // path is a meaningful
+                                    // "user wants the sheet"
+                                    // event, same as a single-
+                                    // finger tap. The reducer
+                                    // for SelectImage doesn't
+                                    // bump the tick by itself
+                                    // (we keep the bump
+                                    // explicit at the
+                                    // dispatch site so non-
+                                    // user-action SelectImage
+                                    // calls — e.g. scene
+                                    // load — don't accidentally
+                                    // re-raise the sheet).
+                                    currentOnAction(PockRefAction.TickSelectionSheet)
+                                    // V_NOW (P2-C3): flash the
+                                    // newly-selected image so
+                                    // the user gets visual
+                                    // confirmation that the
+                                    // two-finger-down hit
+                                    // actually replaced the
+                                    // selection. The flash
+                                    // expires after 200ms
+                                    // (renderer reads
+                                    // `now - flash.atMs`
+                                    // per frame).
+                                    currentOnAction(PockRefAction.FlashSelection(nonSelectedHit))
+                                }
+                            }
+
                             val p0 = changes[0].position
                             val p1 = changes[1].position
                             val centroid = (p0 + p1) / 2f
@@ -4975,9 +5799,6 @@ private fun PockRefCanvas(
                                 previousAngle = angle
                                 initialZoom = 1f
                                 initialRotation = 0f
-                                initialCentroidY = centroid.y
-                                previousCentroidY = centroid.y
-                                totalSlideY = 0f
                                 transformStarted = true
                                 transformMode = ImageTransformMode.NONE
                                 currentOnAction(PockRefAction.BeginSceneGesture)
@@ -4990,100 +5811,128 @@ private fun PockRefCanvas(
                             val normalizedAngleDelta = if (angleDelta > PI.toFloat()) angleDelta - 2f * PI.toFloat()
                                 else if (angleDelta < -PI.toFloat()) angleDelta + 2f * PI.toFloat()
                                 else angleDelta
-                            // Per-frame centroid Y delta — used by the
-                            // SLIDE (canvas-zoom) path. Signed: negative =
-                            // fingers slid up, positive = slid down.
-                            val centroidDeltaY = centroid.y - previousCentroidY
 
                             initialZoom *= distanceDelta
                             initialRotation += normalizedAngleDelta
-                            totalSlideY += centroidDeltaY
+
+                            // Hoist [hasSelected] ABOVE the
+                            // mode-decision block so the
+                            // selection-aware routing can run on the
+                            // same frame.
+                            val hasSelected = currentState.selectedImageId != null
 
                             if (transformMode == ImageTransformMode.NONE) {
-                                val zoomDelta = abs(initialZoom - 1f) * 100f
-                                val rotationDelta = abs(initialRotation) * 180f / PI.toFloat()
-                                val slideDelta = abs(totalSlideY)
+                                // V_NOW (P1-B4): skip the decision
+                                // block entirely while inside the
+                                // post-commit cooldown window.
+                                val nowMs = System.currentTimeMillis()
+                                val inCooldown = (nowMs - modeCommitTimeMs) < MODE_COOLDOWN_MS
+                                if (!inCooldown) {
+                                    val zoomDelta = abs(initialZoom - 1f) * 100f
+                                    val rotationDelta = abs(initialRotation) * 180f / PI.toFloat()
 
-                                // SLIDE wins when the cumulative vertical
-                                // centroid travel is the dominant motion
-                                // and clear of the threshold. It has to
-                                // beat both the scale and rotation
-                                // accumulators in magnitude, otherwise
-                                // we are still in a pinch/rotate attempt
-                                // and the SLIDE branch would steal a
-                                // gesture that was about to become one of
-                                // those.
-                                if (slideDelta >= SLIDE_THRESHOLD &&
-                                    slideDelta >= zoomDelta &&
-                                    slideDelta >= rotationDelta
-                                ) {
-                                    transformMode = ImageTransformMode.SLIDE
-                                } else if (zoomDelta >= SCALE_THRESHOLD && zoomDelta >= rotationDelta) {
-                                    transformMode = ImageTransformMode.SCALE
-                                } else if (rotationDelta >= ROTATE_THRESHOLD) {
-                                    transformMode = ImageTransformMode.ROTATE
+                                    if (hasSelected) {
+                                        // A2 path: SCALE / ROTATE
+                                        // only.
+                                        if (zoomDelta >= SCALE_THRESHOLD && zoomDelta >= rotationDelta) {
+                                            transformMode = ImageTransformMode.SCALE
+                                            modeCommitTimeMs = nowMs
+                                        } else if (rotationDelta >= ROTATE_THRESHOLD) {
+                                            transformMode = ImageTransformMode.ROTATE
+                                            modeCommitTimeMs = nowMs
+                                        }
+                                    } else {
+                                        // No-selection path: SCALE /
+                                        // ROTATE priority chain.
+                                        if (zoomDelta >= SCALE_THRESHOLD && zoomDelta >= rotationDelta) {
+                                            transformMode = ImageTransformMode.SCALE
+                                            modeCommitTimeMs = nowMs
+                                        } else if (rotationDelta >= ROTATE_THRESHOLD) {
+                                            transformMode = ImageTransformMode.ROTATE
+                                            modeCommitTimeMs = nowMs
+                                        }
+                                    }
                                 }
                             }
 
-                            val hasSelected = currentState.selectedImageId != null
+                            // V_NOW (user spec "双指缩放选中图片"):
+                            // spec rule 4 — the two-finger CENTROID
+                            // is the scale anchor (in scene / world
+                            // coordinates). We convert the screen-
+                            // space centroid [centroid] to world
+                            // coordinates using the same formula
+                            // [drawSceneImage] uses in reverse
+                            // (`worldX = (screenX - centerOffset.x -
+                            // canvasOffset.x) / canvasScale`). The
+                            // reducer's "AABB fallback" handles the
+                            // case where the centroid is so far from
+                            // the selection that anchoring it would
+                            // visibly snap the group.
+                            val worldPivot: Offset? = if (hasSelected && (transformMode == ImageTransformMode.SCALE || transformMode == ImageTransformMode.ROTATE)) {
+                                val cs = currentState
+                                val vpSize = autoScrollViewportSize.value.let {
+                                    if (it.width > 0f && it.height > 0f) it
+                                    else Size(size.width.toFloat(), size.height.toFloat())
+                                }
+                                val centerOffset = Offset(vpSize.width / 2f, vpSize.height / 2f)
+                                Offset(
+                                    x = (centroid.x - centerOffset.x - cs.canvasOffset.x) / cs.canvasScale,
+                                    y = (centroid.y - centerOffset.y - cs.canvasOffset.y) / cs.canvasScale,
+                                )
+                            } else null
 
                             when (transformMode) {
-                                ImageTransformMode.SLIDE -> {
-                                    // Two-finger vertical slide = canvas
-                                    // zoom. Centroid moves up = zoom in,
-                                    // down = zoom out. The sensitivity is
-                                    // tuned by [SLIDE_ZOOM_PER_PX]. Note
-                                    // that this dispatches regardless of
-                                    // selection state — the whole point of
-                                    // SLIDE is to give the user a way to
-                                    // zoom the canvas even when an image
-                                    // is selected (the existing
-                                    // pinch/rotate handlers then route to
-                                    // the image instead).
-                                    //
-                                    // V6: focus on the canvas geometric
-                                    // center (not the gesture centroid),
-                                    // per user spec — keeps the canvas
-                                    // center pixel fixed regardless of
-                                    // where the fingers are on screen.
-                                    // `autoScrollViewportSize` is mirrored
-                                    // from `onSizeChanged` so we always
-                                    // have the latest viewport dimensions
-                                    // without a Reducer round-trip.
-                                    if (centroidDeltaY != 0f) {
-                                        val vp = autoScrollViewportSize.value
-                                        // Guard against first-frame zero
-                                        // size — fall back to centroid
-                                        // so the zoom still feels right
-                                        // (degrades gracefully, no crash).
-                                        val focus = if (vp.width > 0f && vp.height > 0f) {
-                                            Offset(vp.width / 2f, vp.height / 2f)
-                                        } else {
-                                            centroid
-                                        }
-                                        val scaleFactor = 1f - centroidDeltaY * SLIDE_ZOOM_PER_PX
-                                        currentOnAction(PockRefAction.ZoomCanvas(scaleFactor, focus))
-                                    }
-                                }
                                 ImageTransformMode.SCALE -> {
+                                    val pinchZoomEnabled = isGestureEnabled(currentState.gestureToggles, GestureId.PINCH_ZOOM)
                                     if (hasSelected) {
-                                        if (distanceDelta != 1f) {
-                                            currentOnAction(PockRefAction.TransformSelectedImage(distanceDelta, 0f, Offset.Zero))
+                                        if (distanceDelta != 1f && pinchZoomEnabled) {
+                                            // V_NOW: pass the two-finger
+                                            // centroid as the world-space
+                                            // scale pivot. The reducer
+                                            // uses it for single-image
+                                            // scaling and computes the
+                                            // AABB pan correction for
+                                            // multi-image.
+                                            currentOnAction(PockRefAction.TransformSelectedImage(distanceDelta, 0f, Offset.Zero, worldPivot))
                                         }
                                     } else {
-                                        if (distanceDelta != 1f) {
+                                        if (distanceDelta != 1f && pinchZoomEnabled) {
                                             currentOnAction(PockRefAction.ZoomCanvas(distanceDelta, centroid))
                                         }
                                     }
                                 }
                                 ImageTransformMode.ROTATE -> {
+                                    val pinchRotateEnabled = isGestureEnabled(currentState.gestureToggles, GestureId.PINCH_ROTATE)
                                     if (hasSelected) {
-                                        if (normalizedAngleDelta != 0f) {
+                                        if (normalizedAngleDelta != 0f && pinchRotateEnabled) {
                                             val rotationDeg = (normalizedAngleDelta * 180f / PI).toFloat()
-                                            currentOnAction(PockRefAction.TransformSelectedImage(1f, rotationDeg, Offset.Zero))
+                                            // V_NOW: rotation shares the
+                                            // world pivot so scale +
+                                            // rotate in the same gesture
+                                            // feel anchored to the same
+                                            // point (the centroid). The
+                                            // reducer still uses the AABB
+                                            // for rotation math; the
+                                            // [worldPivot] only affects
+                                            // the scale component's
+                                            // post-pan correction.
+                                            currentOnAction(PockRefAction.TransformSelectedImage(1f, rotationDeg, Offset.Zero, worldPivot))
                                         }
                                     } else {
-                                        if (distanceDelta != 1f) {
+                                        // V_NOW: gate the no-selection
+                                        // canvas-zoom path through the
+                                        // pinch-zoom gesture toggle too.
+                                        // [pinchZoomEnabled] is in scope
+                                        // only inside the [SCALE] arm's
+                                        // `if (hasSelected)` branch above;
+                                        // this `else` (no-selection) is
+                                        // a separate scope so we re-derive
+                                        // it here.
+                                        val pinchZoomEnabledNoSel = isGestureEnabled(
+                                            currentState.gestureToggles,
+                                            GestureId.PINCH_ZOOM,
+                                        )
+                                        if (distanceDelta != 1f && pinchZoomEnabledNoSel) {
                                             currentOnAction(PockRefAction.ZoomCanvas(distanceDelta, centroid))
                                         }
                                     }
@@ -5093,7 +5942,6 @@ private fun PockRefCanvas(
 
                             previousDistance = distance
                             previousAngle = angle
-                            previousCentroidY = centroid.y
                             changes.forEach { it.consume() }
                         } else if (pointerCount == 1) {
                             if (transformStarted) {
@@ -5102,8 +5950,6 @@ private fun PockRefCanvas(
                                 transformMode = ImageTransformMode.NONE
                                 initialZoom = 1f
                                 initialRotation = 0f
-                                totalSlideY = 0f
-                                previousCentroidY = 0f
                             }
 
                             val change = changes[0]
@@ -5146,57 +5992,27 @@ private fun PockRefCanvas(
                             // Long-press watchdog. While the user
                             // is holding a finger still, we count
                             // time-since-last-meaningful-move. If it
-                            // crosses the threshold and we haven't
-                            // already latched a menu, dispatch
-                            // [ShowContextMenu] for the image under
-                            // the original touch (not the current
-                            // finger position, since they may have
-                            // drifted a couple px). Cancelled
-                            // implicitly by anything that commits
-                            // the gesture (drag, transform, lasso)
-                            // — once one of those is true the
-                            // context-menu won't fire.
-                            if (!longPressFired) {
-                                val nowMs = change.uptimeMillis
-                                val movedThisFrame = dragAmount.getDistance() > LONG_PRESS_SLOP_PX
-                                if (movedThisFrame) {
-                                    lastMoveTimeMs = nowMs
-                                } else if (
-                                    nowMs - lastMoveTimeMs >= LONG_PRESS_THRESHOLD_MS &&
-                                    !dragStarted && !lassoActive && !boxSelectDragging
-                                ) {
-                                    longPressFired = true
-                                    val s = currentState
-                                    val tapId = hitTestImage(
-                                        s,
-                                        downPos,
-                                        Size(size.width.toFloat(), size.height.toFloat()),
-                                    )
-                                    val target = if (tapId != null) {
-                                        // If the long-pressed image is
-                                        // not part of the existing
-                                        // selection, switch selection to
-                                        // just this image (mirrors tap-
-                                        // to-select behavior).
-                                        if (s.multiSelectMode && tapId in s.selectedImageIds) {
-                                            s.selectedImageIds
-                                        } else {
-                                            setOf(tapId)
-                                        }
-                                    } else {
-                                        s.selectedImageIds
-                                    }
-                                    if (target.isNotEmpty()) {
-                                        currentOnAction(
-                                            PockRefAction.ShowContextMenu(downPos, target)
-                                        )
-                                    }
-                                }
+
+                            // V_NOW: long-press on a selected image
+                            // in multi-select mode triggers the
+                            // SelectionBottomSheet. The user holds
+                            // still on an already-selected image for
+                            // ≥ 500ms without dragging → pop the
+                            // sheet. Long-pressing an unselected
+                            // image does NOT trigger the sheet.
+                            if (!longPressFired && !dragStarted && !transformStarted &&
+                                hitId != null && hitId in currentState.selectedImageIds &&
+                                (currentState.multiSelectMode || currentState.boxSelectMode) &&
+                                totalDrag.getDistance() < tapMaxDragPx &&
+                                (System.currentTimeMillis() - downTime) >= 500L
+                            ) {
+                                longPressFired = true
+                                currentOnAction(PockRefAction.TickSelectionSheet)
                             }
 
                             val dragId = activeDragImageId
                             if (dragId != null) {
-                                if (!dragStarted && totalDrag.getDistance() > 4f) {
+                                if (!dragStarted && totalDrag.getDistance() > dragTapThresholdPx) {
                                     val alreadySelected = dragId in currentState.selectedImageIds
                                     if (!alreadySelected) {
                                         currentOnAction(PockRefAction.SelectImage(dragId))
@@ -5253,19 +6069,10 @@ private fun PockRefCanvas(
                         transformMode = ImageTransformMode.NONE
                         initialZoom = 1f
                         initialRotation = 0f
-                        totalSlideY = 0f
-                        previousCentroidY = 0f
-                    }
-                    // If a long-press fired mid-gesture, dismiss
-                    // the context menu now. Doing it on gesture end
-                    // (rather than immediately on show) gives the
-                    // user a frame to see the menu pop in.
-                    if (longPressFired && currentState.contextMenu != null) {
-                        currentOnAction(PockRefAction.DismissContextMenu)
                     }
 
                     val upTime = System.currentTimeMillis()
-                    val isTap = !dragStarted && !transformStarted && (upTime - downTime) < 300L && totalDrag.getDistance() < 8f
+                    val isTap = !dragStarted && !transformStarted && (upTime - downTime) < 300L && totalDrag.getDistance() < tapMaxDragPx
 
                     // V_NOW (user request): in multi-select mode,
                     // tapping the empty canvas should deselect all
@@ -5305,10 +6112,25 @@ private fun PockRefCanvas(
                             val tappedId = activeDragImageId
                             val curState = currentState
                             val isDoubleTapOnSelected = tappedId in curState.selectedImageIds &&
-                                (upTime - lastTapTime) < 400L &&
-                                (lastTapPos - downPos).getDistance() < 20f
+                                (upTime - lastTapTime) < DOUBLE_TAP_MAX_INTERVAL_MS &&
+                                (lastTapPos - downPos).getDistance() < doubleTapMaxDistPx
                             if (isDoubleTapOnSelected) {
                                 currentOnAction(PockRefAction.FitImageToScreen(tappedId))
+                                // V_NOW (SelectionBottomSheet "弹不出来"
+                                // 修复): bump the show-tick so the
+                                // sheet re-raises after a previous
+                                // dismissal. The double-tap path
+                                // doesn't dispatch
+                                // CycleImageUnderPoint (so the
+                                // tick doesn't fire from the
+                                // selectImage reducer), so we
+                                // need an explicit dispatch.
+                                // Only in single-select mode —
+                                // multi-select uses long-press
+                                // to trigger the sheet.
+                                if (!curState.multiSelectMode && !curState.boxSelectMode) {
+                                    currentOnAction(PockRefAction.TickSelectionSheet)
+                                }
                                 lastTapTime = 0L
                                 lastTapPos = Offset.Zero
                             } else {
@@ -5343,10 +6165,23 @@ private fun PockRefCanvas(
                         val tappedId = hitId
                         val curState = currentState
                         val isDoubleTapOnSelected = tappedId in curState.selectedImageIds &&
-                            (upTime - lastTapTime) < 400L &&
-                            (lastTapPos - downPos).getDistance() < 20f
+                            (upTime - lastTapTime) < DOUBLE_TAP_MAX_INTERVAL_MS &&
+                            (lastTapPos - downPos).getDistance() < doubleTapMaxDistPx
                         if (isDoubleTapOnSelected) {
                             currentOnAction(PockRefAction.FitImageToScreen(tappedId))
+                            // V_NOW (SelectionBottomSheet "弹不出来"
+                            // 修复): same as the unlocked
+                            // branch above — bump the
+                            // show-tick explicitly since
+                            // the FitImageToScreen path
+                            // doesn't go through
+                            // CycleImageUnderPoint.
+                            // Only in single-select mode —
+                            // multi-select uses long-press
+                            // to trigger the sheet.
+                            if (!curState.multiSelectMode && !curState.boxSelectMode) {
+                                currentOnAction(PockRefAction.TickSelectionSheet)
+                            }
                             lastTapTime = 0L
                             lastTapPos = Offset.Zero
                         } else {
@@ -5370,7 +6205,7 @@ private fun PockRefCanvas(
                         //     "stuck" through the reset.
                         val isDoubleTapOnEmpty = (upTime - lastEmptyTapTime) < 400L &&
                             (lastEmptyTapPos - downPos).getDistance() < 20f
-                        if (isDoubleTapOnEmpty) {
+                        if (isDoubleTapOnEmpty && isGestureEnabled(currentState.gestureToggles, GestureId.DOUBLE_TAP_EMPTY)) {
                             // V5: was ResetView (force 100%
                             // zoom / 0 offset — "go home"). User
                             // asked for double-tap-empty to be
@@ -5437,7 +6272,9 @@ private fun PockRefCanvas(
                                 // same 400ms / 20px gap as the
                                 // other double-tap paths so the
                                 // cadence feels consistent.
-                                currentOnAction(PockRefAction.Undo)
+                                if (isGestureEnabled(currentState.gestureToggles, GestureId.TWO_FINGER_TAP)) {
+                                    currentOnAction(PockRefAction.Undo)
+                                }
                             }
                             3 -> {
                                 // 3-finger tap = redo. (The
@@ -5446,7 +6283,9 @@ private fun PockRefCanvas(
                                 // was removed in 2026-06; use
                                 // the toolbar "复原" button on
                                 // a single image instead.)
-                                currentOnAction(PockRefAction.Redo)
+                                if (isGestureEnabled(currentState.gestureToggles, GestureId.THREE_FINGER_TAP)) {
+                                    currentOnAction(PockRefAction.Redo)
+                                }
                             }
                         }
                     }
@@ -5610,6 +6449,18 @@ private fun PockRefCanvas(
                     canvasOffset = state.canvasOffset,
                     transientDragIds = state.transientDragImageIds,
                     transientDragDelta = state.transientDragDelta,
+                    // V_NOW (P2-C3): pass the one-shot
+                    // flash marker + the live alpha
+                    // (pre-computed by [produceState]
+                    // above so the Canvas re-draws
+                    // every ~16ms while the 200ms
+                    // flash is active). The draw
+                    // lambda reads `flashAlphaNow` so
+                    // each tick re-invalidates the
+                    // draw and the curve plays out
+                    // smoothly.
+                    selectionFlash = state.selectionFlash,
+                    flashAlpha = flashAlphaNow,
                 )
             } else {
                 drawImagePlaceholder(
@@ -5746,103 +6597,6 @@ private fun PockRefCanvas(
     }
 }
 
-private data class SelectionToolbarAnchor(
-    val imageLeftScreenX: Float,
-    val imageRightScreenX: Float,
-    val imageCenterScreenY: Float,
-)
-
-private fun selectionToolbarAnchor(state: PockRefUiState): SelectionToolbarAnchor? {
-    val selected = state.images.filter { it.id in state.selectedImageIds }
-    if (selected.isEmpty()) return null
-    val viewport = state.canvasViewportSize
-    if (viewport.width <= 0f || viewport.height <= 0f) return null
-    val dragIds = state.transientDragImageIds
-    val dragDelta = state.transientDragDelta
-
-    val leftWorldX = selected.minOf {
-        val offsetX = if (it.id in dragIds) dragDelta.x else 0f
-        it.center.x + offsetX - (it.displaySize.width * it.scale) / 2f
-    }
-    val rightWorldX = selected.maxOf {
-        val offsetX = if (it.id in dragIds) dragDelta.x else 0f
-        it.center.x + offsetX + (it.displaySize.width * it.scale) / 2f
-    }
-    val topWorldY = selected.minOf {
-        val offsetY = if (it.id in dragIds) dragDelta.y else 0f
-        it.center.y + offsetY - (it.displaySize.height * it.scale) / 2f
-    }
-    val bottomWorldY = selected.maxOf {
-        val offsetY = if (it.id in dragIds) dragDelta.y else 0f
-        it.center.y + offsetY + (it.displaySize.height * it.scale) / 2f
-    }
-
-    val halfW = viewport.width / 2f
-    val halfH = viewport.height / 2f
-    val imageLeftScreenX = halfW + state.canvasOffset.x + leftWorldX * state.canvasScale
-    val imageRightScreenX = halfW + state.canvasOffset.x + rightWorldX * state.canvasScale
-    val imageCenterScreenY = halfH + state.canvasOffset.y + (topWorldY + bottomWorldY) / 2f * state.canvasScale
-    return SelectionToolbarAnchor(
-        imageLeftScreenX = imageLeftScreenX,
-        imageRightScreenX = imageRightScreenX,
-        imageCenterScreenY = imageCenterScreenY,
-    )
-}
-
-private fun clampSelectionToolbarOffset(
-    anchor: SelectionToolbarAnchor,
-    gapPx: Float,
-    toolbarWidth: Float,
-    toolbarHeight: Float,
-    viewportWidth: Float,
-    viewportHeight: Float,
-    topInset: Float,
-    bottomInset: Float,
-    edgePadding: Float,
-): Offset {
-    val effectiveWidth = toolbarWidth.coerceAtLeast(1f)
-    val effectiveHeight = toolbarHeight.coerceAtLeast(1f)
-
-    val rightCandidateLeft = anchor.imageRightScreenX + gapPx
-    val leftCandidateLeft = anchor.imageLeftScreenX - gapPx - effectiveWidth
-    val rightFits = (rightCandidateLeft + effectiveWidth) <= (viewportWidth - edgePadding) &&
-        rightCandidateLeft >= edgePadding
-    val leftFits = leftCandidateLeft >= edgePadding &&
-        (leftCandidateLeft + effectiveWidth) <= (viewportWidth - edgePadding)
-
-    val toolbarLeftX = when {
-        rightFits -> rightCandidateLeft
-        leftFits -> leftCandidateLeft
-        else -> {
-            val rightRoom = (viewportWidth - edgePadding) - rightCandidateLeft
-            val leftRoom = (leftCandidateLeft + effectiveWidth) - edgePadding
-            if (rightRoom >= leftRoom) {
-                rightCandidateLeft.coerceIn(edgePadding, viewportWidth - effectiveWidth - edgePadding)
-            } else {
-                leftCandidateLeft.coerceIn(edgePadding, viewportWidth - effectiveWidth - edgePadding)
-            }
-        }
-    }
-
-    val minY = topInset + edgePadding
-    val maxY = viewportHeight - effectiveHeight - bottomInset - edgePadding
-    val centerY = anchor.imageCenterScreenY
-    val idealY = centerY - effectiveHeight / 2f
-    val finalY = if (maxY < minY) {
-        (viewportHeight - effectiveHeight) / 2f
-    } else {
-        idealY.coerceIn(minY, maxY)
-    }
-
-    return Offset(toolbarLeftX, finalY)
-}
-
-/**
- * Brand color used for snap guides and the post-commit highlight. Magenta/
- * purple is the conventional "alignment" color in pro design tools
- * (Figma, Sketch, Adobe XD) — it sits well on both light and dark
- * backgrounds and is visually distinct from the cyan selection chrome.
- */
 private val SnapGuideColor = Color(0xFFCE5BEB)
 private val SnapHighlightColor = Color(0xFFAB47BC)
 private val SnapGuideStrokePx = 2.5f
@@ -6214,6 +6968,25 @@ private fun DrawScope.drawSceneImage(
     canvasOffset: Offset,
     transientDragIds: Set<String>,
     transientDragDelta: Offset,
+    /**
+     * V_NOW (P2-C3): if non-null and matching
+     * [image.id], the renderer renders an extra
+     * highlight rect with alpha = [flashAlpha]
+     * (fade-in 0.1 → 0.5 over the first 100ms,
+     * fade-out 0.5 → 0.0 over the next 100ms,
+     * then 0 — curve computed by the caller via
+     * [produceState] so the draw lambda
+     * re-invalidates every ~16ms while the flash
+     * is active). Null or non-matching means no
+     * flash. The flash is applied AFTER the
+     * selected-image strokes so it sits on top
+     * of (and visually "punches through") the
+     * existing chrome. See
+     * [PockRefUiState.selectionFlash] for the
+     * full rationale.
+     */
+    selectionFlash: com.pockref.app.model.SelectionFlash? = null,
+    flashAlpha: Float = 0f,
 ) {
     val dragOffset = if (image.id in transientDragIds) transientDragDelta else Offset.Zero
     val canvasCenter = Offset(
@@ -6259,6 +7032,32 @@ private fun DrawScope.drawSceneImage(
                         color = Color(0xFF6AD6FF),
                         size = Size(width, height),
                         style = Stroke(width = strokePx),
+                    )
+                }
+                // V_NOW (P2-C3): render the one-shot
+                // selection-change flash on top of the
+                // existing chrome. The alpha is
+                // pre-computed by the caller (a
+                // [produceState] in [PockRefCanvas])
+                // and re-fed on every ~16ms tick so
+                // the curve 0.1 → 0.5 → 0.0 plays
+                // out smoothly over 200ms. The flash
+                // overlays the [isSelected] stroke so
+                // the user sees a clear visual
+                // "pulse" when the selection was
+                // just replaced.
+                if (selectionFlash != null && selectionFlash.imageId == image.id && flashAlpha > 0f) {
+                    val flashStroke = max(4f, canvasScale * 4f)
+                    val flashGlow = max(12f, canvasScale * 12f)
+                    drawRect(
+                        color = Color(0xFF6AD6FF).copy(alpha = flashAlpha * 0.45f),
+                        size = Size(width, height),
+                        style = Stroke(width = flashGlow),
+                    )
+                    drawRect(
+                        color = Color(0xFF6AD6FF).copy(alpha = flashAlpha),
+                        size = Size(width, height),
+                        style = Stroke(width = flashStroke),
                     )
                 }
             }
@@ -6459,8 +7258,32 @@ private fun DrawScope.drawHoverMagnifier(
     }
 }
 
-private fun hitTestImage(state: PockRefUiState, point: Offset, viewportSize: Size): String? {
-    return hitTestImagesAt(state, point, viewportSize).firstOrNull()
+private fun hitTestImage(
+    state: PockRefUiState,
+    point: Offset,
+    viewportSize: Size,
+    // V_NOW (user feedback "P1-B2 双指 down hit-test 用
+    // 8dp 半径收紧"): when two fingers come down on a
+    // multi-touch gesture, each finger tip's contact
+    // patch is 6-12 dp wide on a finger-driven touch,
+    // and a fingertip that lands on the EDGE of an
+    // image (just past the visual boundary) is more
+    // often "the user meant the empty area beyond"
+    // than "the user meant to grab this image". A
+    // single-finger down keeps [edgeInsetPx = 0]
+    // (legacy behaviour, no inset) because a single
+    // fingertip usually means the user is reaching
+    // for what they see. A multi-finger down call
+    // (e.g. the [PockRefCanvas] pointer loop's
+    // `if (changes.size >= 2)` branch) passes a
+    // positive [edgeInsetPx] — typically `8.dp.toPx()`
+    // — to shrink the hit rectangle by that many
+    // pixels on every side. The pixel value is
+    // multiplied by [LocalDensity.current] at the
+    // call site so the inset scales with the device.
+    edgeInsetPx: Float = 0f,
+): String? {
+    return hitTestImagesAt(state, point, viewportSize, edgeInsetPx).firstOrNull()
 }
 
 /**
@@ -6515,7 +7338,19 @@ internal fun computeEdgeAutoScroll(
     return Offset(dx, dy)
 }
 
-private fun hitTestImagesAt(state: PockRefUiState, point: Offset, viewportSize: Size): List<String> {
+private fun hitTestImagesAt(
+    state: PockRefUiState,
+    point: Offset,
+    viewportSize: Size,
+    // V_NOW (P1-B2): see the note on [hitTestImage]. The
+    // [edgeInsetPx] is subtracted from the hit-test
+    // rectangle on every side; if the image is so
+    // small that [edgeInsetPx >= halfWidth] the image
+    // never matches — that's intentional (a sub-16dp
+    // image shouldn't be a hit target for a two-finger
+    // gesture anyway; the user can still single-tap it).
+    edgeInsetPx: Float = 0f,
+): List<String> {
     return state.images.sortedByDescending { it.zIndex }.mapNotNull { image ->
         val mappedCenter = Offset(
             point.x - (viewportSize.width / 2f) - state.canvasOffset.x,
@@ -6533,7 +7368,15 @@ private fun hitTestImagesAt(state: PockRefUiState, point: Offset, viewportSize: 
         matrix.mapPoints(pts)
         val halfWidth = (image.displaySize.width * image.scale) / 2f
         val halfHeight = (image.displaySize.height * image.scale) / 2f
-        if (pts[0] in -halfWidth..halfWidth && pts[1] in -halfHeight..halfHeight) image.id else null
+        val effectiveHalfW = (halfWidth - edgeInsetPx).coerceAtLeast(0f)
+        val effectiveHalfH = (halfHeight - edgeInsetPx).coerceAtLeast(0f)
+        if (effectiveHalfW <= 0f || effectiveHalfH <= 0f) {
+            null
+        } else if (pts[0] in -effectiveHalfW..effectiveHalfW && pts[1] in -effectiveHalfH..effectiveHalfH) {
+            image.id
+        } else {
+            null
+        }
     }
 }
 
@@ -6570,22 +7413,41 @@ private fun isNearImageEdge(
 }
 
 /**
- * World-space AABB of the visible viewport, padded by [VIEWPORT_BUFFER_PX] in
- * screen pixels (converted to world units via canvasScale). Used by both the
- * draw-loop cull and the LaunchedEffect decode-priority filter. A scale of 0
- * or a viewport of 0×0 yields an empty rect at (0,0,0,0) so the cull rejects
- * everything until the first onSizeChanged fires.
+ * World-space AABB of the visible viewport. The default [bufferPx]
+ * (=[VIEWPORT_BUFFER_PX], 200 screen pixels) inflates the rect on all
+ * four sides so the draw-loop cull and the LaunchedEffect decode-priority
+ * filter don't prematurely drop images sitting just past the visible
+ * edge during fast pans. The buffer is converted to world units via
+ * `1 / canvasScale` so its screen-space size stays constant regardless
+ * of zoom level.
+ *
+ * A scale of 0 or a viewport of 0×0 yields an empty rect at (0,0,0,0) so
+ * the cull rejects everything until the first onSizeChanged fires.
+ *
+ * V_NOW: [bufferPx] is now an explicit parameter (default still
+ * [VIEWPORT_BUFFER_PX]) so callers that need the **strict** visible
+ * rect — without the cull's "提前看 200px" inflation — can pass 0f.
+ * The minimap's viewport indicator is one such caller: the indicator
+ * must show the user EXACTLY the region currently visible on the main
+ * canvas. Reusing the buffered rect for the indicator meant the
+ * indicator was inflated by 200px / canvasScale on every side, which
+ * (a) made it look bigger than the actual visible region and (b) at
+ * low zoom levels (canvasScale ≈ 0.3) pushed the indicator's right
+ * and bottom edges OUTSIDE the minimap's content rect, exposing the
+ * gap between the indicator and the panel border ("蓝色框向上偏移,
+ * minimap 下边露出一条小白边" per the user's screenshot).
  */
 internal fun worldViewportRect(
     canvasOffset: Offset,
     canvasScale: Float,
     viewportWidth: Float,
     viewportHeight: Float,
+    bufferPx: Float = VIEWPORT_BUFFER_PX,
 ): Rect {
     if (canvasScale <= 0f || viewportWidth <= 0f || viewportHeight <= 0f) {
         return Rect(0f, 0f, 0f, 0f)
     }
-    val bufferWorld = VIEWPORT_BUFFER_PX / canvasScale
+    val bufferWorld = bufferPx / canvasScale
     val halfW = viewportWidth / 2f
     val halfH = viewportHeight / 2f
     val left = (-canvasOffset.x - halfW) / canvasScale - bufferWorld
@@ -6611,6 +7473,65 @@ internal fun imageWorldAabb(image: SceneImage): Rect {
         right = image.center.x + halfW,
         bottom = image.center.y + halfH,
     )
+}
+
+/**
+ * V_NOW (B 智能避让): compute the Y delta (in pixels,
+ * positive = pan down) needed to slide the canvas so
+ * the selected images' combined AABB is centered in
+ * the "safe zone" above the bottom sheet.
+ *
+ * Safe zone = upper (viewportHeight - safeZoneHeightPx).
+ * We don't measure the sheet's actual height here (it
+ * varies with content + locked/unlocked panel) — the
+ * 280dp estimate matches the typical unlocked-panel
+ * height; if the sheet is shorter (locked panel) the
+ * AABB lands slightly above center, which is fine.
+ *
+ * Returns 0f if the AABB is already fully in the safe
+ * zone (no pan needed) or if the inputs are degenerate
+ * (no selection / zero viewport / unknown image ids).
+ *
+ * Math: world → screen projection is
+ *   screenX = canvasOffset.x + worldX · canvasScale + centerOffset.x
+ *   screenY = canvasOffset.y + worldY · canvasScale + centerOffset.y
+ * For a Y-only pan, only canvasOffset.y changes, and
+ * the delta translates 1:1 (delta_screenY = delta_co.y).
+ * The centerOffset.y is the half-viewport constant
+ * from the canvas draw path (see [PockRefCanvas]).
+ */
+private fun computePanDeltaToSafeZoneY(
+    state: PockRefUiState,
+    safeZoneHeightPx: Float,
+    safeMarginPx: Float = 0f,
+): Float {
+    val viewportW = state.canvasViewportSize.width
+    val viewportH = state.canvasViewportSize.height
+    if (viewportW <= 0f || viewportH <= 0f) return 0f
+    if (state.selectedImageIds.isEmpty()) return 0f
+    val cs = state.canvasScale
+    if (cs <= 0f) return 0f
+    val co = state.canvasOffset
+    val centerY = viewportH / 2f
+    val worldRects = state.selectedImageIds.mapNotNull { id ->
+        val image = state.images.firstOrNull { it.id == id } ?: return@mapNotNull null
+        imageWorldAabb(image)
+    }
+    if (worldRects.isEmpty()) return 0f
+    val combinedTop = worldRects.minOf { it.top }
+    val combinedBottom = worldRects.maxOf { it.bottom }
+    val screenTop = co.y + combinedTop * cs + centerY
+    val screenBottom = co.y + combinedBottom * cs + centerY
+    // Safe zone top = viewport bottom - sheet height - safe margin.
+    // The safe margin ensures the image's bottom edge is at least
+    // [safeMarginPx] above the sheet's top edge.
+    val safeZoneTop = viewportH - safeZoneHeightPx - safeMarginPx
+    val safeZoneCenterY = safeZoneTop / 2f
+    // AABB bottom already in safe zone → no pan.
+    if (screenBottom <= safeZoneTop) return 0f
+    val aabbCenterY = (screenTop + screenBottom) / 2f
+    val deltaY = safeZoneCenterY - aabbCenterY
+    return deltaY
 }
 
 /**
@@ -8080,23 +9001,38 @@ private fun BoxScope.BottomRightActionPanel(
             // stacked vertically (just one notch larger than the
             // pre-P0-fix 44dp).
             //
-            // M3 styling: primaryContainer fill (the M3
-            // "primary floating action" colour role) +
-            // onPrimaryContainer icon. Distinct from the 4
-            // transparent list items above it, so the eye reads
-            // the bottom cell as "the primary action" — matches
-            // M3's "primary surface = most important affordance"
-            // convention (same as Material's "filled button >
-            // tonal button > outlined button > text button"
-            // emphasis ladder).
+            // V_NOW (user feedback "右下角的一键排版按钮为什
+            // 么并不是和顶栏一个颜色"): the previous design
+            // used [primaryContainer] (the M3 "filled FAB"
+            // colour role, a light teal in light theme) so
+            // the FAB visually "popped" against the toolbar's
+            // neutral surface. The user's spec instead wants
+            // a UNIFORM chrome colour across the app's
+            // floating surfaces — top toolbar and FAB both
+            // wear the same [surface] tint so the eye reads
+            // them as a coordinated "chrome layer" rather
+            // than the FAB being a single colored accent
+            // against a neutral surround. The FAB still
+            // pops via the 6dp [FabElevation] (vs the
+            // toolbar's 3dp [ToolbarElevation]) — the M3
+            // elevation system is what communicates
+            // "primary action" depth, not the colour role.
             //
-            // State layer: [interactionSource] is observed via
-            // [collectIsHoveredAsState] / [collectIsPressedAsState]
-            // and a translucent primary-tinted layer is composited
-            // on top of the primaryContainer fill (8% on hover,
-            // 12% on press, per M3 spec). The M3 ripple
-            // (default [LocalIndication]) runs on top of that
-            // for the transient tap-highlight.
+            // Icon colour: [onSurface] (the same dark icon
+            // colour the top toolbar's icon buttons use) so
+            // the icon-tint matches across both floating
+            // surfaces.
+            //
+            // Hover / press state layer — [primary]-tinted
+            // (the brand's chrome accent) at 8% / 12% alpha,
+            // composited on top of the surface fill. The
+            // brand colour is the M3 "primary" tint, not the
+            // chrome surface colour, so the visual feedback
+            // for "you're touching this" is a recognisable
+            // brand pulse rather than a grey wash — the
+            // uniform surface fill is for the IDLE state,
+            // and the transient state layer is the
+            // affordance layer.
             val fabInteractionSource = remember { MutableInteractionSource() }
             val isFabHovered by fabInteractionSource.collectIsHoveredAsState()
             val isFabPressed by fabInteractionSource.collectIsPressedAsState()
@@ -8109,7 +9045,8 @@ private fun BoxScope.BottomRightActionPanel(
                 modifier = Modifier
                     .size(Dimens.BottomPanelChromeSize)
                     .background(
-                        color = MaterialTheme.colorScheme.primaryContainer,
+                        color = MaterialTheme.colorScheme.surface
+                            .copy(alpha = Dimens.ChromeSurfaceAlpha),
                         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
                     )
                     .background(
@@ -8143,7 +9080,7 @@ private fun BoxScope.BottomRightActionPanel(
                     Icons.Rounded.AutoFixHigh,
                     contentDescription = "一键排版",
                     modifier = Modifier.size(24.dp),
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
         }
@@ -8525,7 +9462,6 @@ private val gestureGroupSpecs: List<GestureGroupSpec> = listOf(
         title = "缩放",
         ids = listOf(
             com.pockref.app.ui.GestureId.PINCH_ZOOM,
-            com.pockref.app.ui.GestureId.SLIDE_ZOOM,
         ),
     ),
     GestureGroupSpec(
@@ -8605,7 +9541,6 @@ private fun gestureSubtitle(id: String, isOn: Boolean): String = when (id) {
     com.pockref.app.ui.GestureId.MOVE_IMAGE -> if (isOn) "单指拖动选中的图片" else "已关闭"
     com.pockref.app.ui.GestureId.PINCH_ZOOM -> if (isOn) "双指捏合调整缩放" else "已关闭"
     com.pockref.app.ui.GestureId.PINCH_ROTATE -> if (isOn) "双指旋转(吸附 0/90/180/270°)" else "已关闭"
-    com.pockref.app.ui.GestureId.SLIDE_ZOOM -> if (isOn) "双指竖直滑动缩放画布" else "已关闭"
     com.pockref.app.ui.GestureId.TWO_FINGER_TAP -> if (isOn) "撤销" else "已关闭"
     com.pockref.app.ui.GestureId.THREE_FINGER_TAP -> if (isOn) "重做" else "已关闭"
     com.pockref.app.ui.GestureId.DOUBLE_TAP_EMPTY -> if (isOn) "适应窗口" else "已关闭"
@@ -8808,6 +9743,7 @@ private fun SettingsSpenSection(
                         text = when (mode) {
                             com.pockref.app.spen.SpenMode.PRESS_AND_HOLD -> "按住开启,松开关闭"
                             com.pockref.app.spen.SpenMode.TOGGLE -> "按一下开,再按一下关"
+                            com.pockref.app.spen.SpenMode.DOUBLE_TAP -> "点按开启,双击关闭"
                         },
                         style = MaterialTheme.typography.bodyLarge,
                     )
@@ -8817,6 +9753,8 @@ private fun SettingsSpenSection(
                                 "按住笔身按钮进入框选,松开退出。松手时如果有 2+ 张图被选中则切到多选,否则单选。"
                             com.pockref.app.spen.SpenMode.TOGGLE ->
                                 "点按笔身按钮进入框选,再次点按退出。关闭时如果有 2+ 张图被选中则切到多选,否则单选。"
+                            com.pockref.app.spen.SpenMode.DOUBLE_TAP ->
+                                "点按笔身按钮进入框选,在 200ms 内再次点按可退出并强制单选;超时后保持框选状态,需要再来一次双击才能退出。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

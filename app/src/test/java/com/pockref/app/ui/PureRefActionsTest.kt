@@ -76,6 +76,12 @@ class PockRefActionsTest {
     // updated in lockstep. [SetMinimapZoomScale] is still
     // in the variant set — its data-layer plumbing is
     // preserved for a future UI-layer re-enable.
+    // V_NOW (SelectionBottomSheet "弹不出来" 修复):
+    // was 111, +1 for [TickSelectionSheet] = 112.
+    // V_NOW: actual is 112 after the dead SetSelectionToolbarHidden
+    // path was removed (the user request to retire the legacy
+    // SelectionFloatingToolbar also cleaned up the action
+    // variant). Bump to 112 to match.
     private val expectedVariantCount: Int = 113
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
