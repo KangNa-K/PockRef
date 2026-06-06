@@ -456,4 +456,151 @@ class SpenButtonDetectorTest {
         h.detector.onDown()
         assertEquals(listOf(SpenButtonDetector.ButtonEvent.BoxStart), h.events)
     }
+
+    // ──────────────────────────────────────────────────────────────────
+    // V_NOW (D3): DOUBLE_TAP mode tests
+    // ──────────────────────────────────────────────────────────────────
+    //
+    // DOUBLE_TAP semantics (see [SpenMode.DOUBLE_TAP] kdoc):
+    //   - 1st DOWN → BoxStart, arm 200ms rapid-tap window
+    //   - 2nd DOWN within 200ms → BoxEnd + Single
+    //   - timer fires (no 2nd tap) → STAY_OPEN (no event)
+    //   - subsequent DOWN in STAY_OPEN → re-arm 200ms window
+    //     (no BoxStart; caller is already in box mode)
+    //   - UP edges are always ignored
+
+    @Test
+    fun doubleTap_rapidDoubleTap_firesBoxStartThenBoxEndAndSingle() {
+        val h = Harness(mode = SpenMode.DOUBLE_TAP)
+        h.detector.onDown()    // t=0  BoxStart, arm 200ms
+        h.tick(80)             // 80ms later
+        h.detector.onDown()    // 2nd tap within window → BoxEnd + Single
+        assertEquals(
+            listOf(
+                SpenButtonDetector.ButtonEvent.BoxStart,
+                SpenButtonDetector.ButtonEvent.BoxEnd,
+                SpenButtonDetector.ButtonEvent.Single,
+            ),
+            h.events,
+        )
+    }
+
+    @Test
+    fun doubleTap_singleTapThenTimeout_staysOpenWithoutEvent() {
+        val h = Harness(mode = SpenMode.DOUBLE_TAP)
+        h.detector.onDown()    // BoxStart, arm 200ms
+        h.tick(300)            // timer fires → STAY_OPEN, no event
+        assertEquals(
+            listOf(SpenButtonDetector.ButtonEvent.BoxStart),
+            h.events,
+        )
+        // isButtonHeld is true in STAY_OPEN — the user
+        // is in box mode indefinitely.
+        assertEquals(true, h.detector.isButtonHeld)
+    }
+
+    @Test
+    fun doubleTap_secondTapJustInTime_firesBoxEndAndSingle() {
+        val h = Harness(mode = SpenMode.DOUBLE_TAP)
+        h.detector.onDown()    // BoxStart at t=0
+        h.tick(199)            // 1ms before window closes
+        h.detector.onDown()    // within window → BoxEnd + Single
+        assertEquals(
+            listOf(
+                SpenButtonDetector.ButtonEvent.BoxStart,
+                SpenButtonDetector.ButtonEvent.BoxEnd,
+                SpenButtonDetector.ButtonEvent.Single,
+            ),
+            h.events,
+        )
+    }
+
+    @Test
+    fun doubleTap_secondTapOneMsTooLate_treatedAsNewFirstTap() {
+        val h = Harness(mode = SpenMode.DOUBLE_TAP)
+        h.detector.onDown()    // BoxStart at t=0
+        h.tick(200)            // window closes; state → STAY_OPEN
+        h.detector.onDown()    // in STAY_OPEN, re-arms window (no event)
+        h.tick(199)            // just before the re-armed window closes
+        h.detector.onDown()    // within window → BoxEnd + Single
+        assertEquals(
+            listOf(
+                SpenButtonDetector.ButtonEvent.BoxStart,
+                SpenButtonDetector.ButtonEvent.BoxEnd,
+                SpenButtonDetector.ButtonEvent.Single,
+            ),
+            h.events,
+        )
+    }
+
+    @Test
+    fun doubleTap_upEdgesAreIgnored() {
+        val h = Harness(mode = SpenMode.DOUBLE_TAP)
+        h.detector.onDown()
+        h.detector.onUp()      // ignored
+        h.detector.onUp()      // ignored
+        h.tick(50)
+        h.detector.onUp()      // still ignored
+        // Only BoxStart; the UP edges did not cancel the
+        // 200ms window or move state.
+        assertEquals(
+            listOf(SpenButtonDetector.ButtonEvent.BoxStart),
+            h.events,
+        )
+        h.tick(200)            // window closes
+        assertEquals(
+            listOf(SpenButtonDetector.ButtonEvent.BoxStart),
+            h.events,
+        )
+    }
+
+    @Test
+    fun doubleTap_stayOpen_rearmingDownDoesNotFireBoxStart() {
+        val h = Harness(mode = SpenMode.DOUBLE_TAP)
+        h.detector.onDown()    // BoxStart
+        h.tick(300)            // → STAY_OPEN
+        h.detector.onDown()    // re-arm (no event)
+        h.tick(80)
+        h.detector.onDown()    // within re-armed window → BoxEnd + Single
+        assertEquals(
+            listOf(
+                SpenButtonDetector.ButtonEvent.BoxStart,
+                SpenButtonDetector.ButtonEvent.BoxEnd,
+                SpenButtonDetector.ButtonEvent.Single,
+            ),
+            h.events,
+        )
+    }
+
+    @Test
+    fun doubleTap_debounceStillApplies() {
+        val h = Harness(mode = SpenMode.DOUBLE_TAP, debounceMs = 50L)
+        h.detector.onDown()    // t=0 BoxStart
+        h.tick(10)
+        h.detector.onDown()    // 10 - 0 < 50 → debounce-skipped
+        h.tick(300)            // window of the FIRST (real) tap closes
+        // The debounce-skipped second DOWN did not move
+        // state, so we're in STAY_OPEN with no events
+        // beyond the original BoxStart.
+        assertEquals(
+            listOf(SpenButtonDetector.ButtonEvent.BoxStart),
+            h.events,
+        )
+    }
+
+    @Test
+    fun doubleTap_reset_clearsStayOpenState() {
+        val h = Harness(mode = SpenMode.DOUBLE_TAP)
+        h.detector.onDown()    // BoxStart
+        h.tick(300)            // → STAY_OPEN
+        h.detector.reset()
+        assertEquals(false, h.detector.isButtonHeld)
+        h.events.clear()
+        // Fresh cycle after reset.
+        h.detector.onDown()
+        assertEquals(
+            listOf(SpenButtonDetector.ButtonEvent.BoxStart),
+            h.events,
+        )
+    }
 }

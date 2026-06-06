@@ -110,9 +110,11 @@ class AppPreferences(context: Context) {
     /**
      * V_NOW: S Pen side-button gesture mode. User picks this in
      * the settings panel (see PockRefApp.kt settings sheet —
-     * RadioButton pair). Default [SpenMode.PRESS_AND_HOLD] to
-     * preserve prior behavior; users who prefer tap-to-toggle
-     * can switch to [SpenMode.TOGGLE].
+     * RadioButton pair). V_NOW (D3): default is now
+     * [SpenMode.DOUBLE_TAP] — pure tap semantics, no
+     * holding required. Users who preferred the old
+     * press-and-hold behaviour can switch back to
+     * [SpenMode.PRESS_AND_HOLD] from the settings sheet.
      *
      * `apply()` is fire-and-forget; the read site
      * (`MainActivity.onCreate` → constructs detector with the
@@ -128,9 +130,9 @@ class AppPreferences(context: Context) {
      */
     var spenMode: SpenMode
         get() {
-            val stored = prefs.getString(KEY_SPEN_MODE, null) ?: return SpenMode.PRESS_AND_HOLD
+            val stored = prefs.getString(KEY_SPEN_MODE, null) ?: return SpenMode.DOUBLE_TAP
             return runCatching { SpenMode.valueOf(stored) }
-                .getOrDefault(SpenMode.PRESS_AND_HOLD)
+                .getOrDefault(SpenMode.DOUBLE_TAP)
         }
         set(value) {
             prefs.edit().putString(KEY_SPEN_MODE, value.name).apply()

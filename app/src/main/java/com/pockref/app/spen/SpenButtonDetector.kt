@@ -83,11 +83,11 @@ class FakeSpenButtonScheduler(
 }
 
 /**
- * The S Pen side-button binding has two user-selectable
- * gesture modes (settings panel exposes a radio-button pair
- * for this — see PockRefApp.kt settings sheet).
+ * The S Pen side-button binding has three user-selectable
+ * gesture modes (settings panel exposes a radio-button
+ * pair for this — see PockRefApp.kt settings sheet).
  *
- * - [PRESS_AND_HOLD] (default) — physical press-and-hold
+ * - [PRESS_AND_HOLD] — physical press-and-hold
  *   semantics. First DOWN edge fires [ButtonEvent.BoxStart]
  *   (entering box-select mode). UP edge fires
  *   [ButtonEvent.BoxEnd] (exiting box mode). A second DOWN
@@ -109,8 +109,29 @@ class FakeSpenButtonScheduler(
  *   Single are NOT emitted in this mode (no double-click
  *   concept when the button isn't a click). The
  *   [doubleClickWindowMs] parameter is unused in this mode.
+ *
+ * - [DOUBLE_TAP] (V_NOW D3 — default) — pure tap
+ *   semantics, no holding required. Each DOWN edge is
+ *   an independent tap. The first DOWN fires
+ *   [ButtonEvent.BoxStart]. A second DOWN within
+ *   [doubleTapWindowMs] of the first DOWN is the
+ *   "double-tap" trigger → fires [ButtonEvent.BoxEnd] +
+ *   [ButtonEvent.Single] (the caller uses Single to
+ *   force single-select regardless of box outcome). If
+ *   no second DOWN arrives within
+ *   [doubleTapWindowMs], the detector transitions to a
+ *   STAY-OPEN state where the user is "in box mode
+ *   indefinitely" — subsequent DOWN edges RE-ARM the
+ *   double-tap window but do NOT re-fire BoxStart (the
+ *   user is already in box mode). UP edges are ignored
+ *   entirely (just like [TOGGLE] — the user never has
+ *   to keep the button held). The
+ *   [doubleClickWindowMs] parameter is unused in this
+ *   mode; the rapid-tap window is the
+ *   [doubleTapWindowMs]-driven one. Default mode in
+ *   [com.pockref.app.data.AppPreferences].
  */
-enum class SpenMode { PRESS_AND_HOLD, TOGGLE }
+enum class SpenMode { PRESS_AND_HOLD, TOGGLE, DOUBLE_TAP }
 
 /**
  * State machine for the S Pen side button. Maps raw press /
@@ -153,6 +174,21 @@ class SpenButtonDetector(
      * ignored in [SpenMode.TOGGLE] (no double-click concept there).
      */
     private val doubleClickWindowMs: Long = 300L,
+
+    /**
+     * V_NOW (D3): the rapid-tap window used by
+     * [SpenMode.DOUBLE_TAP] (200 ms by default).
+     * Different from [doubleClickWindowMs] which is the
+     * PRESS_AND_HOLD double-click window (300 ms,
+     * matches Material Design's tap-throttle guidance).
+     * The user spec for DOUBLE_TAP was 200 ms — a
+     * tighter window because the user is doing
+     * deliberate "tap-tap to cancel" rather than
+     * accidental rapid bouncing. Only consulted in
+     * [SpenMode.DOUBLE_TAP]; ignored in the other two
+     * modes.
+     */
+    private val doubleTapWindowMs: Long = 200L,
 
     /**
      * Minimum time (ms) between two adjacent DOWN edges to count
@@ -203,6 +239,27 @@ class SpenButtonDetector(
     }
 
     /**
+     * V_NOW (D3): states used in [SpenMode.DOUBLE_TAP].
+     * Three states — IDLE (no button activity, no box
+     * mode), WAITING_DOUBLE (first DOWN fired, watching
+     * for a second DOWN within [doubleTapWindowMs] to
+     * fire the "double-tap → BoxEnd + Single" exit),
+     * and STAY_OPEN (first DOWN fired and the
+     * [doubleTapWindowMs] elapsed with no second tap,
+     * so we're in box mode indefinitely until either
+     * (a) the user does a quick double-tap (re-arms
+     * the window via a fresh WAITING_DOUBLE transition
+     * — see [onDownDoubleTap]) or (b) the caller exits
+     * box mode via an external mechanism like the
+     * SelectionBottomSheet X button).
+     */
+    private enum class DoubleTapState {
+        IDLE,
+        WAITING_DOUBLE,
+        STAY_OPEN,
+    }
+
+    /**
      * Event types emitted to the caller. See the class
      * doc-comment for per-event firing rules across the
      * two [SpenMode]s.
@@ -211,6 +268,7 @@ class SpenButtonDetector(
 
     private var pressHoldState: PressHoldState = PressHoldState.IDLE
     private var toggleState: ToggleState = ToggleState.OFF
+    private var doubleTapState: DoubleTapState = DoubleTapState.IDLE
 
     // Sentinel for "no down recorded yet". A plain 0L would
     // falsely trip the debounce check on a test whose clock
@@ -226,13 +284,19 @@ class SpenButtonDetector(
 
     /** True while a press is being held in PRESS_AND_HOLD mode
      *  ([PressHoldState.FIRST_DOWN] or [PressHoldState.SECOND_DOWN]),
-     *  OR while the toggle is ON in [SpenMode.TOGGLE]. */
+     *  OR while the toggle is ON in [SpenMode.TOGGLE], OR
+     *  while the detector is in box mode under
+     *  [SpenMode.DOUBLE_TAP] ([DoubleTapState.WAITING_DOUBLE]
+     *  or [DoubleTapState.STAY_OPEN]). */
     val isButtonHeld: Boolean
         get() = when (mode) {
             SpenMode.PRESS_AND_HOLD ->
                 pressHoldState == PressHoldState.FIRST_DOWN ||
                     pressHoldState == PressHoldState.SECOND_DOWN
             SpenMode.TOGGLE -> toggleState == ToggleState.ON
+            SpenMode.DOUBLE_TAP ->
+                doubleTapState == DoubleTapState.WAITING_DOUBLE ||
+                    doubleTapState == DoubleTapState.STAY_OPEN
         }
 
     /**
@@ -249,6 +313,7 @@ class SpenButtonDetector(
         when (mode) {
             SpenMode.PRESS_AND_HOLD -> onDownPressHold()
             SpenMode.TOGGLE -> onDownToggle()
+            SpenMode.DOUBLE_TAP -> onDownDoubleTap()
         }
     }
 
@@ -264,6 +329,12 @@ class SpenButtonDetector(
                 // user can release and the toggle stays
                 // ON. No state change, no event, no
                 // debounce bookkeeping.
+            }
+            SpenMode.DOUBLE_TAP -> {
+                // V_NOW (D3): same as TOGGLE — UP is
+                // invisible. The user never has to
+                // keep the button held; each tap is
+                // independent.
             }
         }
     }
@@ -360,6 +431,82 @@ class SpenButtonDetector(
         }
     }
 
+    // ── DOUBLE_TAP state machine (V_NOW D3) ──
+    // IDLE → DOWN → WAITING_DOUBLE (fire BoxStart, arm
+    //   [doubleTapWindowMs] timer).
+    // WAITING_DOUBLE → DOWN within window → IDLE (fire
+    //   BoxEnd + Single; the user explicitly tapped
+    //   twice to enter + immediately exit).
+    // WAITING_DOUBLE → timer fires → STAY_OPEN (no
+    //   event; user is in box mode indefinitely).
+    // STAY_OPEN → DOWN → WAITING_DOUBLE (re-arm the
+    //   rapid-tap window; do NOT re-fire BoxStart —
+    //   the user is already in box mode and a second
+    //   tap should be interpreted as "I'm trying to
+    //   double-tap to exit").
+    //
+    // UP edges are ignored entirely (see [onUp]).
+    // [doubleClickWindowMs] is NOT consulted in this
+    // mode — the rapid-tap window is
+    // [doubleTapWindowMs]-driven (200 ms by default,
+    // tighter than the 300 ms PRESS_AND_HOLD window
+    // because the user is doing deliberate "tap-tap
+    // to cancel" rather than accidental rapid
+    // bouncing).
+    private fun onDownDoubleTap() {
+        when (doubleTapState) {
+            DoubleTapState.IDLE -> {
+                doubleTapState = DoubleTapState.WAITING_DOUBLE
+                onEvent(ButtonEvent.BoxStart)
+                pendingRunnable = Runnable {
+                    if (doubleTapState == DoubleTapState.WAITING_DOUBLE) {
+                        // No second tap within the rapid-tap
+                        // window — transition to STAY_OPEN.
+                        // No event fired; the user is in
+                        // box mode and stays there until
+                        // they double-tap to exit (or use
+                        // an external mechanism like the
+                        // bottom sheet's X button).
+                        doubleTapState = DoubleTapState.STAY_OPEN
+                    }
+                }
+                scheduler.postDelayed(pendingRunnable!!, doubleTapWindowMs)
+            }
+            DoubleTapState.WAITING_DOUBLE -> {
+                // Second tap within the rapid-tap
+                // window — this is the "double-tap to
+                // exit" trigger. Fire both BoxEnd
+                // (caller switches selection mode) and
+                // Single (caller can use this to force
+                // single-select regardless of box
+                // outcome).
+                cancelPending()
+                doubleTapState = DoubleTapState.IDLE
+                onEvent(ButtonEvent.BoxEnd)
+                onEvent(ButtonEvent.Single)
+            }
+            DoubleTapState.STAY_OPEN -> {
+                // User is already in box mode. Re-arm
+                // the rapid-tap window so the next tap
+                // (if within [doubleTapWindowMs]) is
+                // interpreted as a double-tap exit.
+                // Do NOT fire BoxStart — that would be
+                // a no-op for the caller (it's already
+                // in BOX mode) and would spam the
+                // event stream with redundant
+                // BoxStarts.
+                cancelPending()
+                doubleTapState = DoubleTapState.WAITING_DOUBLE
+                pendingRunnable = Runnable {
+                    if (doubleTapState == DoubleTapState.WAITING_DOUBLE) {
+                        doubleTapState = DoubleTapState.STAY_OPEN
+                    }
+                }
+                scheduler.postDelayed(pendingRunnable!!, doubleTapWindowMs)
+            }
+        }
+    }
+
     /**
      * Cancel any pending runnable and reset to IDLE / OFF.
      * Call from the activity's onPause to make sure a
@@ -370,6 +517,7 @@ class SpenButtonDetector(
         cancelPending()
         pressHoldState = PressHoldState.IDLE
         toggleState = ToggleState.OFF
+        doubleTapState = DoubleTapState.IDLE
         hasDown = false
         lastDownTime = 0L
     }

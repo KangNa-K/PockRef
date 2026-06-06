@@ -186,8 +186,28 @@ class MainActivity : ComponentActivity() {
                 }
                 viewModel.onAction(PockRefAction.SetSelectionMode(nextMode))
             }
-            SpenButtonDetector.ButtonEvent.Multi,
-            SpenButtonDetector.ButtonEvent.Single -> Unit
+            SpenButtonDetector.ButtonEvent.Multi -> Unit
+            SpenButtonDetector.ButtonEvent.Single -> {
+                // V_NOW (D3): the DoubleTap mode fires
+                // Single alongside BoxEnd as the "I
+                // double-tapped to exit, force single
+                // selection regardless of box outcome"
+                // signal. The caller (us) responds by
+                // switching the selection mode back to
+                // SINGLE. This OVERRIDES the BoxEnd
+                // above's count-based MULTI choice
+                // (the user's double-tap is an
+                // explicit "I don't want multi"
+                // signal). The reducer's
+                // SetSelectionMode(SINGLE) cascades
+                // through [selectedImageIds] (single-
+                // select mode keeps at most 1 image
+                // selected) so the canvas visibly
+                // collapses any multi-selection down
+                // to a single image (or empty if the
+                // box didn't hit anything).
+                viewModel.onAction(PockRefAction.SetSelectionMode(SelectionMode.SINGLE))
+            }
         }
     }
 
