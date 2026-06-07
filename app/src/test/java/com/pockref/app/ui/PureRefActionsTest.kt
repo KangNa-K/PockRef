@@ -82,7 +82,25 @@ class PockRefActionsTest {
     // path was removed (the user request to retire the legacy
     // SelectionFloatingToolbar also cleaned up the action
     // variant). Bump to 112 to match.
-    private val expectedVariantCount: Int = 113
+    //
+    // V_NOW (2026-06-08): the prior constant (113) had
+    // drifted from the actual `permittedSubclasses.size` at
+    // the v1.1.0 release (118, counted by `grep -c 'data
+    // class\|data object' PureRefActions.kt`). The test was
+    // already failing on main; nobody noticed because the
+    // CI test set doesn't run this assertion in the v1.1.0
+    // release pipeline. Setting it to the real v1.1.0 base
+    // (118) here so the +6 delta is unambiguous.
+    //
+    // V_NOW (2026-06-08 速写练习): 118 → 124 — added the
+    // six practice variants (StartPractice, PracticeTick,
+    // PausePractice, ResumePractice, SkipRest, ExitPractice)
+    // for the speed-sketching practice feature in commit 1.
+    // The reducer-side API ([com.pockref.app.ui.PracticeEvent])
+    // is a separate sealed interface and does NOT count
+    // toward this number — only the [PockRefAction] subclasses
+    // are locked down here.
+    private val expectedVariantCount: Int = 124
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

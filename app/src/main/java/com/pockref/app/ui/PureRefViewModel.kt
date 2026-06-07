@@ -261,12 +261,23 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     internal val batchController: PockRefViewModelBatch
     internal val selectionController: PockRefViewModelSelection
     internal val sceneController: PockRefViewModelScene
+    // V_NOW (2026-06-08 速写练习): wraps the pure
+    // [PracticeReducer] and applies its output to
+    // [PockRefUiState.practiceState]. The six
+    // [PockRefAction.StartPractice] / [PracticeTick] /
+    // PausePractice / ResumePractice / SkipRest /
+    // ExitPractice actions route through this controller.
+    // Follows the same constructor pattern as the other
+    // four controllers (passes `this`, reads
+    // [uiState.value], writes via [_uiState.update]).
+    internal val practiceController: PockRefViewModelPractice
 
     init {
         transformController = PockRefViewModelTransform(this)
         batchController = PockRefViewModelBatch(this)
         selectionController = PockRefViewModelSelection(this)
         sceneController = PockRefViewModelScene(this)
+        practiceController = PockRefViewModelPractice(this)
         startAutoSaveLoop()
     }
 
@@ -628,6 +639,31 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             PockRefAction.ToggleGlobalImageLock -> {
                 val newValue = !_uiState.value.globalImageLock
                 appPrefs.globalImageLock = newValue
+                // V_NOW (2026-06-08 "开启全局锁定自动取消选中"):
+                // when the user TURNS ON [globalImageLock],
+                // every image becomes locked (see
+                // [isImageLocked]) and therefore
+                // un-draggable / un-transformable. A
+                // pre-existing selection would otherwise
+                // leave the user staring at a
+                // [SelectionBottomSheet] that advertises
+                // actions (flip / rotate / crop / align /
+                // grayscale / export / delete) which
+                // mostly become no-ops when
+                // [globalImageLock] is on. The sheet's
+                // own `if (selectedCount == 0) return`
+                // guard unmounts the sheet once the
+                // selection empties, so the user gets
+                // the visual signal "selection cleared,
+                // lock is active" via the sheet slide-out
+                // animation. We only deselect on enable
+                // (newValue == true) — disabling the
+                // lock is a permissive operation and the
+                // user might still want their selection
+                // intact for follow-up actions.
+                if (newValue) {
+                    transformController.deselect()
+                }
                 _uiState.update { it.copy(globalImageLock = newValue) }
             }
             PockRefAction.BeginRenameScene -> _uiState.update {
@@ -721,6 +757,21 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.SetSpenMode -> setSpenMode(action.mode)
             is PockRefAction.SetAutoSaveIntervalMs -> setAutoSaveIntervalMs(action.intervalMs)
             is PockRefAction.SetAutoSaveEnabled -> setAutoSaveEnabled(action.enabled)
+            // V_NOW (2026-06-08 速写练习): the six practice
+            // variants. All delegate to [practiceController]
+            // which wraps [PracticeReducer] — the reducer is
+            // the testable pure-function unit, the controller
+            // is the side-effectful shim that persists
+            // [lastPracticeConfig] and updates [_uiState].
+            is PockRefAction.StartPractice -> practiceController.startPractice(
+                action.imageIds,
+                action.config,
+            )
+            is PockRefAction.PracticeTick -> practiceController.onTick(action.remainingMs)
+            PockRefAction.PausePractice -> practiceController.pause()
+            PockRefAction.ResumePractice -> practiceController.resume()
+            PockRefAction.SkipRest -> practiceController.skipRest()
+            PockRefAction.ExitPractice -> practiceController.exit()
         }
     }
 

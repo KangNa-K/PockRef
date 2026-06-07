@@ -9,6 +9,7 @@ import com.pockref.app.model.BackgroundPreset
 import com.pockref.app.model.CropAspect
 import com.pockref.app.data.ThemeMode
 import com.pockref.app.model.CropRect
+import com.pockref.app.model.PracticeConfig
 import com.pockref.app.model.SettingsTab
 
 sealed interface PockRefAction {
@@ -513,6 +514,82 @@ sealed interface PockRefAction {
      * the read site.
      */
     data class SetAutoSaveEnabled(val enabled: Boolean) : PockRefAction
+
+    // ── 速写练习 (V_NOW 2026-06-08) ─────────────────────────────────
+    // The six practice variants below are dispatched by the
+    // pre-flight config sheet (Start), the practice screen
+    // ticker (Tick), and the practice screen chrome (Pause /
+    // Resume / SkipRest / Exit). All six route through
+    // [com.pockref.app.ui.PockRefViewModelPractice], which wraps
+    // the pure [com.pockref.app.ui.PracticeReducer] and applies
+    // the result to [com.pockref.app.model.PockRefUiState.practiceState].
+    // See [com.pockref.app.model.PracticeState] for the schema
+    // and [com.pockref.app.ui.PracticeReducer] for the transition
+    // rules.
+
+    /**
+     * Begin a new practice session. [imageIds] is the ordered
+     * list of [com.pockref.app.model.SceneImage.id]s the user
+     * wants to draw (typically read from
+     * [com.pockref.app.model.PockRefUiState.selectedImageIds]).
+     * [config] is the user-edited [PracticeConfig] from the
+     * pre-flight sheet (the controller persists it to
+     * [com.pockref.app.data.AppPreferences.lastPracticeConfig]
+     * for next session's defaults).
+     *
+     * Rejected (silently no-ops) by the controller if the list
+     * is empty or a session is already in progress — the
+     * controller reports an [com.pockref.app.ui.UiError] for
+     * the empty case so the user knows why nothing happened.
+     */
+    data class StartPractice(
+        val imageIds: List<String>,
+        val config: PracticeConfig,
+    ) : PockRefAction
+
+    /**
+     * Frame-by-frame countdown update. Dispatched by the
+     * practice screen's `LaunchedEffect` (added in commit 3)
+     * roughly every 16ms. The reducer treats [remainingMs] as
+     * a "time left in the current phase" reading, not an
+     * elapsed-time delta — this keeps the ticker drift-free
+     * (the screen computes `remainingMs = phaseEndMs - now`
+     * using [System.nanoTime] deltas, not `delay()` accumulation).
+     * Values `<= 0L` trigger a phase transition.
+     *
+     * No-op when the session is not RUNNING (PAUSED / FINISHED
+     * / IDLE all reject the event), so a stale frame from
+     * before a pause can't accidentally advance the state.
+     */
+    data class PracticeTick(val remainingMs: Long) : PockRefAction
+
+    /** Freeze the current phase's `remainingMs` and switch to
+     *  PAUSED. No-op when the session is not RUNNING. */
+    data object PausePractice : PockRefAction
+
+    /** Un-freeze and switch back to RUNNING. No-op when the
+     *  session is not PAUSED — the [PracticeState.remainingMs]
+     *  value is preserved across the pause/resume pair, so
+     *  the ticker resumes from exactly where it stopped. */
+    data object ResumePractice : PockRefAction
+
+    /** User chose to skip the current rest period. Advances
+     *  to the next image (or FINISHED if this was the last
+     *  rest). No-op when the session is not in the REST phase
+     *  (defense-in-depth — the skip button only renders during
+     *  REST, so a misclick dispatch would only happen via a
+     *  debug hook). */
+    data object SkipRest : PockRefAction
+
+    /** Tear down the session. Sets
+     *  [com.pockref.app.model.PockRefUiState.practiceState]
+     *  back to `null` (not the [PracticeState.Idle] sentinel
+     *  — the `null` shape is what the rest of the app reads
+     *  via `state.practiceState != null` for "is the practice
+     *  screen visible?"). No-op when the session is already
+     *  IDLE. */
+    data object ExitPractice : PockRefAction
+
 }
 
 /**

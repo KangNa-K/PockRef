@@ -282,6 +282,102 @@ class AppPreferences(context: Context) {
         }
 
     /**
+     * V_NOW (2026-06-08 速写练习): the user's last-used
+     * [com.pockref.app.model.PracticeConfig] (practice
+     * duration / rest duration / shuffle / sound), persisted
+     * so the pre-flight config sheet (commit 2) comes up
+     * with the user's last choices instead of the hard-coded
+     * defaults every time.
+     *
+     * Returns `null` on a fresh install or after the user
+     * clears app data — the pre-flight sheet then falls back
+     * to [com.pockref.app.model.PracticeConfig]'s default
+     * constructor (60s / 30s / off / off).
+     *
+     * Storage uses four separate primitive keys (one per
+     * [com.pockref.app.model.PracticeConfig] field) rather
+     * than a serialized blob. This matches the rest of the
+     * settings in this file (each field is a separate
+     * SharedPreferences entry) and keeps the read-side logic
+     * trivial — no JSON / parcelable dance for a 4-field
+     * record. The setter reconstructs the [PracticeConfig]
+     * data class from the four primitives.
+     *
+     * The setter validates the constructed config via the
+     * `init { require(...) }` block in [PracticeConfig] —
+     * a corrupted pref with an out-of-range duration (e.g.
+     * manually edited SharedPreferences) throws
+     * [IllegalArgumentException] at write-time, which the
+     * caller ([PockRefViewModelPractice.startPractice])
+     * will not see because the corruption would have
+     * already thrown on the previous read; in that case
+     * the getter's default fallback kicks in and the
+     * setter is never reached. Defensive `coerceIn` on
+     * each read site further protects against a single
+     * bad pref value corrupting the whole config.
+     */
+    var lastPracticeConfig: com.pockref.app.model.PracticeConfig?
+        get() {
+            // All four keys absent → first launch since
+            // the practice feature was added. Return null
+            // and let the caller fall back to
+            // [PracticeConfig]'s default ctor.
+            if (!prefs.contains(KEY_LAST_PRACTICE_DURATION_MS) ||
+                !prefs.contains(KEY_LAST_REST_DURATION_MS) ||
+                !prefs.contains(KEY_LAST_PRACTICE_SHUFFLE) ||
+                !prefs.contains(KEY_LAST_PRACTICE_SOUND)
+            ) {
+                return null
+            }
+            // Defensive clamping: if a manually edited
+            // pref holds e.g. -1 or 99_999_999ms, the
+            // [PracticeConfig.init] `require` would
+            // throw, which would brick the pre-flight
+            // sheet (the user can't even dismiss it
+            // because the getter throws before the
+            // sheet can render). Clamp on read so
+            // corruption degrades to "weird default"
+            // rather than "app crash on launch".
+            val practiceMs = prefs.getLong(
+                KEY_LAST_PRACTICE_DURATION_MS,
+                com.pockref.app.model.PracticeConfig.MIN_PRACTICE_MS,
+            ).coerceIn(
+                com.pockref.app.model.PracticeConfig.MIN_PRACTICE_MS,
+                com.pockref.app.model.PracticeConfig.MAX_PRACTICE_MS,
+            )
+            val restMs = prefs.getLong(
+                KEY_LAST_REST_DURATION_MS,
+                com.pockref.app.model.PracticeConfig.MIN_REST_MS,
+            ).coerceIn(
+                com.pockref.app.model.PracticeConfig.MIN_REST_MS,
+                com.pockref.app.model.PracticeConfig.MAX_REST_MS,
+            )
+            val shuffle = prefs.getBoolean(KEY_LAST_PRACTICE_SHUFFLE, false)
+            val sound = prefs.getBoolean(KEY_LAST_PRACTICE_SOUND, false)
+            return com.pockref.app.model.PracticeConfig(
+                practiceDurationMs = practiceMs,
+                restDurationMs = restMs,
+                shuffle = shuffle,
+                soundEnabled = sound,
+            )
+        }
+        set(value) {
+            val editor = prefs.edit()
+            if (value == null) {
+                editor.remove(KEY_LAST_PRACTICE_DURATION_MS)
+                editor.remove(KEY_LAST_REST_DURATION_MS)
+                editor.remove(KEY_LAST_PRACTICE_SHUFFLE)
+                editor.remove(KEY_LAST_PRACTICE_SOUND)
+            } else {
+                editor.putLong(KEY_LAST_PRACTICE_DURATION_MS, value.practiceDurationMs)
+                editor.putLong(KEY_LAST_REST_DURATION_MS, value.restDurationMs)
+                editor.putBoolean(KEY_LAST_PRACTICE_SHUFFLE, value.shuffle)
+                editor.putBoolean(KEY_LAST_PRACTICE_SOUND, value.soundEnabled)
+            }
+            editor.apply()
+        }
+
+    /**
      * V_NOW: how the minimap area is displayed. MINIMAP = the
      * traditional thumbnail overview; SLIDER = a persistent zoom
      * slider. Stored as the enum name string.
@@ -356,6 +452,16 @@ class AppPreferences(context: Context) {
         private const val KEY_MINIMAP_SLIDER_ORIENTATION = "minimap_slider_orientation"
         // V_NOW (2026-06-08): see [globalImageLock] field above.
         private const val KEY_GLOBAL_IMAGE_LOCK = "global_image_lock"
+        // V_NOW (2026-06-08 速写练习): see [lastPracticeConfig] field
+        // above. Four separate keys — one per PracticeConfig field
+        // — match the rest of the settings in this file and avoid a
+        // JSON / parcelable serialization layer for a 4-field
+        // record. "All four absent" = "no last config saved yet"
+        // (fresh install) and the getter returns null in that case.
+        private const val KEY_LAST_PRACTICE_DURATION_MS = "last_practice_duration_ms"
+        private const val KEY_LAST_REST_DURATION_MS = "last_rest_duration_ms"
+        private const val KEY_LAST_PRACTICE_SHUFFLE = "last_practice_shuffle"
+        private const val KEY_LAST_PRACTICE_SOUND = "last_practice_sound"
     }
 }
 

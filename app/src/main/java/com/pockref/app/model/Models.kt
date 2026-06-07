@@ -1093,6 +1093,22 @@ data class PockRefUiState(
     // Default `0L` so the first user-tap on an empty
     // canvas never short-circuits the debounce.
     val lastSheetShowMs: Long = 0L,
+    //
+    // V_NOW (2026-06-08 速写练习): active practice
+    // session state. `null` = no session in progress
+    // (the user is on the canvas). Non-null =
+    // session is RUNNING / PAUSED / FINISHED. The
+    // [com.pockref.app.ui.PockRefViewModelPractice.exit]
+    // reducer path explicitly sets this to `null`
+    // (not the [PracticeState.Idle] sentinel) so
+    // the rest of the app can use a single
+    // `state.practiceState != null` check to decide
+    // "is the practice screen visible?". See
+    // [com.pockref.app.model.PracticeState] for the
+    // full state schema and
+    // [com.pockref.app.ui.PracticeReducer] for the
+    // transition rules.
+    val practiceState: com.pockref.app.model.PracticeState? = null,
     // V_NOW: monotonically increasing counter bumped
     // when the SelectionBottomSheet should be
     // dismissed programmatically (e.g. on double-tap
