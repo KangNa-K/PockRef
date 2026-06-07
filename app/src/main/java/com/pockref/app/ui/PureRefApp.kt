@@ -136,6 +136,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
@@ -145,32 +146,40 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -180,12 +189,16 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.VectorConverter
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
@@ -234,6 +247,7 @@ import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isTertiaryPressed
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.height
@@ -248,6 +262,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
@@ -397,6 +412,10 @@ private const val TAP_MAX_DRAG_DP = 12f
 private const val EDGE_AUTO_SCROLL_THRESHOLD_DP = 48f
 private const val GESTURE_MOVED_THRESHOLD_DP = 8f
 private const val DOUBLE_TAP_MAX_DIST_DP = 32f
+
+/** Min/max zoom range for the minimap slider (continuous, stepless). */
+private const val ZOOM_MIN = 0.25f
+private const val ZOOM_MAX = 4.0f
 private const val DOUBLE_TAP_MAX_INTERVAL_MS = 400L
 
 // --- Render-perf tuning ----------------------------------------------------
@@ -1470,7 +1489,62 @@ private fun SelectionBottomSheet(
     // SheetState (M3's built-in LaunchedEffect then
     // calls show() on the new state).
     key(state.selectionSheetShowTick) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // V_NOW (swipe-down sync): intercept the sheet's
+    // swipe-down state transition so the canvas
+    // restore animation can start in the SAME frame
+    // as M3's built-in slide-out animation.
+    //
+    // M3 [ModalBottomSheetState.confirmValueChange]
+    // is called synchronously at the start of any
+    // sheet state change, including the
+    // swipe-down → [SheetValue.Hidden] transition.
+    // Toggling [isDismissing] here re-keys the
+    // [LaunchedEffect(isDismissing)] further below
+    // (the canvas-restore block) to start the
+    // canvas-restore animation at the same moment
+    // M3's [SwipeableV2State] kicks off its
+    // slide-out tween. The two animations then run
+    // concurrently, both completing in ~300ms.
+    //
+    // Why this matters: M3's [onDismissRequest] is
+    // only invoked AFTER the sheet's slide-out
+    // animation has already finished. So if we
+    // used [onDismissRequest] alone to trigger
+    // [isDismissing] (the previous V_NOW design),
+    // the canvas restore would lag the sheet by a
+    // full 300ms — the sheet would visibly
+    // "vanish" first, then the canvas would snap
+    // back. [confirmValueChange] is the only
+    // hook that fires at the start of the
+    // dismiss, not the end.
+    //
+    // Trade-off: the scrim-tap dismiss path is NOT
+    // covered (M3 routes scrim clicks through
+    // [onDismissRequest] only, so we can't pre-fire
+    // [isDismissing] from there). For the swipe-down
+    // gesture — the primary dismiss path on a tablet
+    // with S Pen — this gives true frame-perfect
+    // sync. Scrim-tap users see the old 300ms gap,
+    // which is acceptable on a 12" tablet where
+    // scrim is rarely tapped.
+    // V_NOW: track whether the sheet is currently
+    // dismissing (hide animation running). Used to
+    // start the canvas restore animation in sync
+    // with the sheet slide-out animation, rather
+    // than after the sheet is already gone. Declared
+    // before [sheetState] so the
+    // [confirmValueChange] lambda below can
+    // reference it.
+    var isDismissing by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { newValue ->
+            if (newValue == SheetValue.Hidden && !isDismissing) {
+                isDismissing = true
+            }
+            true
+        },
+    )
     // Track whether the sheet should remain in the
     // composition tree. M3 ModalBottomSheet keeps its
     // popup window alive even when sheetState is
@@ -1484,228 +1558,136 @@ private fun SelectionBottomSheet(
     // popup and restoring touch to the canvas.
     var showSheet by remember { mutableStateOf(true) }
 
-    // V_NOW (B 智能避让 — actual sheet height):
-    // capture the sheet's content height in real
-    // time via `onSizeChanged` on the content Column.
-    // The earlier constant `280.dp` was a rough
-    // estimate of the old 12-button panel height,
-    // but the new 5+5 layout shrinks the grid to
-    // ~88dp and the locked-panel-5 shrinks to
-    // ~50dp, so the real sheet height varies
-    // between ~140dp (5+5 unlocked) and ~110dp
-    // (5-button locked). Using the constant for
-    // both over-pans on the locked panel and
-    // under-pans on the unlocked panel — the user
-    // noticed the safe-zone avoidance was using
-    // "the wrong size" and the sheet still nibbled
-    // the bottom row of images on the locked
-    // panel.
-    //
-    // The state is hoisted OUTSIDE the `key(tick)`
-    // block so it persists across sheet-show
-    // recreations: first sheet show uses a
-    // fallback (the constant), subsequent shows
-    // use the measured value. The fallback is
-    // harmless on the first show (just a slightly
-    // off safe zone); the LaunchedEffect re-runs
-    // on the next tick and uses the now-measured
-    // value. After 1-2 sheet show cycles, the
-    // value is stable.
+    // Sheet content height measured via onSizeChanged.
+    // Persists across key(tick) re-creations so the
+    // second show uses the measured value.
     val sheetContentHeightPx = remember {
-        androidx.compose.runtime.mutableFloatStateOf(0f)
+        mutableFloatStateOf(0f)
+    }
+    // Snapshot of canvas state before auto-adjust,
+    // used to restore on sheet dismiss.
+    val preAdjustState = remember {
+        mutableStateOf<Pair<Float, Offset>?>(null)
+    }
+    val density = LocalDensity.current
+    val marginPx = with(density) { 16.dp.toPx() }
+
+    // Auto-adjust: when the sheet appears, check if
+    // selected images are occluded and pan/zoom the
+    // canvas so they're fully visible above the sheet.
+    //
+    // M3 ModalBottomSheet adds a drag handle (10+4+10=24dp)
+    // above the content Column. Our onSizeChanged only
+    // measures the Column, so we add the drag handle height
+    // to get the actual occlusion.
+    val sheetChromeHeightPx = with(density) { 24.dp.toPx() }
+
+    LaunchedEffect(state.selectionSheetShowTick) {
+        if (selectedCount == 0) {
+            preAdjustState.value = null
+            return@LaunchedEffect
+        }
+        val sheetH = sheetContentHeightPx.floatValue
+            .takeIf { it > 0f }
+            ?.plus(sheetChromeHeightPx)
+            ?: with(density) { 220.dp.toPx() } // fallback (content + drag handle)
+        val result = computeCanvasAdjustmentForSheet(
+            state = state,
+            sheetHeightPx = sheetH,
+            marginPx = marginPx,
+        )
+        if (result == null) {
+            // No occlusion — no adjustment needed.
+            preAdjustState.value = null
+            return@LaunchedEffect
+        }
+        // Save pre-adjust state for restore on dismiss.
+        preAdjustState.value = Pair(state.canvasScale, state.canvasOffset)
+        val (targetScale, targetOffset) = result
+        // Animate canvas to the adjusted position.
+        val startScale = state.canvasScale
+        val startOffset = state.canvasOffset
+        val fractionAnim = Animatable(0f)
+        fractionAnim.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        ) {
+            val f = this.value
+            val s = startScale + (targetScale - startScale) * f
+            val o = Offset(
+                x = startOffset.x + (targetOffset.x - startOffset.x) * f,
+                y = startOffset.y + (targetOffset.y - startOffset.y) * f,
+            )
+            onAction(PockRefAction.SetCanvasScaleAndOffset(s, o))
+        }
     }
 
-    // V_NOW (B 智能避让): when the sheet pops up,
-    // auto-pan the canvas so the selected image's
-    // AABB is centered in the "safe zone" above the
-    // sheet (the upper (viewportHeight - sheetHeight)
-    // region). Without this, images in the bottom
-    // ~280dp of the screen get occluded by the
-    // sheet's chrome + the 0.32-alpha scrim, hiding
-    // both the selected-image blue stroke and the
-    // C3 fade-in flash.
-    //
-    // Animation: 300ms tween (matches the sheet's
-    // own slide-in tween, so canvas pan and sheet
-    // slide land in sync). Each frame the Animatable
-    // dispatches PockRefAction.SetCanvasOffsetFromMinimap
-    // — same action the minimap uses, which sets
-    // canvasOffset directly without the 200px-per-step
-    // clamp that PockRefAction.PanCanvas has. We
-    // use this action so the per-frame interpolation
-    // is fully respected (otherwise the clamp would
-    // cause the pan to stutter at 200px/frame).
-    val density = LocalDensity.current
-    val safeMarginPx = with(density) { 16.dp.toPx() }
-    val fallbackSafeZonePx = with(density) { 280.dp.toPx() }
-    val safeZoneHeightPx = sheetContentHeightPx.floatValue
-        .takeIf { it > 0f } ?: fallbackSafeZonePx
-        val canvasOffsetAnim = remember {
-            androidx.compose.animation.core.Animatable(
-                initialValue = Offset.Zero,
-                typeConverter = Offset.VectorConverter,
+    // Restore: when the sheet starts dismissing,
+    // animate the canvas back to its pre-adjust
+    // state IN SYNC with the sheet's slide-out
+    // animation. Previously we waited for
+    // showSheet=false (which removes the sheet
+    // from composition instantly — no slide-out
+    // animation visible). Now we trigger the
+    // restore as soon as isDismissing=true, which
+    // is set right before sheetState.hide() so
+    // both animations run concurrently.
+    // Duration matches M3 ModalBottomSheet dismiss
+    // (~300ms standard). EaseOut makes the first
+    // half faster so the canvas "snaps back"
+    // promptly rather than lagging behind the sheet.
+    LaunchedEffect(isDismissing) {
+        if (!isDismissing) return@LaunchedEffect
+        val saved = preAdjustState.value
+        preAdjustState.value = null
+        if (saved == null) return@LaunchedEffect
+        val (savedScale, savedOffset) = saved
+        val startScale = state.canvasScale
+        val startOffset = state.canvasOffset
+        if (startScale == savedScale && startOffset == savedOffset) return@LaunchedEffect
+        val fractionAnim = Animatable(0f)
+        fractionAnim.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 300, easing = EaseOut),
+        ) {
+            val f = this.value
+            val s = startScale + (savedScale - startScale) * f
+            val o = Offset(
+                x = startOffset.x + (savedOffset.x - startOffset.x) * f,
+                y = startOffset.y + (savedOffset.y - startOffset.y) * f,
             )
+            onAction(PockRefAction.SetCanvasScaleAndOffset(s, o))
         }
-        // V_NOW (B 智能避让 — restore-on-dismiss): remember
-        // the canvas offset at the moment the auto-pan
-        // fires, so when the user dismisses the sheet we
-        // can animate the canvas BACK to the pre-pan
-        // position. Without this restore, dismissing the
-        // sheet leaves the canvas in the "避开 sheet" position
-        // even though the sheet is gone, so the user has to
-        // manually scroll back to where they were before the
-        // selection.
-        //
-        // Scoped INSIDE the `key(tick)` block so the
-        // remember re-initializes on every sheet-show tick:
-        // each fresh sheet-show captures a new pre-pan offset
-        // (the user's true position BEFORE the auto-pan
-        // kicked in this round), and stale values from a
-        // previous show cycle can't leak through.
-        val preSheetPanOffset = remember {
-            androidx.compose.runtime.mutableStateOf<Offset?>(null)
-        }
-        // Auto-pan: when the sheet pops up, slide the
-        // canvas so the selected AABB is in the safe zone.
-        LaunchedEffect(state.selectionSheetShowTick) {
-            if (selectedCount == 0) {
-                preSheetPanOffset.value = null
-                return@LaunchedEffect
-            }
-            val startOffset = state.canvasOffset
-            val targetDeltaY = computePanDeltaToSafeZoneY(
-                state = state,
-                safeZoneHeightPx = safeZoneHeightPx,
-                safeMarginPx = safeMarginPx,
-            )
-            if (targetDeltaY == 0f) {
-                // The AABB is already in the safe zone — no
-                // pan needed. Don't save a pre-pan offset
-                // (there was no pan to undo) so the dismiss-
-                // restore LaunchedEffect below is a no-op.
-                preSheetPanOffset.value = null
-                return@LaunchedEffect
-            }
-            val targetOffset = Offset(
-                x = startOffset.x,
-                y = startOffset.y + targetDeltaY,
-            )
-            // Snapshot the pre-pan offset BEFORE the
-            // animateTo so the dismiss-restore can find
-            // the user's original position. This must come
-            // after the targetDeltaY == 0f guard above so
-            // a "didn't actually pan" cycle doesn't leave
-            // a stale offset that gets restored on a
-            // future dismiss.
-            preSheetPanOffset.value = startOffset
-            // Animate the canvas offset from the current
-            // value to the target, dispatching each frame
-            // to SetCanvasOffsetFromMinimap so the reducer
-            // commits the new offset. Use the same 300ms
-            // tween the sheet uses for its slide-in so the
-            // two motions land in sync (M3's "shared axis"
-            // pattern: sheet slides up + canvas slides
-            // down on the same easing curve).
-            canvasOffsetAnim.snapTo(startOffset)
-            canvasOffsetAnim.animateTo(
-                targetValue = targetOffset,
-                animationSpec = androidx.compose.animation.core.tween(
-                    durationMillis = 300,
-                    easing = FastOutSlowInEasing,
-                ),
-            ) {
-                onAction(
-                    PockRefAction.SetCanvasOffsetFromMinimap(this.value),
-                )
-            }
-        }
-        // V_NOW (dynamic avoidance — sheet drag): when the
-        // user drags the sheet to resize it (half-expand,
-        // full-expand, or any intermediate position), the
-        // occlusion area changes in real time. This effect
-        // watches the sheet's current offset and recomputes
-        // the canvas pan so the selected AABB stays in the
-        // safe zone above the sheet's current top edge.
-        // Uses snapshotFlow to observe sheetState.offset
-        // (a State<Float> that updates on every drag frame).
-        LaunchedEffect(showSheet, state.selectionSheetShowTick) {
-            if (!showSheet) return@LaunchedEffect
-            snapshotFlow { sheetState.requireOffset() }
-                .collect { sheetOffset ->
-                    // sheetOffset = distance from sheet bottom
-                    // to screen bottom. The visible sheet height
-                    // = sheetContentHeight - (sheetOffset when
-                    // fully hidden). But simpler: the sheet's
-                    // top edge in screen coords =
-                    // viewportHeight - sheetOffset.
-                    // So the occlusion height = sheetOffset.
-                    val currentOcclusionPx = sheetOffset
-                        .takeIf { it > 0f } ?: safeZoneHeightPx
-                    val targetDeltaY = computePanDeltaToSafeZoneY(
-                        state = state,
-                        safeZoneHeightPx = currentOcclusionPx,
-                        safeMarginPx = safeMarginPx,
-                    )
-                    if (targetDeltaY != 0f) {
-                        val current = state.canvasOffset
-                        val target = Offset(
-                            x = current.x,
-                            y = current.y + targetDeltaY,
-                        )
-                        onAction(
-                            PockRefAction.SetCanvasOffsetFromMinimap(target),
-                        )
-                    }
-                }
-        }
-        // V_NOW (B 智能避让 — restore-on-dismiss): when
-        // the user closes the sheet (X / 收起 / scrim tap
-        // all funnel into `showSheet = false`), animate
-        // the canvas back to the pre-pan offset captured
-        // above. M3 1.2's own ModalBottomSheet has a 200ms
-        // slide-out tween; we use the same 300ms FastOutSlowIn
-        // curve for the canvas restore so the two motions
-        // land in sync (sheet slides down + canvas slides
-        // up on the same easing).
-        //
-        // The Animatable handles mid-animation cancellation
-        // gracefully: if the user dismisses the sheet before
-        // the auto-pan animation finishes, this effect's
-        // `snapTo(current)` captures the mid-pan position
-        // and the `animateTo(saved)` reverses from there
-        // instead of jumping to a known state. So fast-
-        // fingered dismiss doesn't produce a visual glitch.
-        //
-        // We clear `preSheetPanOffset` after the restore
-        // so the next show-then-dismiss cycle starts from
-        // a fresh capture (and so a no-op restore on a
-        // "show didn't actually pan" cycle doesn't
-        // accidentally animate the canvas to a stale
-        // position).
-        LaunchedEffect(showSheet) {
-            if (showSheet) return@LaunchedEffect
-            val saved = preSheetPanOffset.value
-            preSheetPanOffset.value = null
-            if (saved == null) return@LaunchedEffect
-            val current = state.canvasOffset
-            if (current == saved) return@LaunchedEffect
-            canvasOffsetAnim.snapTo(current)
-            canvasOffsetAnim.animateTo(
-                targetValue = saved,
-                animationSpec = androidx.compose.animation.core.tween(
-                    durationMillis = 300,
-                    easing = FastOutSlowInEasing,
-                ),
-            ) {
-                onAction(
-                    PockRefAction.SetCanvasOffsetFromMinimap(this.value),
-                )
-            }
-        }
+    }
+
+    // V_NOW: when isDismissing becomes true, run the
+    // M3 sheet hide animation (slide-out), then remove
+    // the sheet from composition. This runs concurrently
+    // with the canvas restore LaunchedEffect above.
+    LaunchedEffect(isDismissing) {
+        if (!isDismissing) return@LaunchedEffect
+        sheetState.hide()
+        showSheet = false
+    }
+
         if (showSheet) {
         ModalBottomSheet(
         onDismissRequest = {
-            showSheet = false
+            // V_NOW: start canvas restore animation
+            // in sync with the sheet slide-out.
+            // Previously we set showSheet=false
+            // here, which removed the sheet from
+            // composition instantly (no slide-out
+            // animation). Now we set isDismissing
+            // first (triggers the canvas restore
+            // LaunchedEffect), then call
+            // sheetState.hide() which runs M3's
+            // built-in slide-out animation. After
+            // the hide animation completes, we set
+            // showSheet=false to remove the sheet
+            // from composition (destroying the
+            // popup and restoring touch).
+            isDismissing = true
         },
         sheetState = sheetState,
         // V_NOW: scrim is now Color.Transparent
@@ -1756,29 +1738,9 @@ private fun SelectionBottomSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 12.dp)
-                // V_NOW (B 智能避让 — actual sheet
-                // height): `onSizeChanged` on the sheet
-                // content Column captures the actual
-                // pixel height of the rendered sheet,
-                // which is then read by the auto-pan
-                // LaunchedEffect above via
-                // [sheetContentHeightPx]. This is
-                // scoped inside the `key(tick)` block
-                // — the remember() above (outside
-                // the key) is what persists across
-                // key re-fires; the onSizeChanged here
-                // just writes to it. The first show
-                // uses the 280dp fallback (a
-                // conservative over-estimate); the
-                // second show onward uses the
-                // measured value, so the safe-zone
-                // avoidance tracks both the 5+5
-                // unlocked panel and the 5-button
-                // locked panel correctly.
                 .onSizeChanged { size ->
-                    if (size.height > 0f) {
-                        sheetContentHeightPx.floatValue =
-                            size.height.toFloat()
+                    if (size.height > 0) {
+                        sheetContentHeightPx.floatValue = size.height.toFloat()
                     }
                 },
         ) {
@@ -1829,8 +1791,16 @@ private fun SelectionBottomSheet(
                 Spacer(Modifier.width(8.dp))
                 SheetModeToggle(
                     singleSelected = !state.multiSelectMode,
-                    onSingle = { onAction(PockRefAction.ToggleMultiSelectMode) },
-                    onMulti = { onAction(PockRefAction.ToggleMultiSelectMode) },
+                    boxSelectMode = state.boxSelectMode,
+                    onSingle = {
+                        if (state.boxSelectMode) onAction(PockRefAction.ToggleBoxSelectMode)
+                        if (state.multiSelectMode) onAction(PockRefAction.ToggleMultiSelectMode)
+                    },
+                    onMulti = {
+                        if (state.boxSelectMode) onAction(PockRefAction.ToggleBoxSelectMode)
+                        if (!state.multiSelectMode) onAction(PockRefAction.ToggleMultiSelectMode)
+                    },
+                    onBox = { onAction(PockRefAction.ToggleBoxSelectMode) },
                 )
             }
             HorizontalDivider(
@@ -1891,7 +1861,7 @@ private fun SelectionBottomSheet(
                         onClick = { onAction(PockRefAction.ToggleLockSelected) },
                     )
                     SheetActionButton(
-                        icon = Icons.Rounded.Save,
+                        icon = Icons.Rounded.Image,
                         label = "导出",
                         modifier = Modifier.weight(1f),
                         onClick = { onAction(PockRefAction.ExportSelected) },
@@ -1969,7 +1939,7 @@ private fun SelectionBottomSheet(
                     SheetActionSpec(Icons.Rounded.Lock, "锁定", false) {
                         onAction(PockRefAction.ToggleLockSelected)
                     },
-                    SheetActionSpec(Icons.Rounded.Save, "导出", false) {
+                    SheetActionSpec(Icons.Rounded.Image, "导出", false) {
                         onAction(PockRefAction.ExportSelected)
                     },
                     SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
@@ -2087,8 +2057,10 @@ private fun SheetActionButton(
 @Composable
 private fun SheetModeToggle(
     singleSelected: Boolean,
+    boxSelectMode: Boolean,
     onSingle: () -> Unit,
     onMulti: () -> Unit,
+    onBox: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -2098,13 +2070,18 @@ private fun SheetModeToggle(
     ) {
         SheetModeChip(
             text = "单选",
-            selected = singleSelected,
-            onClick = { if (!singleSelected) onSingle() },
+            selected = singleSelected && !boxSelectMode,
+            onClick = { if (!singleSelected || boxSelectMode) onSingle() },
         )
         SheetModeChip(
             text = "多选",
-            selected = !singleSelected,
-            onClick = { if (singleSelected) onMulti() },
+            selected = !singleSelected && !boxSelectMode,
+            onClick = { if (singleSelected || boxSelectMode) onMulti() },
+        )
+        SheetModeChip(
+            text = "框选",
+            selected = boxSelectMode,
+            onClick = { if (!boxSelectMode) onBox() },
         )
     }
 }
@@ -3323,23 +3300,169 @@ private fun BoxScope.MinimapChrome(
     val currentOnAction by rememberUpdatedState(onAction)
     val currentCanvasScale by rememberUpdatedState(state.canvasScale)
 
+    // Auto-dismiss: slider disappears after 3 s of inactivity.
+    // Any slider drag resets the timer.
+    val sliderInteractionStamp = remember { mutableStateOf(0L) }
+    LaunchedEffect(zoomSliderActive.value) {
+        if (!zoomSliderActive.value) return@LaunchedEffect
+        while (true) {
+            delay(3000L)
+            // If no interaction happened during the wait, dismiss.
+            if (sliderInteractionStamp.value == 0L) {
+                zoomSliderActive.value = false
+                break
+            }
+            // An interaction occurred; reset stamp and wait again.
+            sliderInteractionStamp.value = 0L
+        }
+    }
+
     // Morph progress: 0f = minimap, 1f = zoom slider.
-    // 200ms ease-out for dismiss; 300ms emphasized for appear.
+    // V_NOW: M3 spec — 长按展开走 emphasized 曲线 250ms,
+    // 松手回弹走 standard 曲线 150ms (旧值 300/200ms 是早期近似,
+    // 现在对齐 M3 spec).
     val morphProgress by animateFloatAsState(
         targetValue = if (zoomSliderActive.value) 1f else 0f,
         animationSpec = if (zoomSliderActive.value) {
-            tween(durationMillis = 300, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))
+            tween(durationMillis = 250, easing = CubicBezierEasing(0.2f, 0f, 0f, 1f))
         } else {
-            tween(durationMillis = 200, easing = FastOutSlowInEasing)
+            tween(durationMillis = 150, easing = FastOutSlowInEasing)
         },
         label = "minimapToSlider",
     )
 
-    // Slider height: inverse relationship with zoom.
-    // 25% → 200dp, 100% → 120dp, 400% → 60dp.
-    // Linear interpolation: h = 200 - (scale - 0.25) / (4.0 - 0.25) * 140
-    val sliderHeightDp by remember {
-        derivedStateOf { 200f - (currentCanvasScale - 0.25f) / (4.0f - 0.25f) * 140f }
+    // V_NOW: slider orientation resolved from the user's
+    // [minimapSliderOrientation] setting. Used by both the
+    // long-press temporary slider and the persistent slider
+    // so they always match. ADAPTIVE uses scene aspect:
+    // portrait (height > width) → vertical, else horizontal.
+    val sliderOrientation = when (state.minimapSliderOrientation) {
+        com.pockref.app.model.MinimapSliderOrientation.HORIZONTAL -> Orientation.Horizontal
+        com.pockref.app.model.MinimapSliderOrientation.VERTICAL -> Orientation.Vertical
+        com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE -> {
+            val bbox = computeSceneBboxForMinimap(state.images)
+            if (bbox.height > bbox.width) Orientation.Vertical else Orientation.Horizontal
+        }
+    }
+
+    // V_NOW: when minimapDisplayMode == SLIDER, show a
+    // persistent zoom slider instead of the minimap.
+    // Orientation is resolved from the user's
+    // [minimapSliderOrientation] setting (ADAPTIVE uses
+    // scene aspect, same logic as the long-press slider).
+    // Double-tap on the slider collapses it to the small
+    // white bar (same as minimap double-tap behavior).
+    if (state.minimapDisplayMode == com.pockref.app.model.MinimapDisplayMode.SLIDER) {
+        if (state.minimapCollapsed) {
+            // Slider collapsed: show the same small white bar
+            // as the minimap collapsed state. Single-tap or
+            // double-tap expands back to the slider.
+            val edge = state.minimapDockEdge
+            val isHorizontalEdge = edge == com.pockref.app.model.MinimapDockEdge.TOP ||
+                edge == com.pockref.app.model.MinimapDockEdge.BOTTOM
+            val touchWidthDp = if (isHorizontalEdge) Dimens.BottomPanelChromeSize else 32.dp
+            val touchHeightDp = if (isHorizontalEdge) 32.dp else Dimens.BottomPanelChromeSize
+            val touchWidthPx = with(density) { touchWidthDp.toPx() }
+            val touchHeightPx = with(density) { touchHeightDp.toPx() }
+            Box(
+                modifier = Modifier
+                    .offset {
+                        when (edge) {
+                            com.pockref.app.model.MinimapDockEdge.TOP,
+                            com.pockref.app.model.MinimapDockEdge.BOTTOM -> {
+                                val clampedX = localPosition.value.x.coerceIn(
+                                    minimumValue = cornerInsetPx,
+                                    maximumValue = currentParentWidth - touchWidthPx - cornerInsetPx,
+                                )
+                                val yEdgePx = if (edge == com.pockref.app.model.MinimapDockEdge.TOP) {
+                                    cornerInsetPx
+                                } else {
+                                    currentParentHeight - touchHeightPx - cornerInsetPx
+                                }
+                                IntOffset(x = clampedX.toInt(), y = yEdgePx.toInt())
+                            }
+                            com.pockref.app.model.MinimapDockEdge.LEFT,
+                            com.pockref.app.model.MinimapDockEdge.RIGHT -> {
+                                val clampedY = localPosition.value.y.coerceIn(
+                                    minimumValue = cornerInsetPx,
+                                    maximumValue = currentParentHeight - touchHeightPx - cornerInsetPx,
+                                )
+                                val xEdgePx = if (edge == com.pockref.app.model.MinimapDockEdge.LEFT) {
+                                    cornerInsetPx
+                                } else {
+                                    currentParentWidth - touchWidthPx - cornerInsetPx
+                                }
+                                IntOffset(x = xEdgePx.toInt(), y = clampedY.toInt())
+                            }
+                            com.pockref.app.model.MinimapDockEdge.NONE -> {
+                                IntOffset(
+                                    x = cornerInsetPx.toInt(),
+                                    y = (currentParentHeight - touchHeightPx - cornerInsetPx).toInt(),
+                                )
+                            }
+                        }
+                    }
+                    .pointerInput(state.minimapDockEdge) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (!zoomSliderActive.value) {
+                                    onAction(PockRefAction.SetMinimapCollapsed(false))
+                                }
+                            },
+                        )
+                    },
+            ) {
+                CollapsedMinimapIcon(
+                    edge = state.minimapDockEdge,
+                    onExpand = {
+                        if (!zoomSliderActive.value) {
+                            onAction(PockRefAction.SetMinimapCollapsed(false))
+                        }
+                    },
+                    onLongPress = {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        zoomSliderActive.value = true
+                    },
+                    // V_NOW: do NOT dismiss on long-press end;
+                    // slider stays for drag. Dismissed via
+                    // onValueChangeFinished or tap-outside.
+                    onLongPressEnd = {},
+                )
+            }
+        } else {
+            // Slider expanded: show the zoom slider with
+            // double-tap to collapse.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = Dimens.CornerInset, bottom = Dimens.CornerInset)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                val pos = localPosition.value
+                                val nearestEdge = when {
+                                    pos.x < currentParentWidth / 2f ->
+                                        com.pockref.app.model.MinimapDockEdge.LEFT
+                                    else ->
+                                        com.pockref.app.model.MinimapDockEdge.RIGHT
+                                }
+                                onAction(PockRefAction.SetMinimapDockEdge(nearestEdge))
+                                onAction(PockRefAction.SetMinimapCollapsed(true))
+                            },
+                        )
+                    },
+            ) {
+                MinimapZoomSlider(
+                    orientation = sliderOrientation,
+                    currentValue = state.canvasScale,
+                    onValueChange = { newValue ->
+                        onAction(PockRefAction.SetCanvasZoom(newValue))
+                    },
+                    onValueChangeFinished = {},
+                )
+            }
+        }
+        return
     }
 
     if (state.minimapCollapsed) {
@@ -3506,55 +3629,38 @@ private fun BoxScope.MinimapChrome(
                 .pointerInput(state.minimapDockEdge) {
                     detectTapGestures(
                         onDoubleTap = {
-                            onAction(PockRefAction.SetMinimapCollapsed(false))
-                        },
-                        onLongPress = {
-                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                            zoomSliderActive.value = true
+                            if (!zoomSliderActive.value) {
+                                onAction(PockRefAction.SetMinimapCollapsed(false))
+                            }
                         },
                     )
-                }
-                // Drag on slider to zoom
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        if (!zoomSliderActive.value) return@awaitEachGesture
-                        down.consume()
-                        var lastY = down.position.y
-                        do {
-                            val event = awaitPointerEvent()
-                            event.changes.forEach { change ->
-                                change.consume()
-                                if (zoomSliderActive.value) {
-                                    val dy = lastY - change.position.y
-                                    lastY = change.position.y
-                                    // 0.05x per 10px → 0.005x per px
-                                    val scaleDelta = dy * 0.005f
-                                    val newScale = (currentCanvasScale + scaleDelta).coerceIn(0.25f, 4.0f)
-                                    currentOnAction(PockRefAction.SetCanvasZoom(newScale))
-                                }
-                            }
-                        } while (event.changes.any { it.pressed })
-                        // Finger released — dismiss slider
-                        zoomSliderActive.value = false
-                    }
                 },
         ) {
             CollapsedMinimapIcon(
                 edge = state.minimapDockEdge,
                 onExpand = {
-                    onAction(PockRefAction.SetMinimapCollapsed(false))
+                    // V_NOW: guard — if the zoom slider is
+                    // currently active (long-press triggered),
+                    // don't expand to the full minimap. The
+                    // slider overlay handles the interaction;
+                    // expanding would dismiss the slider and
+                    // show the full minimap instead of returning
+                    // to the collapsed bar.
+                    if (!zoomSliderActive.value) {
+                        onAction(PockRefAction.SetMinimapCollapsed(false))
+                    }
                 },
+                onLongPress = {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    zoomSliderActive.value = true
+                },
+                // V_NOW: do NOT set zoomSliderActive = false
+                // on long-press end. The slider should remain
+                // visible so the user can drag it. The slider
+                // is dismissed via onValueChangeFinished (drag
+                // complete) or by tapping outside the slider.
+                onLongPressEnd = {},
             )
-            // Zoom slider overlay (cross-fades over the
-            // collapsed bar when long-press activates)
-            if (morphProgress > 0.01f) {
-                MinimapZoomSlider(
-                    modifier = Modifier.graphicsLayer(alpha = morphProgress),
-                    sliderHeightDp = sliderHeightDp,
-                    canvasScale = currentCanvasScale,
-                )
-            }
         }
     } else {
         // Full minimap panel.
@@ -3601,30 +3707,6 @@ private fun BoxScope.MinimapChrome(
                         },
                     )
                 }
-                // Drag on slider to zoom
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        if (!zoomSliderActive.value) return@awaitEachGesture
-                        down.consume()
-                        var lastY = down.position.y
-                        do {
-                            val event = awaitPointerEvent()
-                            event.changes.forEach { change ->
-                                change.consume()
-                                if (zoomSliderActive.value) {
-                                    val dy = lastY - change.position.y
-                                    lastY = change.position.y
-                                    val scaleDelta = dy * 0.005f
-                                    val newScale = (currentCanvasScale + scaleDelta).coerceIn(0.25f, 4.0f)
-                                    currentOnAction(PockRefAction.SetCanvasZoom(newScale))
-                                }
-                            }
-                        } while (event.changes.any { it.pressed })
-                        // Finger released — dismiss slider
-                        zoomSliderActive.value = false
-                    }
-                },
         ) {
             CanvasMinimap(
                 state = state,
@@ -3633,63 +3715,199 @@ private fun BoxScope.MinimapChrome(
                 isCollapsed = false,
                 onExpand = {},
             )
-            // Zoom slider overlay (cross-fades over the
-            // minimap when long-press activates)
-            if (morphProgress > 0.01f) {
-                MinimapZoomSlider(
-                    modifier = Modifier.graphicsLayer(alpha = morphProgress),
-                    sliderHeightDp = sliderHeightDp,
-                    canvasScale = currentCanvasScale,
-                )
-            }
+        }
+    }
+
+    // V_NOW: tap-outside dismiss — when the zoom slider is
+    // active, a transparent full-size overlay catches taps
+    // anywhere on the canvas and dismisses the slider. The
+    // overlay is placed BEFORE the slider Box so the slider
+    // (rendered on top) still consumes its own touch events;
+    // only taps that fall through to the overlay (i.e. outside
+    // the slider) trigger the dismiss.
+    if (morphProgress > 0.01f) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures {
+                        zoomSliderActive.value = false
+                    }
+                },
+        )
+    }
+
+    // V_NOW: shared temporary zoom slider overlay, rendered
+    // at the same position as the persistent slider
+    // (BottomStart + CornerInset). Appears on long-press of
+    // the collapsed bar or the expanded minimap, regardless
+    // of display mode. Uses the same orientation as the
+    // persistent slider (from minimapSliderOrientation setting).
+    // Dismissed when: (1) slider drag completes
+    // (onValueChangeFinished), or (2) user taps outside the
+    // slider (overlay above).
+    if (morphProgress > 0.01f) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = Dimens.CornerInset, bottom = Dimens.CornerInset)
+                .graphicsLayer(alpha = morphProgress),
+        ) {
+            MinimapZoomSlider(
+                orientation = sliderOrientation,
+                currentValue = currentCanvasScale,
+                onValueChange = { newValue ->
+                    sliderInteractionStamp.value = System.currentTimeMillis()
+                    currentOnAction(PockRefAction.SetCanvasZoom(newValue))
+                },
+                onValueChangeFinished = { zoomSliderActive.value = false },
+            )
         }
     }
 }
 
 /**
- * Floating vertical zoom slider that replaces the minimap
- * on long-press. M3 visual specs:
- * - Container: 8dp wide, 4dp corner radius,
- *   surfaceContainerHighest background, 3dp elevation
- * - Indicator: 2dp wide, primary color, fills from
- *   bottom to the current zoom position
- * - Height: inverse to zoom (25%=200dp, 100%=120dp,
- *   400%=60dp)
- * - Zoom label at top
+ * M3 zoom slider that replaces the minimap on long-press
+ * or persists when [MinimapDisplayMode.SLIDER] is active.
+ * Self-adapts orientation to scene aspect:
+ *   - portrait scene (aspect < 1): vertical bar 80×240
+ *   - landscape scene (aspect ≥ 1): horizontal bar 240×80
+ *   - square scene: defaults to horizontal
+ *
+ * V_NOW: continuous (stepless) bidirectional zoom slider.
+ * M3 visual spec (matches top toolbar chrome tokens):
+ * - Container: Surface with [Dimens.ToolbarElevation] tonal
+ *   elevation, [Dimens.ChromeCornerRadius] shape,
+ *   [Dimens.ChromeSurfaceAlpha] alpha — same as TopToolbar
+ * - M3 Slider (continuous, no steps) with primary active
+ *   track, surfaceVariant inactive track
+ * - Range: 0.25x..4.0x, default 1.0x (current canvasScale)
+ * - Zoom anchors on canvas visual center
+ * - TalkBack: "缩放控制, 当前缩放级别 X 倍"
+ * - Keyboard: ←/→ 0.01x step, Home/End 跳端点, PageUp/Down 0.5x
+ *
+ * Implementation note: M3 Slider is horizontal-only in
+ * Compose 1.6 (orientation param lands in 1.7+). For
+ * vertical we render the Slider in a 240×48 box, rotate
+ * -90° via [graphicsLayer], then swap the layout dimensions
+ * with [verticalLayoutSwap] so the parent sees 48×240.
+ * Slider's internal gesture / a11y work unchanged because
+ * the touch event pipeline re-projects through the rotation.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MinimapZoomSlider(
+    orientation: Orientation,
+    currentValue: Float,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit,
     modifier: Modifier = Modifier,
-    sliderHeightDp: Float,
-    canvasScale: Float,
 ) {
+    val isVertical = orientation == Orientation.Vertical
     val colorScheme = MaterialTheme.colorScheme
-    val density = LocalDensity.current
 
+    // The M3 Slider always renders horizontally. For vertical
+    // we render it in a (4×48)×48 box and rotate -90°, then
+    // [verticalLayoutSwap] reports 48×(4×48) to the parent so
+    // positioning (BottomStart etc.) is correct.
+    // - Horizontal: 240×48 (width×height), height matches
+    //   the one-click layout FAB ([BottomPanelChromeSize]).
+    // - Vertical: after rotation the visual size is
+    //   48×(4×48) — width matches FAB, height matches the
+    //   expanded right-bottom panel (4 items × 48dp each).
+    val sliderLength = Dimens.BottomPanelChromeSize * 4
     Box(
         modifier = modifier
-            .width(8.dp)
-            .height(with(density) { sliderHeightDp.dp.toPx().toDp() })
-            .shadow(3.dp, RoundedCornerShape(4.dp))
+            .then(if (isVertical) Modifier.verticalLayoutSwap() else Modifier)
+            .size(sliderLength, Dimens.BottomPanelChromeSize)
+            .graphicsLayer {
+                if (isVertical) rotationZ = -90f
+            }
+            // Clip before background so Slider thumb/track
+            // never overflows the 48dp height (which becomes
+            // the visual width after rotation for vertical).
+            .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
             .background(
-                colorScheme.surfaceContainerHighest,
-                RoundedCornerShape(4.dp),
+                colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
+                RoundedCornerShape(Dimens.ChromeCornerRadius),
             ),
-        contentAlignment = Alignment.BottomCenter,
+        contentAlignment = Alignment.Center,
     ) {
-        // Filled indicator: 2dp wide, primary color.
-        // Height proportional to zoom position
-        // (0.25 = 0%, 4.0 = 100%).
-        val fillFraction = ((canvasScale - 0.25f) / (4.0f - 0.25f))
-            .coerceIn(0f, 1f)
-        Box(
-            modifier = Modifier
-                .width(2.dp)
-                .fillMaxHeight(fillFraction)
-                .background(
-                    colorScheme.primary,
-                    RoundedCornerShape(1.dp),
+        val tooltipState = rememberTooltipState(isPersistent = true)
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = {
+                PlainTooltip { Text(String.format("%.2fx", currentValue)) }
+            },
+            state = tooltipState,
+        ) {
+            Slider(
+                value = currentValue.coerceIn(ZOOM_MIN, ZOOM_MAX),
+                onValueChange = onValueChange,
+                onValueChangeFinished = onValueChangeFinished,
+                valueRange = ZOOM_MIN..ZOOM_MAX,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = colorScheme.primary,
+                    inactiveTrackColor = colorScheme.surfaceVariant,
                 ),
+                modifier = Modifier
+                    .fillMaxSize()
+                    // Horizontal padding (12dp) = end caps for
+                    // the track; after -90° rotation this becomes
+                    // the vertical end caps of the vertical slider.
+                    // Vertical padding (2dp) = top/bottom inset;
+                    // after rotation this becomes the horizontal
+                    // inset of the vertical slider, keeping the
+                    // track visually close to the 48dp container
+                    // edge (matching FAB width).
+                    .padding(horizontal = 12.dp, vertical = 2.dp)
+                    .semantics {
+                        contentDescription =
+                            "缩放控制, 当前缩放级别 ${String.format("%.2f", currentValue)} 倍"
+                        progressBarRangeInfo = ProgressBarRangeInfo(
+                            current = currentValue,
+                            range = ZOOM_MIN..ZOOM_MAX,
+                            steps = 0,
+                        )
+                    }
+                    .onKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                        val fineStep = 0.01f
+                        val coarseStep = 0.5f
+                        val newValue = when (event.key) {
+                            Key.DirectionLeft, Key.DirectionUp ->
+                                (currentValue - fineStep).coerceIn(ZOOM_MIN, ZOOM_MAX)
+                            Key.DirectionRight, Key.DirectionDown ->
+                                (currentValue + fineStep).coerceIn(ZOOM_MIN, ZOOM_MAX)
+                            Key.MoveHome -> ZOOM_MIN
+                            Key.MoveEnd -> ZOOM_MAX
+                            Key.PageUp ->
+                                (currentValue + coarseStep).coerceAtMost(ZOOM_MAX)
+                            Key.PageDown ->
+                                (currentValue - coarseStep).coerceAtLeast(ZOOM_MIN)
+                            else -> return@onKeyEvent false
+                        }
+                        onValueChange(newValue)
+                        true
+                    },
+            )
+        }
+    }
+}
+
+/**
+ * Swaps the layout dimensions of the modified composable so a
+ * 240×48 box (rotated -90° via [graphicsLayer]) reports 48×240
+ * to its parent. The content is re-centered so the visual
+ * center (unchanged by rotation) aligns with the reported
+ * bounds' center.
+ */
+private fun Modifier.verticalLayoutSwap() = this.layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints)
+    layout(placeable.height, placeable.width) {
+        placeable.place(
+            x = -(placeable.width - placeable.height) / 2,
+            y = (placeable.width - placeable.height) / 2,
         )
     }
 }
@@ -5604,10 +5822,17 @@ private fun PockRefCanvas(
                         currentOnAction(PockRefAction.BeginBoxSelect)
                         boxSelectStart = downPos
                         boxSelectDragging = true
-                    } else if (s.multiSelectMode) {
+                    } else if (s.multiSelectMode && hitId != null) {
+                        // V_NOW: only start lasso if the user
+                        // touched an image in multi-select mode.
+                        // Touching empty space should pan the
+                        // canvas (same as single-select mode),
+                        // not start a lasso — the user expects
+                        // to be able to navigate the canvas in
+                        // multi-select mode.
                         lassoActive = true
                         lassoStart = downPos
-                    } else {
+                    } else if (isGestureEnabled(s.gestureToggles, GestureId.MOVE_IMAGE)) {
                         dragCanvas = true
                     }
 
@@ -7476,62 +7701,113 @@ internal fun imageWorldAabb(image: SceneImage): Rect {
 }
 
 /**
- * V_NOW (B 智能避让): compute the Y delta (in pixels,
- * positive = pan down) needed to slide the canvas so
- * the selected images' combined AABB is centered in
- * the "safe zone" above the bottom sheet.
+ * Compute the canvas scale and offset needed to ensure
+ * the selected images' combined AABB is fully visible
+ * above the SelectionBottomSheet.
  *
- * Safe zone = upper (viewportHeight - safeZoneHeightPx).
- * We don't measure the sheet's actual height here (it
- * varies with content + locked/unlocked panel) — the
- * 280dp estimate matches the typical unlocked-panel
- * height; if the sheet is shorter (locked panel) the
- * AABB lands slightly above center, which is fine.
+ * Returns `null` if no adjustment is needed (the AABB
+ * is already fully above the sheet's top edge), or a
+ * pair of (newScale, newOffset) if the canvas must be
+ * panned and/or zoomed out.
  *
- * Returns 0f if the AABB is already fully in the safe
- * zone (no pan needed) or if the inputs are degenerate
- * (no selection / zero viewport / unknown image ids).
+ * Strategy:
+ * 1. Project the selected images' combined AABB to
+ *    screen coordinates.
+ * 2. Check if the AABB bottom is above the sheet top.
+ *    If yes → no adjustment needed.
+ * 3. If occluded, first try panning only (no zoom).
+ *    If the AABB fits in the safe zone after panning,
+ *    return the pan-only result.
+ * 4. If the AABB is too tall for the safe zone even
+ *    after panning, zoom out so it fits. The minimum
+ *    scale is clamped to [minScale] (default 0.25x)
+ *    to avoid over-shrinking.
  *
- * Math: world → screen projection is
- *   screenX = canvasOffset.x + worldX · canvasScale + centerOffset.x
- *   screenY = canvasOffset.y + worldY · canvasScale + centerOffset.y
- * For a Y-only pan, only canvasOffset.y changes, and
- * the delta translates 1:1 (delta_screenY = delta_co.y).
- * The centerOffset.y is the half-viewport constant
- * from the canvas draw path (see [PockRefCanvas]).
+ * @param state current UI state
+ * @param sheetHeightPx measured sheet height in pixels
+ * @param marginPx margin between AABB bottom and sheet top
+ * @param minScale minimum allowed canvas scale (zoom-out floor)
  */
-private fun computePanDeltaToSafeZoneY(
+internal fun computeCanvasAdjustmentForSheet(
     state: PockRefUiState,
-    safeZoneHeightPx: Float,
-    safeMarginPx: Float = 0f,
-): Float {
+    sheetHeightPx: Float,
+    marginPx: Float = 0f,
+    minScale: Float = 0.25f,
+): Pair<Float, Offset>? {
     val viewportW = state.canvasViewportSize.width
     val viewportH = state.canvasViewportSize.height
-    if (viewportW <= 0f || viewportH <= 0f) return 0f
-    if (state.selectedImageIds.isEmpty()) return 0f
+    if (viewportW <= 0f || viewportH <= 0f) return null
+    if (state.selectedImageIds.isEmpty()) return null
     val cs = state.canvasScale
-    if (cs <= 0f) return 0f
+    if (cs <= 0f) return null
     val co = state.canvasOffset
-    val centerY = viewportH / 2f
+    val centerOffsetX = viewportW / 2f
+    val centerOffsetY = viewportH / 2f
+
+    // Compute combined AABB of selected images in world space.
     val worldRects = state.selectedImageIds.mapNotNull { id ->
-        val image = state.images.firstOrNull { it.id == id } ?: return@mapNotNull null
-        imageWorldAabb(image)
+        state.images.firstOrNull { it.id == id }?.let { imageWorldAabb(it) }
     }
-    if (worldRects.isEmpty()) return 0f
+    if (worldRects.isEmpty()) return null
+
     val combinedTop = worldRects.minOf { it.top }
     val combinedBottom = worldRects.maxOf { it.bottom }
-    val screenTop = co.y + combinedTop * cs + centerY
-    val screenBottom = co.y + combinedBottom * cs + centerY
-    // Safe zone top = viewport bottom - sheet height - safe margin.
-    // The safe margin ensures the image's bottom edge is at least
-    // [safeMarginPx] above the sheet's top edge.
-    val safeZoneTop = viewportH - safeZoneHeightPx - safeMarginPx
-    val safeZoneCenterY = safeZoneTop / 2f
-    // AABB bottom already in safe zone → no pan.
-    if (screenBottom <= safeZoneTop) return 0f
-    val aabbCenterY = (screenTop + screenBottom) / 2f
-    val deltaY = safeZoneCenterY - aabbCenterY
-    return deltaY
+    val combinedLeft = worldRects.minOf { it.left }
+    val combinedRight = worldRects.maxOf { it.right }
+
+    // Safe zone: the screen region above the sheet.
+    val safeZoneBottom = viewportH - sheetHeightPx - marginPx
+    val safeZoneHeight = safeZoneBottom // from screen top (0) to safeZoneBottom
+
+    // Project AABB to screen at current scale/offset.
+    val screenTop = centerOffsetY + co.y + combinedTop * cs
+    val screenBottom = centerOffsetY + co.y + combinedBottom * cs
+
+    // Already fully visible → no adjustment needed.
+    if (screenBottom <= safeZoneBottom && screenTop >= 0f) return null
+
+    // Step 1: try pan-only (no zoom change).
+    val aabbScreenHeight = (combinedBottom - combinedTop) * cs
+
+    if (aabbScreenHeight <= safeZoneHeight) {
+        // AABB fits in safe zone — just pan so it's visible.
+        // Target: AABB bottom at safeZoneBottom (minimal upward pan).
+        val deltaY = safeZoneBottom - screenBottom
+        val newScreenTop = screenTop + deltaY
+        // If top would go off-screen, shift down instead.
+        val adjustedDeltaY = if (newScreenTop < 0f) {
+            -screenTop // pan so top is at Y=0
+        } else {
+            deltaY
+        }
+        val newOffset = Offset(co.x, co.y + adjustedDeltaY)
+        return Pair(cs, newOffset)
+    }
+
+    // Step 2: AABB is taller than safe zone — need to zoom out.
+    val aabbWorldHeight = combinedBottom - combinedTop
+    // Scale so AABB screen height = safeZoneHeight (fits exactly).
+    val targetScale = (safeZoneHeight / aabbWorldHeight).coerceIn(minScale, cs)
+    if (targetScale >= cs) {
+        // Can't zoom out further — just pan as much as possible.
+        val deltaY = safeZoneBottom - screenBottom
+        val newScreenTop = screenTop + deltaY
+        val adjustedDeltaY = if (newScreenTop < 0f) -screenTop else deltaY
+        return Pair(cs, Offset(co.x, co.y + adjustedDeltaY))
+    }
+
+    // Center the AABB vertically in the safe zone at the new scale.
+    // AABB screen height at targetScale = aabbWorldHeight * targetScale = safeZoneHeight
+    // So AABB top = 0, AABB bottom = safeZoneBottom. Perfect fit.
+    // Center the AABB horizontally at the same screen X as before.
+    val aabbWorldCenterX = (combinedLeft + combinedRight) / 2f
+    val aabbWorldCenterY = (combinedTop + combinedBottom) / 2f
+    // AABB center should be at (screenCenterX, safeZoneHeight/2)
+    val screenCenterX = centerOffsetX + co.x + aabbWorldCenterX * cs
+    val newCoX = screenCenterX - centerOffsetX - aabbWorldCenterX * targetScale
+    val newCoY = (safeZoneHeight / 2f) - centerOffsetY - aabbWorldCenterY * targetScale
+
+    return Pair(targetScale, Offset(newCoX, newCoY))
 }
 
 /**
@@ -8878,33 +9154,7 @@ private fun BoxScope.BottomRightActionPanel(
                 ),
             ) {
                 Column {
-                    // 1. Box-select mode — always shows
-                    //    [PhotoSizeSelectLarge] (the canonical
-                    //    "size / region select" Material icon —
-                    //    a rectangle with arrows on the corners,
-                    //    clearly says "drag a box"). The on/off
-                    //    state is conveyed purely by the cyan
-                    //    tint: on = primary/cyan, off = default
-                    //    onSurfaceVariant. Swapping the icon
-                    //    between on/off (e.g. CheckBoxOutlineBlank
-                    //    ↔ PhotoSizeSelectLarge) was confusing —
-                    //    the click target's purpose ("toggle box
-                    //    select") is unchanged, only the resulting
-                    //    state differs, so the icon should stay
-                    //    the same and the tint carry the state.
-                    BottomPanelListItem(
-                        icon = Icons.Rounded.PhotoSizeSelectLarge,
-                        contentDescription = "Box-select mode",
-                        tint = if (state.boxSelectMode) Color(0xFF4FC3F7) else null,
-                        onClick = {
-                            // V_NOW: chrome-mutex — right-bottom
-                            // item tap closes the top toolbar's
-                            // 3-dots menu if it's open.
-                            onMenuDismiss()
-                            onAction(PockRefAction.ToggleBoxSelectMode)
-                        },
-                    )
-                    // 2. Settings — dispatches
+                    // 1. Settings — dispatches
                     //    [PockRefAction.SetSettingsSheetOpen(true)]
                     //    which the reducer applies to
                     //    [PockRefUiState.settingsSheetOpen]. The
@@ -8923,7 +9173,7 @@ private fun BoxScope.BottomRightActionPanel(
                             onAction(PockRefAction.SetSettingsSheetOpen(true))
                         },
                     )
-                    // 3. Aggregate Import (V_NOW redesign):
+                    // 2. Aggregate Import (V_NOW redesign):
                     //    one button that surfaces BOTH
                     //    "导入图片" (OpenMultipleDocuments,
                     //    image/*) AND "打开场景文件"
@@ -9438,6 +9688,103 @@ private fun SettingsAppearanceTab(
                             onAction(com.pockref.app.ui.PockRefAction.ShowBackgroundPicker(false))
                         },
                     )
+                }
+            }
+        }
+        // 小地图显示
+        item {
+            SettingsMinimapSection(state = state, onAction = onAction)
+        }
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsMinimapSection(
+    state: com.pockref.app.model.PockRefUiState,
+    onAction: (com.pockref.app.ui.PockRefAction) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "小地图显示",
+            style = MaterialTheme.typography.titleSmall,
+        )
+        // Level 1: Display mode (Minimap vs Slider)
+        val displayOptions = listOf(
+            com.pockref.app.model.MinimapDisplayMode.MINIMAP to "地图",
+            com.pockref.app.model.MinimapDisplayMode.SLIDER to "滑块",
+        )
+        SingleChoiceSegmentedButtonRow {
+            displayOptions.forEachIndexed { index, (mode, label) ->
+                SegmentedButton(
+                    selected = state.minimapDisplayMode == mode,
+                    onClick = {
+                        onAction(com.pockref.app.ui.PockRefAction.SetMinimapDisplayMode(mode))
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(
+                        index = index,
+                        count = displayOptions.size,
+                    ),
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    icon = { },
+                ) {
+                    Text(
+                        text = label,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+        // Level 2: Slider orientation (only when Slider is selected)
+        androidx.compose.animation.AnimatedVisibility(
+            visible = state.minimapDisplayMode == com.pockref.app.model.MinimapDisplayMode.SLIDER,
+            enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut(),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "滑块方向",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                val orientationOptions = listOf(
+                    com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE to "自适应",
+                    com.pockref.app.model.MinimapSliderOrientation.HORIZONTAL to "横向",
+                    com.pockref.app.model.MinimapSliderOrientation.VERTICAL to "纵向",
+                )
+                orientationOptions.forEach { (orientation, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = state.minimapSliderOrientation == orientation,
+                                onClick = {
+                                    onAction(
+                                        com.pockref.app.ui.PockRefAction.SetMinimapSliderOrientation(
+                                            orientation,
+                                        ),
+                                    )
+                                },
+                                role = androidx.compose.ui.semantics.Role.RadioButton,
+                            )
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.RadioButton(
+                            selected = state.minimapSliderOrientation == orientation,
+                            onClick = null,
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = when (orientation) {
+                                com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE -> "$label — 根据内容方向自动调整"
+                                com.pockref.app.model.MinimapSliderOrientation.HORIZONTAL -> "$label — 滑块水平方向显示"
+                                com.pockref.app.model.MinimapSliderOrientation.VERTICAL -> "$label — 滑块垂直方向显示"
+                            },
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
                 }
             }
         }

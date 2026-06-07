@@ -506,6 +506,24 @@ enum class SettingsTab(val label: String) {
  */
 enum class MinimapDockEdge { NONE, TOP, BOTTOM, LEFT, RIGHT }
 
+/**
+ * V_NOW: how the minimap area is displayed. MINIMAP = the
+ * traditional thumbnail overview; SLIDER = a persistent zoom
+ * slider (the same slider that appears on long-press in MINIMAP
+ * mode, but always visible). Persisted via
+ * [com.pockref.app.data.AppPreferences.minimapDisplayMode].
+ */
+enum class MinimapDisplayMode { MINIMAP, SLIDER }
+
+/**
+ * V_NOW: orientation of the minimap slider when
+ * [MinimapDisplayMode.SLIDER] is active. ADAPTIVE picks
+ * horizontal or vertical based on scene aspect ratio.
+ * Persisted via
+ * [com.pockref.app.data.AppPreferences.minimapSliderOrientation].
+ */
+enum class MinimapSliderOrientation { ADAPTIVE, HORIZONTAL, VERTICAL }
+
 
 
 data class CropRect(
@@ -694,6 +712,22 @@ data class PockRefUiState(
      * only the expanded panel uses it.
      */
     val minimapZoomScale: Float = 1f,
+    /**
+     * V_NOW: how the minimap area is displayed. MINIMAP = the
+     * traditional thumbnail overview; SLIDER = a persistent zoom
+     * slider. Persisted via
+     * [com.pockref.app.data.AppPreferences.minimapDisplayMode].
+     * Default MINIMAP preserves existing behavior.
+     */
+    val minimapDisplayMode: MinimapDisplayMode = MinimapDisplayMode.MINIMAP,
+    /**
+     * V_NOW: orientation of the minimap slider when
+     * [minimapDisplayMode] is [MinimapDisplayMode.SLIDER].
+     * ADAPTIVE picks horizontal or vertical based on scene
+     * aspect ratio. Persisted via
+     * [com.pockref.app.data.AppPreferences.minimapSliderOrientation].
+     */
+    val minimapSliderOrientation: MinimapSliderOrientation = MinimapSliderOrientation.ADAPTIVE,
     /**
      * Active settings tab (V_NOW: tabbed settings sheet).
      * Persists across sheet open/close so the user comes

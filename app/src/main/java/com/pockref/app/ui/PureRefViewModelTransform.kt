@@ -96,6 +96,20 @@ internal sealed interface SceneDiff {
         val oldBackgroundColor: Color? = null,
         val newBackgroundColor: Color? = null,
     ) : SceneDiff
+
+    /**
+     * Selection state changed (e.g. deselecting all images by
+     * tapping blank canvas). Carries both old and new selection
+     * so the reverse is self-contained.
+     */
+    data class ChangeSelection(
+        val oldSelectedImageId: String?,
+        val oldSelectedImageIds: Set<String>,
+        val oldMultiSelectMode: Boolean,
+        val newSelectedImageId: String?,
+        val newSelectedImageIds: Set<String>,
+        val newMultiSelectMode: Boolean,
+    ) : SceneDiff
 }
 
 /**
@@ -494,6 +508,14 @@ internal fun invertDiff(diff: SceneDiff, appliedState: PockRefUiState): SceneDif
             oldBackgroundColor = diff.newBackgroundColor,
             newBackgroundColor = diff.oldBackgroundColor,
         )
+        is SceneDiff.ChangeSelection -> SceneDiff.ChangeSelection(
+            oldSelectedImageId = diff.newSelectedImageId,
+            oldSelectedImageIds = diff.newSelectedImageIds,
+            oldMultiSelectMode = diff.newMultiSelectMode,
+            newSelectedImageId = diff.oldSelectedImageId,
+            newSelectedImageIds = diff.oldSelectedImageIds,
+            newMultiSelectMode = diff.oldMultiSelectMode,
+        )
     }
 }
 
@@ -538,22 +560,27 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
      * multi-select mode so the next tap goes back to single-select.
      */
     internal fun deselect() {
+        val before = mainVm._uiState.value
+        // Only record undo if there was an actual selection to lose.
+        if (before.selectedImageIds.isEmpty() && before.selectedImageId == null) return
+        val diff = SceneDiff.ChangeSelection(
+            oldSelectedImageId = before.selectedImageId,
+            oldSelectedImageIds = before.selectedImageIds,
+            oldMultiSelectMode = before.multiSelectMode,
+            newSelectedImageId = null,
+            newSelectedImageIds = emptySet(),
+            newMultiSelectMode = false,
+        )
+        mainVm.undoStack.addLast(HistoryEntry.Diff(diff))
+        if (mainVm.undoStack.size > 50) mainVm.undoStack.removeFirst()
+        mainVm.redoStack.clear()
         mainVm._uiState.update { state ->
             state.copy(
                 selectedImageId = null,
                 selectedImageIds = emptySet(),
                 multiSelectMode = false,
-                // V_NOW: tapping blank canvas means the user
-                // is "done with the panel" — collapse the
-                // right-bottom action panel so it stops
-                // competing with the empty-canvas prompt
-                // for visual space. The select-toolbar and
-                // top-toolbar both auto-re-emerge from the
-                // selection / app-bar state, so the user
-                // still has a way to find chrome after the
-                // collapse.
                 bottomRightPanelExpanded = false,
-            )
+            ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
         }
     }
 
@@ -1571,6 +1598,11 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                 is SceneDiff.SetMeta -> state.copy(
                     sceneName = diff.newName ?: state.sceneName,
                     backgroundColor = diff.newBackgroundColor ?: state.backgroundColor,
+                )
+                is SceneDiff.ChangeSelection -> state.copy(
+                    selectedImageId = diff.newSelectedImageId,
+                    selectedImageIds = diff.newSelectedImageIds,
+                    multiSelectMode = diff.newMultiSelectMode,
                 )
             }.normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
         }

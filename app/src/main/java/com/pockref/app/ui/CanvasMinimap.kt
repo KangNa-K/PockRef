@@ -15,22 +15,35 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Map
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.pockref.app.ui.theme.Dimens
@@ -48,7 +61,18 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pockref.app.model.PockRefUiState
@@ -1461,108 +1485,3 @@ internal fun CollapsedMinimapIcon(
         )
     }
 }
-
-/**
- * V_NOW: long-press slider mode for the minimap.
- *
- * Replaces the minimap panel (or the collapsed icon,
- * via direct morph in the parent [MinimapChrome])
- * with an M3 [Slider] for canvas zoom. Long-press
- * the minimap body or the collapsed icon to enter
- * this mode; release the pointer to exit.
- *
- * Visual contract (M3 Slider spec, "discrete
- * value, continuous selection"):
- * - Track at the bottom 1/3 of the panel; full
- *   panel width (minus 24dp horizontal padding)
- * - M3 [Slider] thumb at the current
- *   [PockRefUiState.canvasScale] position
- * - [valueRange] = 0.5f..2.0f (matches the
- *   [minimapZoomScale] range used elsewhere; the
- *   slider's "value" semantically IS the canvas
- *   zoom, NOT a separate minimap-only pref)
- * - Tooltip on drag shows the current value
- *   (e.g. "1.2x") via M3's built-in tooltip
- *   support (M3 spec recommends `showValueAsTooltip`
- *   for continuous value changes)
- * - Panel chrome (background, border, corner
- *   radius) is identical to the minimap so the
- *   [AnimatedContent] morph between them is
- *   visually continuous (no flash, no resize
- *   jump)
- *
- * On value change: dispatch
- * [PockRefAction.SetCanvasZoom] which sets
- * [PockRefUiState.canvasScale] directly. The
- * reducer clamps to [0.5f, 2.0f] and updates
- * `fittedImageId = null` (a fit-to-screen image
- * would re-fit on the next canvas-pan gesture).
- */
-@Composable
-internal fun MinimapSlider(
-    state: PockRefUiState,
-    onAction: (PockRefAction) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val density = LocalDensity.current
-    // Same M3 ChromeSurface chrome as the
-    // minimap so the [AnimatedContent] morph is
-    // visually continuous.
-    val colors = MinimapColors(
-        panelBackground = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-        panelBorder = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-        sceneBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-        imageBox = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-        indicatorFill = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
-        indicatorStroke = MaterialTheme.colorScheme.primary,
-        selectedStroke = Color(0xFF4FC3F7),
-        lockedStroke = Color(0xFFE57373),
-    )
-    val panelCorner = Dimens.ChromeCornerRadius
-    Box(
-        modifier = modifier
-            .background(
-                color = colors.panelBackground,
-                shape = RoundedCornerShape(panelCorner),
-            )
-            .border(
-                width = 1.dp,
-                color = colors.panelBorder,
-                shape = RoundedCornerShape(panelCorner),
-            )
-            .clip(RoundedCornerShape(panelCorner))
-            // Pad the slider from the panel edges so
-            // the thumb's full 20dp diameter has
-            // breathing room (the track is laid out
-            // at the panel's full width by default,
-            // and the thumb would clip on the corner
-            // radius without inset).
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        // M3 Slider — continuous value, range
-        // 0.5..2.0, single thumb. We don't enable
-        // `steps` (M3 spec: continuous range, no
-        // discrete ticks) since canvas zoom is
-        // naturally continuous. The M3 Slider's
-        // internal gesture handling is isolated
-        // from the parent (the long-press
-        // pointerInput above and the parent's
-        // drag-pan-canvas handler) so there's no
-        // gesture race.
-        Slider(
-            value = state.canvasScale,
-            onValueChange = { newScale ->
-                onAction(PockRefAction.SetCanvasZoom(newScale))
-            },
-            valueRange = 0.5f..2.0f,
-            // M3 spec: 48dp minimum touch target
-            // for the thumb. Slider is a single
-            // control, so 48dp height is the
-            // default; this modifier just makes it
-            // explicit.
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-}
-

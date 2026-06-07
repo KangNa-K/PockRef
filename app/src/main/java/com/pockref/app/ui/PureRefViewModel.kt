@@ -194,6 +194,8 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             // (1.0f, clamped to [0.5f, 2.0f]) and the
             // panel renders at its canvas-derived base size.
             minimapZoomScale = appPrefs.minimapZoomScale,
+            minimapDisplayMode = appPrefs.minimapDisplayMode,
+            minimapSliderOrientation = appPrefs.minimapSliderOrientation,
         )
     )
     val uiState: StateFlow<PockRefUiState> = _uiState.asStateFlow()
@@ -500,6 +502,10 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.SetCanvasOffsetFromMinimap -> _uiState.update {
                 it.copy(canvasOffset = action.offset, fittedImageId = null)
             }
+            is PockRefAction.SetCanvasScaleAndOffset -> _uiState.update {
+                val newScale = action.scale.coerceIn(0.1f, 10f)
+                it.copy(canvasScale = newScale, canvasOffset = action.offset, fittedImageId = null)
+            }
             is PockRefAction.ZoomCanvas -> transformController.zoomCanvas(action.scaleChange, action.focus)
             is PockRefAction.SetCanvasZoom -> transformController.setCanvasZoom(action.scale)
             is PockRefAction.TransformSelectedImage -> transformController.transformSelectedImage(action.scaleChange, action.rotationChange, action.pan)
@@ -590,6 +596,8 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.SetMinimapDockEdge -> setMinimapDockEdge(action.edge)
             is PockRefAction.SetMinimapCollapsed -> setMinimapCollapsed(action.collapsed)
             is PockRefAction.SetMinimapZoomScale -> setMinimapZoomScale(action.scale)
+            is PockRefAction.SetMinimapDisplayMode -> setMinimapDisplayMode(action.mode)
+            is PockRefAction.SetMinimapSliderOrientation -> setMinimapSliderOrientation(action.orientation)
             PockRefAction.SetMenuBarsCollapsed -> collapseMenuBarsOnWindowBlur()
             PockRefAction.RestoreMenuBarsOnFocus -> restoreMenuBarsOnWindowFocus()
             is PockRefAction.SetSettingsSheetOpen -> setSettingsSheetOpen(action.open)
@@ -717,6 +725,18 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         if (clamped == _uiState.value.minimapZoomScale) return
         appPrefs.minimapZoomScale = clamped
         _uiState.update { it.copy(minimapZoomScale = clamped) }
+    }
+
+    internal fun setMinimapDisplayMode(mode: com.pockref.app.model.MinimapDisplayMode) {
+        if (mode == _uiState.value.minimapDisplayMode) return
+        appPrefs.minimapDisplayMode = mode
+        _uiState.update { it.copy(minimapDisplayMode = mode) }
+    }
+
+    internal fun setMinimapSliderOrientation(orientation: com.pockref.app.model.MinimapSliderOrientation) {
+        if (orientation == _uiState.value.minimapSliderOrientation) return
+        appPrefs.minimapSliderOrientation = orientation
+        _uiState.update { it.copy(minimapSliderOrientation = orientation) }
     }
 
     /**

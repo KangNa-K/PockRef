@@ -119,6 +119,14 @@ sealed interface PockRefAction {
      * pan the canvas into empty space.
      */
     data class SetCanvasOffsetFromMinimap(val offset: Offset) : PockRefAction
+    /**
+     * Atomically set both canvas scale and offset in a
+     * single state update. Used by the SelectionBottomSheet
+     * auto-adjust feature so the canvas pan + zoom land on
+     * the same frame (no 1-frame tear between scale and
+     * offset when dispatched as two separate actions).
+     */
+    data class SetCanvasScaleAndOffset(val scale: Float, val offset: Offset) : PockRefAction
     data class TransformSelectedImage(
         val scaleChange: Float,
         val rotationChange: Float,
@@ -250,6 +258,21 @@ sealed interface PockRefAction {
      * on every dispatch.
      */
     data class SetMinimapZoomScale(val scale: Float) : PockRefAction
+
+    /**
+     * V_NOW: minimap display mode. MINIMAP = the traditional
+     * thumbnail overview; SLIDER = a persistent zoom slider.
+     * Persisted via [com.pockref.app.data.AppPreferences.minimapDisplayMode].
+     */
+    data class SetMinimapDisplayMode(val mode: com.pockref.app.model.MinimapDisplayMode) : PockRefAction
+
+    /**
+     * V_NOW: slider orientation when display mode is SLIDER.
+     * ADAPTIVE picks horizontal or vertical based on scene
+     * aspect ratio. Persisted via
+     * [com.pockref.app.data.AppPreferences.minimapSliderOrientation].
+     */
+    data class SetMinimapSliderOrientation(val orientation: com.pockref.app.model.MinimapSliderOrientation) : PockRefAction
 
     /**
      * V_NOW: window-blur collapse. Dispatched by

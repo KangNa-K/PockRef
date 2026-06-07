@@ -259,6 +259,38 @@ class AppPreferences(context: Context) {
             prefs.edit().putFloat(KEY_MINIMAP_ZOOM_SCALE, value.coerceIn(0.5f, 2.0f)).apply()
         }
 
+    /**
+     * V_NOW: how the minimap area is displayed. MINIMAP = the
+     * traditional thumbnail overview; SLIDER = a persistent zoom
+     * slider. Stored as the enum name string.
+     */
+    var minimapDisplayMode: com.pockref.app.model.MinimapDisplayMode
+        get() {
+            val stored = prefs.getString(KEY_MINIMAP_DISPLAY_MODE, null)
+                ?: return com.pockref.app.model.MinimapDisplayMode.MINIMAP
+            return runCatching { com.pockref.app.model.MinimapDisplayMode.valueOf(stored) }
+                .getOrDefault(com.pockref.app.model.MinimapDisplayMode.MINIMAP)
+        }
+        set(value) {
+            prefs.edit().putString(KEY_MINIMAP_DISPLAY_MODE, value.name).apply()
+        }
+
+    /**
+     * V_NOW: slider orientation when display mode is SLIDER.
+     * ADAPTIVE picks horizontal or vertical based on scene
+     * aspect ratio. Stored as the enum name string.
+     */
+    var minimapSliderOrientation: com.pockref.app.model.MinimapSliderOrientation
+        get() {
+            val stored = prefs.getString(KEY_MINIMAP_SLIDER_ORIENTATION, null)
+                ?: return com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE
+            return runCatching { com.pockref.app.model.MinimapSliderOrientation.valueOf(stored) }
+                .getOrDefault(com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE)
+        }
+        set(value) {
+            prefs.edit().putString(KEY_MINIMAP_SLIDER_ORIENTATION, value.name).apply()
+        }
+
     companion object {
         private const val PREFS_NAME = "pockref_settings"
         private const val KEY_DEFAULT_BG_PRESET = "default_background_preset"
@@ -298,6 +330,8 @@ class AppPreferences(context: Context) {
         // next launch. The bar (collapsed) view ignores
         // this value; only the expanded panel uses it.
         private const val KEY_MINIMAP_ZOOM_SCALE = "minimap_zoom_scale"
+        private const val KEY_MINIMAP_DISPLAY_MODE = "minimap_display_mode"
+        private const val KEY_MINIMAP_SLIDER_ORIENTATION = "minimap_slider_orientation"
     }
 }
 
