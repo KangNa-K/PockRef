@@ -51,27 +51,18 @@ a701a31 Settings panel: '背景颜色' label + HSV color wheel
 
 ## 底部 chrome 元素 (FAB 风格统一)
 
+> **v1.1.0 更新**:`SelectionStatusBar`(底部"已选 N 张"小白条)已**整体下线**。选中状态指示完全由 `SelectionBottomSheet` 在 BottomCenter 提供 — sheet 显示 = 有选中,sheet 不显示 = 无选中。minimap 不再因为 pill 占用底部居中空间而需要折叠。
+
 3 个底部元素共享 `Dimens.*` token:
 
 | 元素 | 位置 | 尺寸 | Elevation | 用途 |
 |---|---|---|---|---|
 | `CanvasMinimap` | BottomStart | ~200dp 动态 | 1dp + 1dp border | 全局缩略图 |
 | `CollapsedMinimapIcon` | BottomStart | **44dp** | **6dp FabElevation** | 选中时 minimap 折叠态(图标 = `Icons.Rounded.Map`) |
-| `SelectionStatusBar` (pill) | BottomCenter | 120-280dp | 3dp ToolbarElevation | "已选 N 张" + 复制/删除(wide)或 1 个"更多"菜单(narrow <480dp) |
+| `SelectionBottomSheet` | BottomCenter | widthIn(max=560dp) | 0dp + 1dp outline | 选中后底部弹出的工具栏 sheet(替换旧版 SelectionStatusBar + SelectionFloatingToolbar) |
 | 一键排版 FAB | BottomEnd | 44dp | 6dp FabElevation | 自动排版(图标 = `Icons.Rounded.AutoFixHigh`) |
 
 minimap 折叠态的 44dp + FabElevation 跟 FAB 完全一致(token 一致),用户读成"两个 corner 浮动"。
-
-## SelectionStatusBar (小白条) 缩放交互
-
-小白条长按可唤出缩放 Slider，拖拽直接控制画布缩放，交互流程如下：
-
-| # | 手势 | 触发条件 | 行为 |
-|---|------|---------|------|
-| 1 | 长按 | 按住 ≥ 500ms | Slider 从小白条上方浮现 |
-| 2 | 松手(长按后) | 手指抬起 | Slider 保持显示 3s 后自动淡出消失 |
-| 3 | 长按 + 向上拖 | 长按触发后继续上拖 | 画布实时放大，Slider thumb 同步上移 |
-| 4 | 长按 + 向下拖 | 长按触发后继续下拖 | 画布实时缩小，Slider thumb 同步下移 |
 
 **实现要点**：
 

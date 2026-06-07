@@ -53,6 +53,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -1341,6 +1342,18 @@ fun PockRefApp(
                     state = state,
                     onAction = onAction,
                 )
+                // V_NOW (R-04): subtle "multi-select mode is
+                // active" overlay above the canvas. Three
+                // states:
+                //   - SINGLE mode (default): no overlay
+                //   - MULTI mode: 3dp primary border + chip
+                //     "多选模式 · 点图片累加选中"
+                //   - BOX mode: same border + chip
+                //     "框选模式 · 拖动画出选区"
+                // Border is a draw-only modifier (no
+                // pointer-input impact) so canvas gestures
+                // keep working normally.
+                SelectionModeOverlay(state = state)
             }
             // Bottom-left minimap. The composable itself
             // returns early when state.canvasScale ≤ 1, so we
@@ -1549,7 +1562,6 @@ fun PockRefApp(
  *     and `PockRefAction.SetSelectionToolbarHidden`
  *     action are also removed.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SelectionBottomSheet(
     state: PockRefUiState,
@@ -1557,37 +1569,11 @@ private fun SelectionBottomSheet(
 ) {
     val selectedCount = state.selectedImageIds.size
     if (selectedCount == 0) return
-    // V_NOW: do NOT early-return on menuBarsCollapsed.
-    // M3 ModalBottomSheet creates a popup window that
-    // briefly steals window focus from the Activity.
-    // This triggers onWindowFocusChanged(false) →
-    // SetMenuBarsCollapsed → menuBarsCollapsed = true.
-    // If we early-return here, the ModalBottomSheet is
-    // removed from composition, the popup disappears,
-    // window focus returns → RestoreMenuBarsOnFocus →
-    // menuBarsCollapsed = false → the sheet re-enters
-    // composition → popup steals focus again → infinite
-    // loop. The user sees rapid flickering at the bottom
-    // of the screen. The menuBarsCollapsed flag is meant
-    // for the legacy SelectionFloatingToolbar (a
-    // non-modal overlay), not for a modal dialog.
 
-    // Group-state derived fields (single-image-locked panel
-    // is gated to "exactly 1 image selected AND that image
-    // is locked" — matches the legacy SelectionFloatingToolbar
-    // behaviour).
     val activeSelectedIds = state.selectedImageIds.ifEmpty {
         state.selectedImageId?.let(::setOf).orEmpty()
     }
     val allSelectedLocked = activeSelectedIds.isNotEmpty() &&
-        // V_NOW (2026-06-08 "global image lock" feature):
-        // use [PockRefUiState.isImageLocked] so the
-        // global lock toggle also triggers the
-        // single-image-locked panel layout. When the
-        // global lock is on, the user can still tap an
-        // image to "inspect" it via the locked panel
-        // (解锁 / 灰度 / 导出 / 删除) — the same
-        // affordance the per-image lock provides.
         activeSelectedIds.all { id -> state.isImageLocked(id) }
     val allGrayscale = state.selectedImageIds.isNotEmpty() &&
         state.selectedImageIds.all { id ->
@@ -1598,208 +1584,28 @@ private fun SelectionBottomSheet(
         state.selectedImageIds.all { id ->
             state.images.firstOrNull { it.id == id }?.flipX == true
         }
-    // V_NOW (bug fix): the locked panel no longer
-    // requires selectedCount == 1. The legacy
-    // SelectionFloatingToolbar only showed the locked
-    // 4-button panel for the single-image-locked
-    // case, but in multi-select mode, if every
-    // selected image is locked the panel should also
-    // switch to the locked variant (水平反转/灰度/
-    // 解锁/导出/删除) — otherwise the user has no
-    // way to UNLOCK the batch (解锁 lives only in
-    // the locked panel). The `allSelectedLocked` check
-    // already correctly handles "all N are locked" for
-    // any N, so we just drop the `&& selectedCount
-    // == 1` constraint.
     val isLockedPanel = allSelectedLocked
 
-    // Wrap in key(tick) so that after the user dismisses
-    // the sheet and taps an image again, the
-    // ModalBottomSheet is re-created with a fresh
-    // SheetState (M3's built-in LaunchedEffect then
-    // calls show() on the new state).
-    key(state.selectionSheetShowTick) {
-    // V_NOW (swipe-down sync): intercept the sheet's
-    // swipe-down state transition so the canvas
-    // restore animation can start in the SAME frame
-    // as M3's built-in slide-out animation.
-    //
-    // M3 [ModalBottomSheetState.confirmValueChange]
-    // is called synchronously at the start of any
-    // sheet state change, including the
-    // swipe-down → [SheetValue.Hidden] transition.
-    // Toggling [isDismissing] here re-keys the
-    // [LaunchedEffect(isDismissing)] further below
-    // (the canvas-restore block) to start the
-    // canvas-restore animation at the same moment
-    // M3's [SwipeableV2State] kicks off its
-    // slide-out tween. The two animations then run
-    // concurrently, both completing in ~300ms.
-    //
-    // Why this matters: M3's [onDismissRequest] is
-    // only invoked AFTER the sheet's slide-out
-    // animation has already finished. So if we
-    // used [onDismissRequest] alone to trigger
-    // [isDismissing] (the previous V_NOW design),
-    // the canvas restore would lag the sheet by a
-    // full 300ms — the sheet would visibly
-    // "vanish" first, then the canvas would snap
-    // back. [confirmValueChange] is the only
-    // hook that fires at the start of the
-    // dismiss, not the end.
-    //
-    // Trade-off: the scrim-tap dismiss path is NOT
-    // covered (M3 routes scrim clicks through
-    // [onDismissRequest] only, so we can't pre-fire
-    // [isDismissing] from there). For the swipe-down
-    // gesture — the primary dismiss path on a tablet
-    // with S Pen — this gives true frame-perfect
-    // sync. Scrim-tap users see the old 300ms gap,
-    // which is acceptable on a 12" tablet where
-    // scrim is rarely tapped.
-    // V_NOW: track whether the sheet is currently
-    // dismissing (hide animation running). Used to
-    // start the canvas restore animation in sync
-    // with the sheet slide-out animation, rather
-    // than after the sheet is already gone. Declared
-    // before [sheetState] so the
-    // [confirmValueChange] lambda below can
-    // reference it.
-    var isDismissing by remember { mutableStateOf(false) }
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = true,
-        confirmValueChange = { newValue ->
-            if (newValue == SheetValue.Hidden && !isDismissing) {
-                isDismissing = true
-            }
-            true
-        },
-    )
-    // Track whether the sheet should remain in the
-    // composition tree. M3 ModalBottomSheet keeps its
-    // popup window alive even when sheetState is
-    // Hidden, and that popup intercepts ALL touch
-    // events across the entire screen. If we just
-    // call sheetState.hide() in onDismissRequest,
-    // the popup stays and the app becomes
-    // unresponsive. Setting showSheet = false
-    // removes the ModalBottomSheet from the
-    // composition tree entirely, destroying the
-    // popup and restoring touch to the canvas.
-    var showSheet by remember { mutableStateOf(true) }
-
-    // V_NOW (2026-06-08 关闭智能规避): 之前 sheet 弹了会
-    // 自动调 [computeCanvasAdjustmentForSheet] 把画布
-    // 缩小/平移让选中图避开 sheet 区域,sheet 收时再
-    // 还原。user 反馈"画布被自动改"是干扰性 UX,改成
-    // sheet 是纯"工具面板"语义,出现时**不**动画布,
-    // 收时也**不**还原 — 画布状态完全 user 控制。
-    // 1.1.0 release:移除整段 auto-adjust / restore 逻辑。
-
-    // V_NOW: programmatic dismiss — when the
-    // [selectionSheetDismissTick] changes (e.g. on
-    // double-tap focus/unfocus), trigger the same
-    // dismiss flow as a swipe-down or scrim-tap.
-    // Reuses the existing [isDismissing] → hide →
-    // showSheet=false pipeline so the canvas-restore
-    // animation runs in sync with the sheet slide-out.
-    LaunchedEffect(state.selectionSheetDismissTick) {
-        if (state.selectionSheetDismissTick == 0) return@LaunchedEffect
-        if (!isDismissing && sheetState.isVisible) {
-            isDismissing = true
-        }
+    var dismissedByUser by remember { mutableStateOf(false) }
+    LaunchedEffect(state.selectionSheetShowTick) {
+        dismissedByUser = false
     }
+    // V_NOW (S-04): alignment-direction dropdown state.
+    // Long-pressing the multi-select "水平翻转" button
+    // opens a DropdownMenu showing the 4 batch-align
+    // directions (top / bottom / left / right). The
+    // 4 directions also appear as the 2nd-5th buttons
+    // in [row1] for the common path (single tap), but
+    // the dropdown is a SHORTCUT for users who already
+    // have their finger on 水平翻转 and don't want
+    // to move it 4 columns to the right.
+    var alignmentMenuExpanded by remember { mutableStateOf(false) }
 
-    // V_NOW: when isDismissing becomes true, run the
-    // M3 sheet hide animation (slide-out), then remove
-    // the sheet from composition. This runs concurrently
-    // with the canvas restore LaunchedEffect above.
-    LaunchedEffect(isDismissing) {
-        if (!isDismissing) return@LaunchedEffect
-        sheetState.hide()
-        showSheet = false
-    }
-
-        if (showSheet) {
-        // V_NOW (2026-06-08 "新增功能 sheet 弹后手指能操控画布"):
-        // M3 [ModalBottomSheet] 用 [scrimColor = Color.Transparent]
-        // + 内置 scrim 的 [detectTapGestures] **不**消费 drag /
-        // pinch 事件,画布 drag / pinch / rotate 跟 sheet 弹
-        // **同时**进行 — 这是项目**有意**的"非模态" UX:
-        // sheet 是"工具面板",画布始终可操控,user 一边看
-        // sheet 一边继续在画布上操作。
-        //
-        // 之前的 v1 modal 屏蔽层 (拦截 drag / pinch PointerEvent)
-        // 跟这个 UX 冲突,**已撤销**。
-        ModalBottomSheet(
-        onDismissRequest = {
-            // V_NOW: start canvas restore animation
-            // in sync with the sheet slide-out.
-            // Previously we set showSheet=false
-            // here, which removed the sheet from
-            // composition instantly (no slide-out
-            // animation). Now we set isDismissing
-            // first (triggers the canvas restore
-            // LaunchedEffect), then call
-            // sheetState.hide() which runs M3's
-            // built-in slide-out animation. After
-            // the hide animation completes, we set
-            // showSheet=false to remove the sheet
-            // from composition (destroying the
-            // popup and restoring touch).
-            isDismissing = true
-        },
-        sheetState = sheetState,
-        // V_NOW: scrim is now Color.Transparent
-        // (was Color.Black.copy(alpha=0.32f)). Per
-        // user spec — the visual mask above the
-        // sheet was getting in the way of the
-        // auto-pan animation and made the canvas
-        // look "dimmed" while interacting. The
-        // scrim's touch handling still works
-        // (tapping outside the sheet dismisses it
-        // via M3's onDismissRequest) — only the
-        // visual color is gone. M3's Scrim
-        // composable treats `Color.Transparent`
-        // as a "specified" color (it's a defined
-        // Color constant, not Color.Unspecified),
-        // so the alpha animation still runs and
-        // the pointerInput still intercepts touches;
-        // it just paints nothing.
-        scrimColor = Color.Transparent,
-        sheetMaxWidth = 560.dp,
-        dragHandle = {
-            // V_NOW (mockup §04): 32×4dp rounded
-            // handle at the top centre, 12dp from
-            // the top of the sheet. M3 default is
-            // a slightly bigger handle; we keep
-            // the PockRef custom to match the
-            // M3 spec for large components.
-            Box(
-                modifier = Modifier
-                    .padding(vertical = 10.dp)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(width = 32.dp, height = 4.dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(Color(0xFFC1C7CE)),
-                )
-            }
-        },
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        tonalElevation = 0.dp,
+    BottomSheetPanel(
+        visible = !dismissedByUser,
+        onDismiss = { dismissedByUser = true },
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 12.dp),
-        ) {
-            // Title bar.
+        Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1826,18 +1632,6 @@ private fun SelectionBottomSheet(
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                // V_NOW (A+第二轮): title bar's right
-                // side now hosts the single/multi-select
-                // mode toggle (moved from the bottom
-                // row, which is gone entirely). The X
-                // close button was removed per user
-                // spec — the scrim tap still dismisses
-                // the sheet via M3's onDismissRequest,
-                // and there's no other dismissal path
-                // (the user wanted the X out). The mode
-                // toggle stays visible at the top so
-                // the user can switch modes from any
-                // selection state without scrolling.
                 Text(
                     text = "选择模式",
                     style = MaterialTheme.typography.labelMedium,
@@ -1864,31 +1658,7 @@ private fun SelectionBottomSheet(
             )
             Spacer(Modifier.height(14.dp))
 
-            // Action grid. Two layouts based on
-            // [isLockedPanel]: the legacy
-            // SelectionFloatingToolbar used the
-            // "single-image-locked" 4-button panel
-            // (灰度 / 解锁 / 导出 / 删除 — no
-            // expand/collapse, no transform
-            // controls) and the "everything else"
-            // 12-button grid. We keep that exact
-            // split here.
             if (isLockedPanel) {
-                // V_NOW: locked panel is now 5 buttons in
-                // a single row (was 4 — added 导出 between
-                // 解锁 and 删除). At 560dp max width with
-                // 5 buttons at 4dp spacing + 2dp horizontal
-                // padding each, column width lands at
-                // ~108dp — fits "水平反转" (4 chars) with
-                // ~50dp slack per column. Same 40dp button
-                // style as the unlocked grid for visual
-                // consistency between the two panel variants.
-                //
-                // The unlock button stays "active" (filled
-                // tonal) so the user can see the lock
-                // state at a glance — this is the only
-                // active=true button in the sheet and
-                // serves as the visual anchor.
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1930,70 +1700,26 @@ private fun SelectionBottomSheet(
                     )
                 }
             } else {
-                // V_NOW (A+第三轮 — 5+5 重新排):
-                // Two equal-width rows of 5 actions each
-                // (per user feedback "4+6 太奇怪了,
-                // 改成 5+5"). 5-per-row at 560dp max width
-                // lands at ~112dp/column, which fits the
-                // longest label ("左旋 90°" / "右旋 90°" ≈
-                // 55dp label) plus the 18dp icon with
-                // comfortable padding.
-                //
-                // Row split (per user spec — single/multi
-                // panel uses the same 5+5 layout):
-                //   Row 1 (single):   水平翻转 / 裁切 / 左旋 / 右旋 / 复原
-                //   Row 1 (multi/box): 水平翻转 / 向上对齐 / 向下对齐 / 向左对齐 / 向右对齐
-                //   Row 2 (both):     复制 / 灰度 / 锁定 / 导出 / 删除
-                //
-                // The grouping now puts "transform" actions
-                // (水平翻转 / 左旋 / 右旋 / 复原) in row 1
-                // alongside 裁切 (also a transform), and
-                // "filter/property/export" actions (复制 /
-                // 灰度 / 锁定 / 导出 / 删除) in row 2.
-                // The row order matches the
-                // frequency-of-use mental model: the user
-                // usually wants to fiddle with orientation
-                // first, then with the rest.
-                //
-                // For multi-select / box-select mode the
-                // row-1 transforms don't make sense per-image
-                // (rotation/reset/crop are per-image actions,
-                // not batch actions). They are replaced by
-                // the 4 batch-align directions + 水平翻转
-                // (the only per-batch transform that IS
-                // useful in multi-select — flips every
-                // selected image at once).
-                //
-                // No bottom row anymore — the single/multi
-                // mode toggle moved to the title-bar's
-                // right side, and the X close button was
-                // removed (per user spec). Dismissal is
-                // exclusively via the scrim tap. The
-                // trailing Spacer + Divider that used to
-                // separate the action grid from the
-                // (now-gone) bottom row are also removed,
-                // so the sheet ends right at the action
-                // grid's bottom edge.
                 val gridModifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp)
                 val row1 = if (state.multiSelectMode || state.boxSelectMode) {
-                    // Multi / box-select: 水平翻转 + 4 batch
-                    // align directions. AlignMode.ALIGN_TOP /
-                    // BOTTOM / LEFT / RIGHT dispatch through
-                    // [PockRefAction.BatchAlign] →
-                    // [PockRefViewModelBatch.batchAlign] which
-                    // pan-translates every selected image so
-                    // its top / bottom / left / right edge
-                    // aligns across the batch. Single-image
-                    // selection is a no-op (nothing to align
-                    // against) so the buttons stay enabled
-                    // even at N=1 to avoid flicker when the
-                    // user toggles between N=1 and N≥2.
                     listOf(
-                        SheetActionSpec(Icons.Rounded.Flip, "水平翻转", allFlippedH) {
-                            onAction(PockRefAction.FlipHorizontal)
-                        },
+                        SheetActionSpec(
+                            icon = Icons.Rounded.Flip,
+                            label = "水平翻转",
+                            active = allFlippedH,
+                            onClick = { onAction(PockRefAction.FlipHorizontal) },
+                            // V_NOW (S-04): long-press opens the
+                            // 4-direction alignment dropdown.
+                            // The 4 directions also appear as
+                            // direct buttons in [row1] (the primary
+                            // path); this long-press is a
+                            // shortcut so a user whose finger
+                            // is already on 水平翻转 doesn't
+                            // have to move across 4 columns.
+                            onLongClick = { alignmentMenuExpanded = true },
+                        ),
                         SheetActionSpec(Icons.Rounded.VerticalAlignTop, "向上对齐", false) {
                             onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_TOP))
                         },
@@ -2008,8 +1734,6 @@ private fun SelectionBottomSheet(
                         },
                     )
                 } else {
-                    // Single-select: 水平翻转(原"水平反转" 改名) +
-                    // per-image transforms (裁切 / 左旋 / 右旋 / 复原).
                     listOf(
                         SheetActionSpec(Icons.Rounded.Flip, "水平翻转", allFlippedH) {
                             onAction(PockRefAction.FlipHorizontal)
@@ -2061,6 +1785,13 @@ private fun SelectionBottomSheet(
                                 tint = spec.tint,
                                 modifier = Modifier.weight(1f),
                                 onClick = spec.onClick,
+                                // V_NOW (S-04): pass long-press
+                                // through. Only the multi-select
+                                // "水平翻转" sets onLongClick;
+                                // the other 4 buttons in [row1]
+                                // pass null and fall back to plain
+                                // clickable inside [SheetActionButton].
+                                onLongClick = spec.onLongClick,
                             )
                         }
                     }
@@ -2076,16 +1807,80 @@ private fun SelectionBottomSheet(
                                 tint = spec.tint,
                                 modifier = Modifier.weight(1f),
                                 onClick = spec.onClick,
+                                // row2 has no long-press buttons.
+                                onLongClick = null,
                             )
                         }
                     }
                 }
             }
+            // V_NOW (S-04): alignment-direction DropdownMenu
+            // anchored to an invisible Box at the bottom of
+            // the sheet. The anchor Box takes 0dp of layout
+            // space (no children, no size modifier); the
+            // DropdownMenu itself is rendered via a
+            // [androidx.compose.ui.window.Popup] which
+            // floats above all content regardless.
+            //
+            // Only rendered in multi-select / box-select
+            // mode (the long-press handler is only wired
+            // up there). In single / locked modes the
+            // menu would have nothing to do — we early-
+            // return via the `expanded` check on the
+            // DropdownMenu itself.
+            Box(modifier = Modifier.fillMaxWidth()) {
+                DropdownMenu(
+                    expanded = alignmentMenuExpanded &&
+                        (state.multiSelectMode || state.boxSelectMode),
+                    onDismissRequest = { alignmentMenuExpanded = false },
+                    offset = androidx.compose.ui.unit.DpOffset(x = 24.dp, y = (-180).dp),
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("向上对齐") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.VerticalAlignTop, contentDescription = null)
+                        },
+                        onClick = {
+                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_TOP))
+                            alignmentMenuExpanded = false
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("向下对齐") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.VerticalAlignBottom, contentDescription = null)
+                        },
+                        onClick = {
+                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_BOTTOM))
+                            alignmentMenuExpanded = false
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("向左对齐") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.AlignHorizontalLeft, contentDescription = null)
+                        },
+                        onClick = {
+                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_LEFT))
+                            alignmentMenuExpanded = false
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("向右对齐") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.AlignHorizontalRight, contentDescription = null)
+                        },
+                        onClick = {
+                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_RIGHT))
+                            alignmentMenuExpanded = false
+                        },
+                    )
+                }
+            }
         }
     }
-    }  // if (showSheet)
-    }  // key(state.selectionSheetShowTick)
 }
+
 
 /**
  * V_NOW (A+按钮重分类): Helper data class so the two
@@ -2102,9 +1897,23 @@ private data class SheetActionSpec(
     val label: String,
     val active: Boolean,
     val tint: Color? = null,
+    // V_NOW (S-04): declared BEFORE [onClick] so the
+    // trailing-lambda call sites
+    // (`SheetActionSpec(icon, label, active) { ... }`)
+    // resolve to [onClick] (the last function-type
+    // parameter in the constructor). If [onLongClick]
+    // were declared AFTER [onClick], every existing
+    // call site would need to be rewritten to
+    // `SheetActionSpec(..., onClick = ...) { ... }`
+    // or similar — a 14-site mechanical churn that
+    // adds no value. Today only the multi-select
+    // "水平翻转" button passes `onLongClick = {...}`;
+    // the other 9 buttons default to null.
+    val onLongClick: (() -> Unit)? = null,
     val onClick: () -> Unit,
 )
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SheetActionButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -2113,13 +1922,58 @@ private fun SheetActionButton(
     active: Boolean = false,
     tint: Color? = null,
     onClick: () -> Unit,
+    // V_NOW (S-04): optional long-press handler. When
+    // non-null, the button switches from `Modifier.clickable`
+    // to `Modifier.combinedClickable` so the long-press
+    // gesture is honoured alongside the regular tap.
+    // See [SheetActionSpec.onLongClick] for the call site.
+    onLongClick: (() -> Unit)? = null,
 ) {
     val resolvedTint = tint ?: if (active) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.onSurfaceVariant
     Column(
         modifier = modifier
+            // V_NOW (S-03 / a11y heuristic "User control
+            // and freedom"): enforce a 48dp minimum touch
+            // target on the OUTER height of the button.
+            // `defaultMinSize` (vs `heightIn(min =)`) lets
+            // Compose honour the incoming `modifier` first
+            // and only bumps the height when it's below
+            // 48dp. The caller passes `Modifier.weight(1f)`
+            // from the parent's Row, and we don't want to
+            // fight that.
+            //
+            // The KDoc previously claimed "48dp minimum
+            // touch target is enforced by
+            // `minimumInteractiveComponentSize` in the
+            // parent Box's modifier chain" — but no caller
+            // actually wraps the Column in that helper.
+            // Without it, the button's outer height lands
+            // at ~40dp (4dp padding + 18dp icon + 2dp gap
+            // + 11sp label + 4dp padding ≈ 39dp) which is
+            // BELOW WCAG 2.5.5 / Apple HIG's 44pt minimum
+            // and well below M3's 48dp recommendation.
+            // Fingers wider than 16dp hit two buttons at
+            // once; system font scale 1.3x / 1.5x pushes
+            // the label to a second line and the button
+            // grows asymmetrically.
+            .defaultMinSize(minHeight = 48.dp)
             .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
+            // V_NOW (S-04): combinedClickable when
+            // onLongClick is provided, plain clickable
+            // otherwise. combinedClickable is the
+            // canonical M3 path for click + long-press;
+            // using it keeps the implementation trivial.
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongClick,
+                    )
+                } else {
+                    Modifier.clickable(onClick = onClick)
+                },
+            )
             .background(
                 if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
                 else Color.Transparent,
@@ -2127,13 +1981,15 @@ private fun SheetActionButton(
             // V_NOW (A+按钮重分类 — compact 40dp): was
             // 12dp vertical / 4dp horizontal (old 64dp
             // button). Now 4dp vertical / 2dp horizontal
-            // so the total height lands at ~40dp (4+18+2+
-            // 11sp label ≈ 35dp + 5dp slack). Matches M3
-            // `IconButtonDefaults.smallIconButtonSize`
+            // so the total content height lands at ~40dp
+            // (4+18+2+ 11sp label ≈ 35dp + 5dp slack).
+            // Matches M3 `IconButtonDefaults.smallIconButtonSize`
             // (40dp) which is the toolbar icon button
             // standard. The 48dp minimum touch target is
-            // enforced by `minimumInteractiveComponentSize`
-            // in the parent Box's modifier chain.
+            // enforced by `defaultMinSize(minHeight = 48.dp)`
+            // ABOVE — the padding here is the CONTENT
+            // padding inside that 48dp minimum, so the
+            // outer clickable region is always ≥48dp tall.
             .padding(vertical = 4.dp, horizontal = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -2204,6 +2060,58 @@ private fun SheetModeChip(
             text = text,
             style = MaterialTheme.typography.labelMedium,
             color = fg,
+        )
+    }
+}
+
+
+@Composable
+private fun BoxScope.SelectionModeOverlay(state: PockRefUiState) {
+    // R-04: only render in multi-select / box-select
+    // modes. The SINGLE mode is the obvious default and
+    // doesn't need a confirmation badge (would be visual
+    // noise on every scene).
+    val isMulti = state.multiSelectMode && !state.boxSelectMode
+    val isBox = state.boxSelectMode
+    if (!isMulti && !isBox) return
+    val tint = MaterialTheme.colorScheme.primary
+    // 4-edge border: drawn via a fillMaxSize Box with a
+    // border modifier. Border is a draw-only modifier
+    // (no pointer-input impact), so all canvas gestures
+    // (pan / pinch / rotate / tap / lasso / box-select)
+    // pass through to [PockRefCanvas] underneath. The
+    // 3dp width + 35% alpha reads as "noticeable
+    // status" without competing with the images.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .border(
+                width = 3.dp,
+                color = tint.copy(alpha = 0.35f),
+            ),
+    )
+    // Top-centre status chip. Floats above the canvas
+    // and the border; sits below the top toolbar's
+    // z-order (the toolbar is in [PureRefApp]'s outer
+    // Scaffold, not in this Box, so it renders above
+    // by virtue of being earlier in the tree).
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .padding(top = 12.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(tint.copy(alpha = 0.92f))
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    ) {
+        val label = if (isBox) {
+            "框选模式 · 拖动画出选区"
+        } else {
+            "多选模式 · 点击图片累加选中"
+        }
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.onPrimary,
+            style = MaterialTheme.typography.labelMedium,
         )
     }
 }
@@ -6087,7 +5995,35 @@ private fun PockRefCanvas(
                         currentOnAction(PockRefAction.BeginBoxSelect)
                         boxSelectStart = downPos
                         boxSelectDragging = true
-                    } else if (hitId != null) {
+                    } else if (hitId != null && !s.globalImageLock) {
+                        // V_NOW (2026-06-08 "全局锁定后图片上
+                        // 单指拖动识别为移动画布" v3): gate
+                        // this entire branch on
+                        // [!s.globalImageLock]. The previous
+                        // per-image-lock-only check inside
+                        // (L6117: `hitImage?.locked != true`)
+                        // correctly suppressed the drag-arm
+                        // for per-image locked images, but
+                        // for [globalImageLock] it still set
+                        // [activeDragImageId] = hitId (when
+                        // per-image locked=false). The
+                        // reducer then silently no-op'd in
+                        // [BeginImageDrag] (see
+                        // [PureRefViewModelTransform.beginImageDrag]
+                        // L833 which checks
+                        // [state.isImageLocked] and returns),
+                        // and the move loop fell into a
+                        // no-op branch because `dragId != null`
+                        // but `dragStarted` never flipped
+                        // true.
+                        //
+                        // With the guard here, the whole
+                        // image-down branch is skipped when
+                        // [globalImageLock] is on, so the
+                        // pointer falls through to the
+                        // `dragCanvas = true` arming below
+                        // — matching the user's intent
+                        // "image 上单指拖动 = 移动画布".
                         if (s.boxSelectMode && hitId !in s.selectedImageIds) {
                             currentOnAction(PockRefAction.BeginBoxSelect)
                             boxSelectStart = downPos
@@ -8205,7 +8141,45 @@ private fun UnsavedChangesDialog(isSaving: Boolean, onAction: (PockRefAction) ->
                     Text("保存中...")
                 }
             } else {
-                Text("此文件有未保存的更改。关闭前是否保存？")
+                // V_NOW (R-03 / Nielsen heuristic "User
+                // control and freedom"): the dialog body
+                // now makes the auto-backup guarantee
+                // EXPLICIT before the user clicks "放弃
+                // 更改". Previously the user had to know
+                // about [AppPreferences] / `auto_save`
+                // from the USER_GUIDE FAQ §8 to feel safe
+                // clicking the destructive Discard button.
+                // The new body says (a) the change is
+                // auto-backed up so "放弃更改" doesn't
+                // lose work, and (b) how long the backup
+                // is retained.
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("此文件有未保存的更改。关闭前是否保存？")
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        tonalElevation = 0.dp,
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = androidx.compose.material.icons.Icons.Rounded.Lock,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = "上次保存后到现在的更改会自动备份,保留7天," +
+                                    "即使选择「放弃更改」也能从备份恢复。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -8222,7 +8196,15 @@ private fun UnsavedChangesDialog(isSaving: Boolean, onAction: (PockRefAction) ->
                     onClick = { onAction(PockRefAction.UnsavedDialogDiscard) },
                     enabled = !isSaving,
                 ) {
-                    Text("不保存", color = if (isSaving) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.error)
+                    // R-03: renamed "不保存" → "放弃更改"
+                    // (M3 destructive-action wording
+                    // convention). "不保存" reads ambiguously
+                    // ("don't save the FILE?"); "放弃更改"
+                    // is unambiguous.
+                    Text(
+                        text = "放弃更改",
+                        color = if (isSaving) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.error,
+                    )
                 }
                 TextButton(
                     onClick = { onAction(PockRefAction.UnsavedDialogCancel) },
@@ -8481,6 +8463,44 @@ private fun ExportDialogHost(
         title = { Text(titleText) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // V_NOW (R-05): explicit scope chip at the
+                // top of the dialog body. The user invoked
+                // this dialog by tapping the "导出" button
+                // in [SelectionBottomSheet] — but they ALSO
+                // have a separate "导出画布" entry in the
+                // right-bottom action panel that exports the
+                // WHOLE canvas as a single PNG. Two entries
+                // with similar icons is ambiguous: does
+                // THIS dialog export the selection, or the
+                // entire canvas? The chip says "仅导出选中
+                // 的图片 · 「导出画布」在右下角面板" with
+                // a [PhotoLibrary] icon as a quick visual
+                // reminder. The "导出画布" path stays in
+                // the right-bottom action panel and uses a
+                // distinct icon + label.
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    tonalElevation = 0.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Rounded.PhotoLibrary,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                        Text(
+                            text = "仅导出选中的${if (isMulti) " $selectedCount 张" else ""}图片 · 「导出画布」在右下角面板",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
                 Text(
                     helperText,
                     style = MaterialTheme.typography.bodySmall,

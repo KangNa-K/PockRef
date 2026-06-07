@@ -463,8 +463,18 @@ private data class MinimapColors(
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    val longPressTimeoutMs = viewConfiguration
-                        .longPressTimeoutMillis
+                    // V_NOW (S-07): raised from framework default
+                    // 500ms to 800ms. The minimap panel's
+                    // PRIMARY action is "tap to jump the canvas
+                    // viewport to that point"; long-press →
+                    // slider-mode is SECONDARY and morphs the
+                    // whole panel away. At 500ms users often
+                    // unintentionally triggered slider mode
+                    // when they wanted to tap (e.g. finger
+                    // landed a millimetre late and held while
+                    // re-orienting). At 800ms a true long-press
+                    // is unambiguous. See [MINIMAP_LONG_PRESS_TIMEOUT_MS].
+                    val longPressTimeoutMs = MINIMAP_LONG_PRESS_TIMEOUT_MS
                     // Race: long-press timeout vs pointer
                     // release. `withTimeoutOrNull` cancels
                     // the inner `awaitPointerEvent` loop
@@ -1148,6 +1158,11 @@ private val MINIMAP_INNER_INSET_DP = 4.dp
 // the velocity magnitude falls below STOP_VELOCITY.
 private const val MINIMAP_FLING_DAMPING = 0.92f
 private const val MINIMAP_FLING_STOP_VELOCITY = 0.5f
+// V_NOW (S-07): raised from framework default 500ms.
+// See the long-press [pointerInput] call sites for the
+// rationale (tablet ergonomics + minimap primary-vs-
+// secondary action asymmetry).
+private const val MINIMAP_LONG_PRESS_TIMEOUT_MS = 800L
 
 /**
  * Cached dash [PathEffect] for the "locked" outline on the
@@ -1418,8 +1433,9 @@ internal fun CollapsedMinimapIcon(
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    val longPressTimeoutMs = viewConfiguration
-                        .longPressTimeoutMillis
+                    // V_NOW (S-07): same 800ms threshold as
+                    // the expanded minimap above.
+                    val longPressTimeoutMs = MINIMAP_LONG_PRESS_TIMEOUT_MS
                     val releasedBeforeTimeout = withTimeoutOrNull(
                         longPressTimeoutMs.toLong(),
                     ) {

@@ -93,4 +93,32 @@ object Dimens {
     val FabElevation = 6.dp
     val ToolbarElevation = 3.dp
     val MinimapElevation = 1.dp
+
+    /**
+     * Sheet chrome tokens — shared by [BottomSheetPanel] and any
+     * caller that wants to MATCH the M3 "large component bottom
+     * sheet" visual contract without going through M3's
+     * [androidx.compose.material3.ModalBottomSheet] (which is a
+     * modal Dialog window and intercepts ALL outside touches via
+     * its built-in scrim — fatal for use cases where the canvas
+     * underneath must remain interactive while the sheet is up,
+     * e.g. [SelectionBottomSheet] for "tool panel over a live
+     * canvas" and the [CropOverlay] toolbar that sits beneath the
+     * draggable floating crop layer).
+     *
+     * Values mirror the M3 spec for large component bottom sheets:
+     *   - 28dp top corners — M3 sheet standard (vs the 12dp
+     *     [ChromeCornerRadius] used for cards / chrome panels)
+     *   - 560dp max width on tablets so the sheet doesn't
+     *     stretch to full landscape screen width (~1750dp on
+     *     SM-X810); centered horizontally inside the parent Box
+     *   - 32×4dp pill handle at the top centre, 10dp vertical
+     *     padding above the sheet content
+     *   - 0dp tonalElevation — M3 sheet default (a flat solid
+     *     surface, no tonal tint over the canvas image)
+     */
+    val SheetCornerRadius = 28.dp
+    val SheetMaxWidth = 560.dp
+    val SheetHandleWidth = 32.dp
+    val SheetHandleHeight = 4.dp
 }

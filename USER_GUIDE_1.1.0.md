@@ -27,7 +27,8 @@ PockRef 的界面由以下区域组成：
 │                                             │
 │              画布（主工作区）                  │
 │                                             │
-│    [选图浮动工具栏]                           │
+│          [底部选区工具栏 sheet]                │
+│         （仅在有图片被选中时弹出）              │
 │                                             │
 ├──────┬──────────────────────────┬────────────┤
 │缩略图│                          │  自动排版   │
@@ -39,7 +40,7 @@ PockRef 的界面由以下区域组成：
 |------|------|------|
 | 顶栏 | 屏幕顶部 | 场景名称、最近文件、撤销、重做、关闭 |
 | 画布 | 屏幕中央 | 放置和操作参考图的主工作区 |
-| 选图浮动工具栏 | 选中图片附近 | 根据选中数量自动显示，提供编辑操作 |
+| 底部选区工具栏（sheet） | 屏幕底部 | 选中图片后弹出，根据选中数量和锁定状态显示不同按钮布局 |
 | 缩略图导航 | 左下角 | 全局缩略图，支持缩放滑块 |
 | 自动排版 FAB | 右下角 | 一键自动整理图片布局 |
 
@@ -99,85 +100,77 @@ PockRef 的界面由以下区域组成：
 
 当 **旋转角度吸附** 开启时（默认开启），旋转图片时会在接近 0°/45°/90°/135°/180°/225°/270°/315° 时自动吸附，停顿 200ms 后锁定。
 
-### 3.4 选图浮动工具栏
+### 3.4 选图底部工具栏（v1.1.0 全新布局）
 
-选中图片后，图片附近会自动弹出浮动工具栏。工具栏根据选中数量和锁定状态显示不同按钮：
+选中图片后，屏幕底部会自动弹出工具栏 sheet。工具栏是非模态的——画布仍然可以拖拽、双指捏合、点击图片。工具栏根据选中数量和锁定状态显示不同布局：
+
+> **v1.1.0 更新**：旧版"图片附近浮动的 SelectionFloatingToolbar"（带折叠/展开切换、5s自动隐藏）已下线。现版本统一改成"屏幕底部 sheet"（类似 M3 BottomSheet 视觉风格，但非模态，不拦截画布事件）。所有按钮一次性铺开，没有"折叠 / 展开"切换——减少视觉跳变和高频操作的认知成本。
 
 #### 单选模式（选中 1 张图片）
 
-**折叠状态（5 个按钮）：**
+工具栏从顶部到底部分为三部分：
 
-| 图标 | 功能 | 说明 |
-|------|------|------|
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box_outline_blank.svg" width="18" height="18" valign="middle"/> / <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box.svg" width="18" height="18" valign="middle"/> | 多选模式 | 开启/关闭多选图片模式 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 镜像翻转图片 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/crop.svg" width="18" height="18" valign="middle"/> | 裁剪 | 进入裁剪模式 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 切换灰度显示 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 删除选中图片 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/expand_more.svg" width="18" height="18" valign="middle"/> | 展开 | 展开更多操作 |
+| 区域 | 内容 |
+|------|------|
+| **标题栏** | "已选 1 张" + 右侧「选择模式」切换（单选 / 多选 / 框选） |
+| **第一行（5 个变换按钮）** | 水平翻转 / 裁剪 / 左旋 90° / 右旋 90° / 复原 |
+| **第二行（5 个属性按钮）** | 复制 / 灰度 / 锁定 / 导出 / 删除 |
 
-**展开状态（11 个按钮）：**
+| 图标 | 功能 | 所在行 | 说明 |
+|------|------|--------|------|
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 第一行 | 镜像翻转图片 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/crop.svg" width="18" height="18" valign="middle"/> | 裁剪 | 第一行 | 进入裁剪模式 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/rotate_left.svg" width="18" height="18" valign="middle"/> | 向左旋转 90° | 第一行 | 逆时针旋转 90° |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/rotate_right.svg" width="18" height="18" valign="middle"/> | 向右旋转 90° | 第一行 | 顺时针旋转 90° |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/restart_alt.svg" width="18" height="18" valign="middle"/> | 复原 | 第一行 | 重置所有变换到初始状态 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/content_copy.svg" width="18" height="18" valign="middle"/> | 复制 | 第二行 | 复制选中图片 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 第二行 | 切换灰度显示（激活时变蓝） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 第二行 | 锁定/解锁图片（蓝色=已锁定） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/save.svg" width="18" height="18" valign="middle"/> | 导出图片 | 第二行 | 导出为 PNG/JPG |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 第二行 | 删除选中图片 |
 
-| 图标 | 功能 | 说明 |
-|------|------|------|
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box_outline_blank.svg" width="18" height="18" valign="middle"/> / <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box.svg" width="18" height="18" valign="middle"/> | 多选模式 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/crop.svg" width="18" height="18" valign="middle"/> | 裁剪 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 锁定/解锁图片（蓝色=已锁定） |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/rotate_left.svg" width="18" height="18" valign="middle"/> | 向左旋转 90° | 逆时针旋转 90° |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/rotate_right.svg" width="18" height="18" valign="middle"/> | 向右旋转 90° | 顺时针旋转 90° |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/restart_alt.svg" width="18" height="18" valign="middle"/> | 复原图片 | 重置所有变换到初始状态 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/content_copy.svg" width="18" height="18" valign="middle"/> | 复制 | 复制选中图片 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/save.svg" width="18" height="18" valign="middle"/> | 导出图片 | 导出为 PNG/JPG |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/expand_less.svg" width="18" height="18" valign="middle"/> | 收起 | 收起工具栏 |
+> **关闭工具栏**：拖动顶部把手往下（swipe-down）/ 按系统返回键 / 点击画布空白处取消所有选中 / 再次点击同一张图片重新弹出。
 
 #### 多选/框选模式（选中 2 张及以上）
 
-> **v1.1.0 更新**：多选/框选模式的工具栏布局重新编排，第一行改为批量对齐操作。
+> **v1.1.0 更新**：多选/框选模式的工具栏布局重新编排，第一行改为批量对齐操作 + 水平翻转（共 5 个），第二行沿用单选模式的 5 个属性按钮。
 
-**折叠状态（5 个按钮）：**
+工具栏从顶部到底部分为三部分：
 
-| 图标 | 功能 | 说明 |
-|------|------|------|
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 批量水平翻转 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 批量切换灰度 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 批量锁定/解锁 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 批量删除 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/expand_more.svg" width="18" height="18" valign="middle"/> | 展开 | 展开更多操作 |
+| 区域 | 内容 |
+|------|------|
+| **标题栏** | "已选 N 张" + 右侧「选择模式」切换（单选 / 多选 / 框选） |
+| **第一行（5 个批量操作）** | 水平翻转 / 向上对齐 / 向下对齐 / 向左对齐 / 向右对齐 |
+| **第二行（5 个属性按钮）** | 复制 / 灰度 / 锁定 / 导出 / 删除 |
 
-**展开状态（12 个按钮）：**
+| 图标 | 功能 | 所在行 | 说明 |
+|------|------|--------|------|
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 第一行 | 批量水平翻转 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/vertical_align_top.svg" width="18" height="18" valign="middle"/> | 向上对齐 | 第一行 | 所有选中图片顶部对齐（v1.1.0 新增） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/vertical_align_bottom.svg" width="18" height="18" valign="middle"/> | 向下对齐 | 第一行 | 所有选中图片底部对齐（v1.1.0 新增） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/align_horizontal_left.svg" width="18" height="18" valign="middle"/> | 向左对齐 | 第一行 | 所有选中图片左侧对齐（v1.1.0 新增） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/align_horizontal_right.svg" width="18" height="18" valign="middle"/> | 向右对齐 | 第一行 | 所有选中图片右侧对齐（v1.1.0 新增） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/content_copy.svg" width="18" height="18" valign="middle"/> | 复制 | 第二行 | 批量复制 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 第二行 | 批量切换灰度 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 第二行 | 批量锁定/解锁 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/save.svg" width="18" height="18" valign="middle"/> | 导出选中图片 | 第二行 | 批量导出为 PNG/JPG |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 第二行 | 批量删除 |
 
-| 图标 | 功能 | 说明 |
-|------|------|------|
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/vertical_align_top.svg" width="18" height="18" valign="middle"/> | 向上对齐 | 所有选中图片顶部对齐（v1.1.0 新增） |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/vertical_align_bottom.svg" width="18" height="18" valign="middle"/> | 向下对齐 | 所有选中图片底部对齐（v1.1.0 新增） |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/align_horizontal_left.svg" width="18" height="18" valign="middle"/> | 向左对齐 | 所有选中图片左侧对齐（v1.1.0 新增） |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/align_horizontal_right.svg" width="18" height="18" valign="middle"/> | 向右对齐 | 所有选中图片右侧对齐（v1.1.0 新增） |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/restart_alt.svg" width="18" height="18" valign="middle"/> | 复原 | 批量重置变换 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/content_copy.svg" width="18" height="18" valign="middle"/> | 复制 | 批量复制 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/save.svg" width="18" height="18" valign="middle"/> | 导出选中图片 | 批量导出为 PNG/JPG |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/expand_less.svg" width="18" height="18" valign="middle"/> | 收起 | 同上 |
-
-> **布局说明**：v1.1.0 将多选/框选模式第一行的「裁切/左旋/右旋/复原」替换为「4 个批量对齐方向」。裁切和旋转是单图操作，多选时无意义；只有水平翻转是真正有批量价值的变换操作，因此保留。
+> **长按「水平翻转」**：在多选/框选模式下，长按第一行的「水平翻转」按钮可唤出 4 个对齐方向的快捷菜单（向上/向下/向左/向右）。这是一个**快捷方式**，因为 4 个对齐方向已经在第一行作为独立按钮显示——长按"水平翻转"是为了不让你的手指从第一列移动到右边 4 列才点到对齐按钮。
 
 #### 锁定图片模式
 
-当选中的单张图片处于锁定状态时，工具栏切换为精简 4 按钮面板：
+当**所有**选中图片都被锁定时（无论单选还是多选），工具栏切换到精简的**单行 5 按钮**布局：
 
 | 图标 | 功能 | 说明 |
 |------|------|------|
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 锁定图片仍可翻转 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 切换灰度 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 解锁 | 点击解锁图片 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock_open.svg" width="18" height="18" valign="middle"/> | 解锁 | 点击解锁图片（按钮高亮为蓝色，表示当前状态） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/save.svg" width="18" height="18" valign="middle"/> | 导出 | 导出选中图片 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 删除图片 |
 
-> 锁定的图片会显示红色双层边框，无法拖动/缩放/旋转，但仍可点击选中。
+> 锁定的图片会显示红色双层边框，无法拖动/缩放/旋转，但仍可点击选中。多选模式下只要所有选中图片都被锁定，就会切换到这个锁定面板（让用户可以一键解锁整批）。
 
 ### 3.5 裁剪图片（v1.1.0 全新设计）
 
@@ -416,7 +409,12 @@ PockRef 对 Samsung S Pen 提供了深度支持：
 2. "单指拖动"手势是否被关闭 → 设置 → 手势 → 开启"单指拖动"
 
 ### Q: 工具栏不见了怎么办？
-**A:** 工具栏会在 5 秒无操作后自动隐藏。重新点击任意图片即可再次显示。
+**A:** v1.1.0 起，选图工具栏不会自动消失（之前的"5 秒自动隐藏"已下线）。消失只有以下 3 种情况：
+1. 你主动拖动顶部把手往下（swipe-down）
+2. 你按了系统返回键
+3. 你点击画布空白区域取消了所有选中（这种情况 sheet 会跟着选中一起消失）
+
+想重新打开工具栏，只需要再次点击任意一张图片即可。
 
 ### Q: 顶栏自动收起了怎么办？
 **A:** 顶栏在 3 秒无操作后自动折叠。点击顶栏区域即可重新展开。
