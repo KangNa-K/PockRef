@@ -62,6 +62,26 @@ a701a31 Settings panel: '背景颜色' label + HSV color wheel
 
 minimap 折叠态的 44dp + FabElevation 跟 FAB 完全一致(token 一致),用户读成"两个 corner 浮动"。
 
+## SelectionStatusBar (小白条) 缩放交互
+
+小白条长按可唤出缩放 Slider，拖拽直接控制画布缩放，交互流程如下：
+
+| # | 手势 | 触发条件 | 行为 |
+|---|------|---------|------|
+| 1 | 长按 | 按住 ≥ 500ms | Slider 从小白条上方浮现 |
+| 2 | 松手(长按后) | 手指抬起 | Slider 保持显示 3s 后自动淡出消失 |
+| 3 | 长按 + 向上拖 | 长按触发后继续上拖 | 画布实时放大，Slider thumb 同步上移 |
+| 4 | 长按 + 向下拖 | 长按触发后继续下拖 | 画布实时缩小，Slider thumb 同步下移 |
+
+**实现要点**：
+
+- **长按检测**：`pointerInput` + `detectTapGestures(onLongPress)` 或自定义 `awaitPointerEventScope`，阈值 500ms
+- **Slider 位置**：紧贴小白条上方，水平方向居中对齐，宽度与小白条等宽或略宽
+- **拖拽映射**：垂直拖拽偏移量 → `scale` 值，向上 = 放大，向下 = 缩小；Slider thumb 位置与当前 scale 同步
+- **自动消失**：松手后启动 3s `LaunchedEffect` / `delay`，到时 `animateFloatAsState` 淡出 Slider
+- **中断重置**：Slider 消失动画期间若再次长按，取消当前 timer，重新显示 Slider
+- **缩放范围**：与双指缩放共享同一 `minScale..maxScale` 区间，Slider 刻度对齐
+
 ## S Pen 按住 = 开框选,松开 = 关
 
 - `SpenButtonDetector.ButtonEvent.BoxStart` (DOWN 边) → `MainActivity.dispatchSpenEvent` 直接 dispatch `SetSelectionMode(BOX) + BeginBoxSelect`

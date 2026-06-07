@@ -110,7 +110,7 @@ PockRef 的界面由以下区域组成：
 | 图标 | 功能 | 说明 |
 |------|------|------|
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box_outline_blank.svg" width="18" height="18" valign="middle"/> / <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box.svg" width="18" height="18" valign="middle"/> | 多选模式 | 开启/关闭多选图片模式 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平反转 | 镜像翻转图片 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 镜像翻转图片 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/crop.svg" width="18" height="18" valign="middle"/> | 裁剪 | 进入裁剪模式 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 切换灰度显示 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 删除选中图片 |
@@ -121,7 +121,7 @@ PockRef 的界面由以下区域组成：
 | 图标 | 功能 | 说明 |
 |------|------|------|
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box_outline_blank.svg" width="18" height="18" valign="middle"/> / <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box.svg" width="18" height="18" valign="middle"/> | 多选模式 | 同上 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平反转 | 同上 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 同上 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/crop.svg" width="18" height="18" valign="middle"/> | 裁剪 | 同上 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 同上 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 锁定/解锁图片（蓝色=已锁定） |
@@ -133,13 +133,15 @@ PockRef 的界面由以下区域组成：
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 同上 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/expand_less.svg" width="18" height="18" valign="middle"/> | 收起 | 收起工具栏 |
 
-#### 多选模式（选中 2 张及以上）
+#### 多选/框选模式（选中 2 张及以上）
+
+> **v1.1.0 更新**：多选/框选模式的工具栏布局重新编排，第一行改为批量对齐操作。
 
 **折叠状态（5 个按钮）：**
 
 | 图标 | 功能 | 说明 |
 |------|------|------|
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平反转 | 批量水平翻转 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 批量水平翻转 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 批量切换灰度 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 批量锁定/解锁 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 批量删除 |
@@ -149,18 +151,20 @@ PockRef 的界面由以下区域组成：
 
 | 图标 | 功能 | 说明 |
 |------|------|------|
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平反转 | 同上 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 同上 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/vertical_align_top.svg" width="18" height="18" valign="middle"/> | 向上对齐 | 所有选中图片顶部对齐（v1.1.0 新增） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/vertical_align_bottom.svg" width="18" height="18" valign="middle"/> | 向下对齐 | 所有选中图片底部对齐（v1.1.0 新增） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/align_horizontal_left.svg" width="18" height="18" valign="middle"/> | 向左对齐 | 所有选中图片左侧对齐（v1.1.0 新增） |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/align_horizontal_right.svg" width="18" height="18" valign="middle"/> | 向右对齐 | 所有选中图片右侧对齐（v1.1.0 新增） |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 同上 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 同上 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/restart_alt.svg" width="18" height="18" valign="middle"/> | 复原 | 批量重置变换 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/content_copy.svg" width="18" height="18" valign="middle"/> | 复制 | 批量复制 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/vertical_align_top.svg" width="18" height="18" valign="middle"/> | 向上对齐 | 所有选中图片顶部对齐 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/vertical_align_bottom.svg" width="18" height="18" valign="middle"/> | 向下对齐 | 所有选中图片底部对齐 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/align_horizontal_left.svg" width="18" height="18" valign="middle"/> | 向左对齐 | 所有选中图片左侧对齐 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/align_horizontal_right.svg" width="18" height="18" valign="middle"/> | 向右对齐 | 所有选中图片右侧对齐 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/save.svg" width="18" height="18" valign="middle"/> | 导出选中图片 | 批量导出为 PNG/JPG |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 同上 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/expand_less.svg" width="18" height="18" valign="middle"/> | 收起 | 同上 |
+
+> **布局说明**：v1.1.0 将多选/框选模式第一行的「裁切/左旋/右旋/复原」替换为「4 个批量对齐方向」。裁切和旋转是单图操作，多选时无意义；只有水平翻转是真正有批量价值的变换操作，因此保留。
 
 #### 锁定图片模式
 
@@ -168,7 +172,7 @@ PockRef 的界面由以下区域组成：
 
 | 图标 | 功能 | 说明 |
 |------|------|------|
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平反转 | 锁定图片仍可翻转 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 锁定图片仍可翻转 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 切换灰度 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 解锁 | 点击解锁图片 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/delete.svg" width="18" height="18" valign="middle"/> | 删除 | 删除图片 |
@@ -197,6 +201,7 @@ PockRef 的界面由以下区域组成：
 | 点击缩略图中的位置 | 画布视口跳转到该位置 |
 | **长按 minimap** | **唤出画布缩放滑块（v1.1.0 新增）** |
 | 拖动滑块 | 精确调整画布缩放比例 |
+| **点击滑块外部区域** | **关闭缩放滑块（v1.1.0 新增）** |
 | 松手 | 滑块自动收起，恢复 minimap 显示 |
 | 将 minimap 拖到屏幕边缘 | 折叠为边缘图标 |
 | 点击折叠后的边缘图标 | 重新展开 minimap |
@@ -205,6 +210,7 @@ PockRef 的界面由以下区域组成：
 > - 移除双指捏合缩放 minimap（避免误触）
 > - 移除长按拖动 minimap（简化交互）
 > - 新增长按唤出缩放滑块功能
+> - 新增点击外部区域关闭滑块（tap-outside dismiss）
 
 ### 3.8 场景管理
 
@@ -255,7 +261,7 @@ PockRef 的界面由以下区域组成：
 | 图标 | 名称 | 功能 |
 |------|------|------|
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box_outline_blank.svg" width="18" height="18" valign="middle"/> / <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/check_box.svg" width="18" height="18" valign="middle"/> | 多选模式 | 切换单选/多选累积模式 |
-| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平反转 | 水平镜像翻转 |
+| <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> | 水平翻转 | 水平镜像翻转 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/crop.svg" width="18" height="18" valign="middle"/> | 裁剪 | 进入裁剪模式 |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> | 灰度 | 切换灰度显示（激活时变蓝） |
 | <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/lock.svg" width="18" height="18" valign="middle"/> | 锁定 | 锁定/解锁图片（蓝色=已锁定） |
@@ -377,7 +383,7 @@ PockRef 对 Samsung S Pen 提供了深度支持：
    - 双指旋转调整角度（自动吸附到水平/垂直）
 
 4. **翻转和灰度**
-   - 选中图片 → 浮动工具栏 → <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> 水平反转
+   - 选中图片 → 浮动工具栏 → <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/flip.svg" width="18" height="18" valign="middle"/> 水平翻转
    - 选中图片 → 浮动工具栏 → <img src="https://cdn.jsdelivr.net/npm/@material-design-icons/svg/round/layers.svg" width="18" height="18" valign="middle"/> 灰度（查看明暗关系）
 
 5. **裁剪细节**
