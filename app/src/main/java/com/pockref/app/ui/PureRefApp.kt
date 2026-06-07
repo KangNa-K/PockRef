@@ -1842,7 +1842,7 @@ private fun SelectionBottomSheet(
                 ) {
                     SheetActionButton(
                         icon = Icons.Rounded.Flip,
-                        label = "水平反转",
+                        label = "水平翻转",
                         modifier = Modifier.weight(1f),
                         onClick = { onAction(PockRefAction.FlipHorizontal) },
                     )
@@ -1886,11 +1886,12 @@ private fun SelectionBottomSheet(
                 //
                 // Row split (per user spec — single/multi
                 // panel uses the same 5+5 layout):
-                //   Row 1 (top): 水平反转 / 裁切 / 左旋 / 右旋 / 复原
-                //   Row 2 (bot): 复制 / 灰度 / 锁定 / 导出 / 删除
+                //   Row 1 (single):   水平翻转 / 裁切 / 左旋 / 右旋 / 复原
+                //   Row 1 (multi/box): 水平翻转 / 向上对齐 / 向下对齐 / 向左对齐 / 向右对齐
+                //   Row 2 (both):     复制 / 灰度 / 锁定 / 导出 / 删除
                 //
                 // The grouping now puts "transform" actions
-                // (水平反转 / 左旋 / 右旋 / 复原) in row 1
+                // (水平翻转 / 左旋 / 右旋 / 复原) in row 1
                 // alongside 裁切 (also a transform), and
                 // "filter/property/export" actions (复制 /
                 // 灰度 / 锁定 / 导出 / 删除) in row 2.
@@ -1898,6 +1899,15 @@ private fun SelectionBottomSheet(
                 // frequency-of-use mental model: the user
                 // usually wants to fiddle with orientation
                 // first, then with the rest.
+                //
+                // For multi-select / box-select mode the
+                // row-1 transforms don't make sense per-image
+                // (rotation/reset/crop are per-image actions,
+                // not batch actions). They are replaced by
+                // the 4 batch-align directions + 水平翻转
+                // (the only per-batch transform that IS
+                // useful in multi-select — flips every
+                // selected image at once).
                 //
                 // No bottom row anymore — the single/multi
                 // mode toggle moved to the title-bar's
@@ -1912,23 +1922,57 @@ private fun SelectionBottomSheet(
                 val gridModifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp)
-                val row1 = listOf(
-                    SheetActionSpec(Icons.Rounded.Flip, "水平反转", allFlippedH) {
-                        onAction(PockRefAction.FlipHorizontal)
-                    },
-                    SheetActionSpec(Icons.Rounded.Crop, "裁切", false) {
-                        onAction(PockRefAction.EnterCropMode)
-                    },
-                    SheetActionSpec(Icons.AutoMirrored.Rounded.RotateLeft, "左旋 90°", false) {
-                        onAction(PockRefAction.RotateLeft)
-                    },
-                    SheetActionSpec(Icons.AutoMirrored.Rounded.RotateRight, "右旋 90°", false) {
-                        onAction(PockRefAction.RotateRight)
-                    },
-                    SheetActionSpec(Icons.Rounded.RestartAlt, "复原", false) {
-                        onAction(PockRefAction.ResetTransform)
-                    },
-                )
+                val row1 = if (state.multiSelectMode || state.boxSelectMode) {
+                    // Multi / box-select: 水平翻转 + 4 batch
+                    // align directions. AlignMode.ALIGN_TOP /
+                    // BOTTOM / LEFT / RIGHT dispatch through
+                    // [PockRefAction.BatchAlign] →
+                    // [PockRefViewModelBatch.batchAlign] which
+                    // pan-translates every selected image so
+                    // its top / bottom / left / right edge
+                    // aligns across the batch. Single-image
+                    // selection is a no-op (nothing to align
+                    // against) so the buttons stay enabled
+                    // even at N=1 to avoid flicker when the
+                    // user toggles between N=1 and N≥2.
+                    listOf(
+                        SheetActionSpec(Icons.Rounded.Flip, "水平翻转", allFlippedH) {
+                            onAction(PockRefAction.FlipHorizontal)
+                        },
+                        SheetActionSpec(Icons.Rounded.VerticalAlignTop, "向上对齐", false) {
+                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_TOP))
+                        },
+                        SheetActionSpec(Icons.Rounded.VerticalAlignBottom, "向下对齐", false) {
+                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_BOTTOM))
+                        },
+                        SheetActionSpec(Icons.Rounded.AlignHorizontalLeft, "向左对齐", false) {
+                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_LEFT))
+                        },
+                        SheetActionSpec(Icons.Rounded.AlignHorizontalRight, "向右对齐", false) {
+                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_RIGHT))
+                        },
+                    )
+                } else {
+                    // Single-select: 水平翻转(原"水平反转" 改名) +
+                    // per-image transforms (裁切 / 左旋 / 右旋 / 复原).
+                    listOf(
+                        SheetActionSpec(Icons.Rounded.Flip, "水平翻转", allFlippedH) {
+                            onAction(PockRefAction.FlipHorizontal)
+                        },
+                        SheetActionSpec(Icons.Rounded.Crop, "裁切", false) {
+                            onAction(PockRefAction.EnterCropMode)
+                        },
+                        SheetActionSpec(Icons.AutoMirrored.Rounded.RotateLeft, "左旋 90°", false) {
+                            onAction(PockRefAction.RotateLeft)
+                        },
+                        SheetActionSpec(Icons.AutoMirrored.Rounded.RotateRight, "右旋 90°", false) {
+                            onAction(PockRefAction.RotateRight)
+                        },
+                        SheetActionSpec(Icons.Rounded.RestartAlt, "复原", false) {
+                            onAction(PockRefAction.ResetTransform)
+                        },
+                    )
+                }
                 val row2 = listOf(
                     SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
                         onAction(PockRefAction.DuplicateSelected)
