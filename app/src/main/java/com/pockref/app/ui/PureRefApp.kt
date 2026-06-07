@@ -24,6 +24,7 @@ import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
@@ -193,7 +194,6 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -243,6 +243,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
@@ -262,7 +263,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.EaseOut
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
@@ -303,6 +303,7 @@ import com.pockref.app.model.RecentSceneEntry
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.SelectionMode
+import com.pockref.app.model.isImageLocked
 import com.pockref.app.model.Size2D
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -417,6 +418,37 @@ private const val DOUBLE_TAP_MAX_DIST_DP = 32f
 private const val ZOOM_MIN = 0.25f
 private const val ZOOM_MAX = 4.0f
 private const val DOUBLE_TAP_MAX_INTERVAL_MS = 400L
+// V_NOW: delay before showing the SelectionBottomSheet
+// in single-select mode. Shorter than the full double-tap
+// window so the sheet appears responsive on single taps,
+// but long enough to catch most double-taps (typically
+// completed within ~200 ms). If a slow double-tap fires
+// after the sheet is already visible, the double-tap
+// handler dismisses it.
+private const val SINGLE_TAP_SHEET_DELAY_MS = 200L
+// V_NOW (2026-06-08 "连续弹出两次" 修复 v2):
+// this constant is RESIDUAL from v1 of the debounce
+// (which lived in this pointerInput block). v1 only
+// covered the single-finger-tap path and missed the
+// two-finger-down path at L6287 which dispatches
+// [TickSelectionSheet] directly. v2 moved the
+// debounce to the [PockRefViewModel]
+// [PockRefAction.TickSelectionSheet] reducer itself
+// (see the [PockRefUiState.lastSheetShowMs] field
+// and the reducer's `now - lastSheetShowMs < 800L`
+// guard), so all four [TickSelectionSheet] dispatch
+// sites are protected.
+//
+// The constant is kept here so the v1 pointerInput
+// block below (which still wraps the
+// [pendingSheetJob] scheduling) can stay consistent
+// with the canonical 800ms window. Without this
+// consistency, the pointerInput's own
+// [lastSheetShowMs] check could let a job through that
+// the viewmodel would then refuse — visible as the
+// sheet staying closed for the user's first tap on
+// an image they were sure they tapped.
+private const val SHEET_SHOW_DEBOUNCE_MS = 800L
 
 // --- Render-perf tuning ----------------------------------------------------
 // Extra padding (in screen pixels) added on every side of the world-space
@@ -1014,6 +1046,98 @@ fun PockRefApp(
                     ),
             )
 
+            // V_NOW (2026-06-08 "global image lock" feature):
+            // top-right lock toggle. Anchored at
+            // [Alignment.TopEnd] with the SAME 24dp
+            // [Dimens.CornerInset] the top toolbar uses on
+            // its TOP edge and the bottom-right FAB uses
+            // on its END edge — so the four corner-chrome
+            // elements (top-left toolbar / top-right
+            // global-lock / bottom-left minimap /
+            // bottom-right FAB) all sit on the same
+            // 24dp grid, no matter how the title row
+            // grows or shrinks.
+            //
+            // Visual spec (M3 + matches the FAB):
+            //   - Size: 48dp square (M3 WCAG 2.5.5 AAA
+            //     minimum touch target, same as the FAB).
+            //   - Shape: 12dp [Dimens.ChromeCornerRadius]
+            //     rounded — same as the FAB and toolbar.
+            //   - Fill: [surface] at 0.92 alpha (frosted
+            //     glass), same as the FAB. The user
+            //     feedback for the FAB
+            //     ("right-bottom-corner 一键排版按钮为
+            //     什么并不是和顶栏一个颜色") established
+            //     the uniform chrome-colour policy, and
+            //     this button follows it.
+            //   - Elevation: 6dp [Dimens.FabElevation]
+            //     so the active state has the same
+            //     "primary action" depth as the FAB.
+            //   - Icon: 24dp, same as the FAB. We use
+            //     [Icons.Rounded.Lock] when the global
+            //     lock is on, [Icons.Rounded.LockOpen]
+            //     when off — both from the same icon
+            //     family, same 24dp, same tint, same
+            //     horizontal padding inside the box. The
+            //     tint flips to [error] when the lock is
+            //     active so a 1-glance visual says
+            //     "this is doing something".
+            //   - State layer: same 8% / 12% primary-tinted
+            //     hover/press feedback as the FAB.
+            //   - Click handler: dispatches
+            //     [PockRefAction.ToggleGlobalImageLock],
+            //     which the reducer mirrors to AppPreferences
+            //     so the choice survives a process kill.
+            val lockInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            val isLockHovered by lockInteractionSource.collectIsHoveredAsState()
+            val isLockPressed by lockInteractionSource.collectIsPressedAsState()
+            val lockStateLayer = when {
+                isLockPressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                isLockHovered -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                else -> Color.Transparent
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(
+                        top = statusBarTopDp + Dimens.CornerInset,
+                        end = Dimens.CornerInset,
+                    )
+                    .size(Dimens.BottomPanelChromeSize)
+                    .background(
+                        color = MaterialTheme.colorScheme.surface
+                            .copy(alpha = Dimens.ChromeSurfaceAlpha),
+                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+                    )
+                    .background(
+                        color = lockStateLayer,
+                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+                    )
+                    .hoverable(interactionSource = lockInteractionSource)
+                    .clickable {
+                        onAction(PockRefAction.ToggleGlobalImageLock)
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (state.globalImageLock) {
+                        androidx.compose.material.icons.Icons.Rounded.Lock
+                    } else {
+                        androidx.compose.material.icons.Icons.Rounded.LockOpen
+                    },
+                    contentDescription = if (state.globalImageLock) {
+                        "全局图片已锁定,点击解锁"
+                    } else {
+                        "全局图片未锁定,点击锁定全部图片"
+                    },
+                    modifier = Modifier.size(24.dp),
+                    tint = if (state.globalImageLock) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+            }
 
             if (state.isBusy && !state.batchOptimizeState.isRunning) {
                 Box(
@@ -1456,9 +1580,15 @@ private fun SelectionBottomSheet(
         state.selectedImageId?.let(::setOf).orEmpty()
     }
     val allSelectedLocked = activeSelectedIds.isNotEmpty() &&
-        activeSelectedIds.all { id ->
-            state.images.firstOrNull { it.id == id }?.locked == true
-        }
+        // V_NOW (2026-06-08 "global image lock" feature):
+        // use [PockRefUiState.isImageLocked] so the
+        // global lock toggle also triggers the
+        // single-image-locked panel layout. When the
+        // global lock is on, the user can still tap an
+        // image to "inspect" it via the locked panel
+        // (解锁 / 灰度 / 导出 / 删除) — the same
+        // affordance the per-image lock provides.
+        activeSelectedIds.all { id -> state.isImageLocked(id) }
     val allGrayscale = state.selectedImageIds.isNotEmpty() &&
         state.selectedImageIds.all { id ->
             state.images.firstOrNull { it.id == id }
@@ -1558,105 +1688,25 @@ private fun SelectionBottomSheet(
     // popup and restoring touch to the canvas.
     var showSheet by remember { mutableStateOf(true) }
 
-    // Sheet content height measured via onSizeChanged.
-    // Persists across key(tick) re-creations so the
-    // second show uses the measured value.
-    val sheetContentHeightPx = remember {
-        mutableFloatStateOf(0f)
-    }
-    // Snapshot of canvas state before auto-adjust,
-    // used to restore on sheet dismiss.
-    val preAdjustState = remember {
-        mutableStateOf<Pair<Float, Offset>?>(null)
-    }
-    val density = LocalDensity.current
-    val marginPx = with(density) { 16.dp.toPx() }
+    // V_NOW (2026-06-08 关闭智能规避): 之前 sheet 弹了会
+    // 自动调 [computeCanvasAdjustmentForSheet] 把画布
+    // 缩小/平移让选中图避开 sheet 区域,sheet 收时再
+    // 还原。user 反馈"画布被自动改"是干扰性 UX,改成
+    // sheet 是纯"工具面板"语义,出现时**不**动画布,
+    // 收时也**不**还原 — 画布状态完全 user 控制。
+    // 1.1.0 release:移除整段 auto-adjust / restore 逻辑。
 
-    // Auto-adjust: when the sheet appears, check if
-    // selected images are occluded and pan/zoom the
-    // canvas so they're fully visible above the sheet.
-    //
-    // M3 ModalBottomSheet adds a drag handle (10+4+10=24dp)
-    // above the content Column. Our onSizeChanged only
-    // measures the Column, so we add the drag handle height
-    // to get the actual occlusion.
-    val sheetChromeHeightPx = with(density) { 24.dp.toPx() }
-
-    LaunchedEffect(state.selectionSheetShowTick) {
-        if (selectedCount == 0) {
-            preAdjustState.value = null
-            return@LaunchedEffect
-        }
-        val sheetH = sheetContentHeightPx.floatValue
-            .takeIf { it > 0f }
-            ?.plus(sheetChromeHeightPx)
-            ?: with(density) { 220.dp.toPx() } // fallback (content + drag handle)
-        val result = computeCanvasAdjustmentForSheet(
-            state = state,
-            sheetHeightPx = sheetH,
-            marginPx = marginPx,
-        )
-        if (result == null) {
-            // No occlusion — no adjustment needed.
-            preAdjustState.value = null
-            return@LaunchedEffect
-        }
-        // Save pre-adjust state for restore on dismiss.
-        preAdjustState.value = Pair(state.canvasScale, state.canvasOffset)
-        val (targetScale, targetOffset) = result
-        // Animate canvas to the adjusted position.
-        val startScale = state.canvasScale
-        val startOffset = state.canvasOffset
-        val fractionAnim = Animatable(0f)
-        fractionAnim.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
-        ) {
-            val f = this.value
-            val s = startScale + (targetScale - startScale) * f
-            val o = Offset(
-                x = startOffset.x + (targetOffset.x - startOffset.x) * f,
-                y = startOffset.y + (targetOffset.y - startOffset.y) * f,
-            )
-            onAction(PockRefAction.SetCanvasScaleAndOffset(s, o))
-        }
-    }
-
-    // Restore: when the sheet starts dismissing,
-    // animate the canvas back to its pre-adjust
-    // state IN SYNC with the sheet's slide-out
-    // animation. Previously we waited for
-    // showSheet=false (which removes the sheet
-    // from composition instantly — no slide-out
-    // animation visible). Now we trigger the
-    // restore as soon as isDismissing=true, which
-    // is set right before sheetState.hide() so
-    // both animations run concurrently.
-    // Duration matches M3 ModalBottomSheet dismiss
-    // (~300ms standard). EaseOut makes the first
-    // half faster so the canvas "snaps back"
-    // promptly rather than lagging behind the sheet.
-    LaunchedEffect(isDismissing) {
-        if (!isDismissing) return@LaunchedEffect
-        val saved = preAdjustState.value
-        preAdjustState.value = null
-        if (saved == null) return@LaunchedEffect
-        val (savedScale, savedOffset) = saved
-        val startScale = state.canvasScale
-        val startOffset = state.canvasOffset
-        if (startScale == savedScale && startOffset == savedOffset) return@LaunchedEffect
-        val fractionAnim = Animatable(0f)
-        fractionAnim.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(durationMillis = 300, easing = EaseOut),
-        ) {
-            val f = this.value
-            val s = startScale + (savedScale - startScale) * f
-            val o = Offset(
-                x = startOffset.x + (savedOffset.x - startOffset.x) * f,
-                y = startOffset.y + (savedOffset.y - startOffset.y) * f,
-            )
-            onAction(PockRefAction.SetCanvasScaleAndOffset(s, o))
+    // V_NOW: programmatic dismiss — when the
+    // [selectionSheetDismissTick] changes (e.g. on
+    // double-tap focus/unfocus), trigger the same
+    // dismiss flow as a swipe-down or scrim-tap.
+    // Reuses the existing [isDismissing] → hide →
+    // showSheet=false pipeline so the canvas-restore
+    // animation runs in sync with the sheet slide-out.
+    LaunchedEffect(state.selectionSheetDismissTick) {
+        if (state.selectionSheetDismissTick == 0) return@LaunchedEffect
+        if (!isDismissing && sheetState.isVisible) {
+            isDismissing = true
         }
     }
 
@@ -1671,6 +1721,16 @@ private fun SelectionBottomSheet(
     }
 
         if (showSheet) {
+        // V_NOW (2026-06-08 "新增功能 sheet 弹后手指能操控画布"):
+        // M3 [ModalBottomSheet] 用 [scrimColor = Color.Transparent]
+        // + 内置 scrim 的 [detectTapGestures] **不**消费 drag /
+        // pinch 事件,画布 drag / pinch / rotate 跟 sheet 弹
+        // **同时**进行 — 这是项目**有意**的"非模态" UX:
+        // sheet 是"工具面板",画布始终可操控,user 一边看
+        // sheet 一边继续在画布上操作。
+        //
+        // 之前的 v1 modal 屏蔽层 (拦截 drag / pinch PointerEvent)
+        // 跟这个 UX 冲突,**已撤销**。
         ModalBottomSheet(
         onDismissRequest = {
             // V_NOW: start canvas restore animation
@@ -1737,12 +1797,7 @@ private fun SelectionBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 12.dp)
-                .onSizeChanged { size ->
-                    if (size.height > 0) {
-                        sheetContentHeightPx.floatValue = size.height.toFloat()
-                    }
-                },
+                .padding(bottom = 12.dp),
         ) {
             // Title bar.
             Row(
@@ -3466,11 +3521,29 @@ private fun BoxScope.MinimapChrome(
                     onLongPress = {
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                         zoomSliderActive.value = true
+                        sliderInteractionStamp.value = System.currentTimeMillis()
                     },
                     // V_NOW: do NOT dismiss on long-press end;
                     // slider stays for drag. Dismissed via
                     // onValueChangeFinished or tap-outside.
                     onLongPressEnd = {},
+                    // V_NOW (2026-06-07): drag-after-long-
+                    // press on the SLIDER-mode collapsed
+                    // capsule is also dispatched as
+                    // [SetCanvasZoom], same as the
+                    // MAP-mode collapsed path above. The
+                    // SLIDER mode and the MAP mode share
+                    // the same minimap state machine so
+                    // the user can press-and-drag either
+                    // chrome variant to scale the
+                    // canvas.
+                    onDrag = { dragAmount ->
+                        val scaleDelta = -dragAmount.y * 0.005f
+                        val newScale = (currentCanvasScale * (1f + scaleDelta))
+                            .coerceIn(0.1f, 10f)
+                        currentOnAction(PockRefAction.SetCanvasZoom(newScale))
+                        sliderInteractionStamp.value = System.currentTimeMillis()
+                    },
                 )
             }
         } else {
@@ -3680,31 +3753,55 @@ private fun BoxScope.MinimapChrome(
                     )
                 },
         ) {
-            CollapsedMinimapIcon(
-                edge = state.minimapDockEdge,
-                onExpand = {
-                    // V_NOW: guard — if the zoom slider is
-                    // currently active (long-press triggered),
-                    // don't expand to the full minimap. The
-                    // slider overlay handles the interaction;
-                    // expanding would dismiss the slider and
-                    // show the full minimap instead of returning
-                    // to the collapsed bar.
-                    if (!zoomSliderActive.value) {
-                        onAction(PockRefAction.SetMinimapCollapsed(false))
-                    }
-                },
-                onLongPress = {
-                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                    zoomSliderActive.value = true
-                },
-                // V_NOW: do NOT set zoomSliderActive = false
-                // on long-press end. The slider should remain
-                // visible so the user can drag it. The slider
-                // is dismissed via onValueChangeFinished (drag
-                // complete) or by tapping outside the slider.
-                onLongPressEnd = {},
-            )
+                CollapsedMinimapIcon(
+                    edge = state.minimapDockEdge,
+                    onExpand = {
+                        // V_NOW: guard — if the zoom slider is
+                        // currently active (long-press triggered),
+                        // don't expand to the full minimap. The
+                        // slider overlay handles the interaction;
+                        // expanding would dismiss the slider and
+                        // show the full minimap instead of returning
+                        // to the collapsed bar.
+                        if (!zoomSliderActive.value) {
+                            onAction(PockRefAction.SetMinimapCollapsed(false))
+                        }
+                    },
+                    onLongPress = {
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        zoomSliderActive.value = true
+                        sliderInteractionStamp.value = System.currentTimeMillis()
+                    },
+                    // V_NOW: do NOT set zoomSliderActive = false
+                    // on long-press end. The slider should remain
+                    // visible so the user can drag it. The slider
+                    // is dismissed via onValueChangeFinished (drag
+                    // complete) or by tapping outside the slider.
+                    onLongPressEnd = {},
+                    // V_NOW (2026-06-07): drag-after-long-
+                    // press on the collapsed capsule is
+                    // dispatched as a multiplicative
+                    // [SetCanvasZoom]. Same gain (-0.005f
+                    // on dragAmount.y) as the expanded
+                    // minimap path so the two surfaces feel
+                    // identical to scale. Horizontal drag
+                    // deltas are ignored (dragAmount.x
+                    // doesn't factor into scaleDelta) which
+                    // matches the y-only semantics of the
+                    // expanded panel.
+                    onDrag = { dragAmount ->
+                        val scaleDelta = -dragAmount.y * 0.005f
+                        val newScale = (currentCanvasScale * (1f + scaleDelta))
+                            .coerceIn(0.1f, 10f)
+                        currentOnAction(PockRefAction.SetCanvasZoom(newScale))
+                        // Reset the 3s auto-dismiss timer
+                        // on every drag tick — same as the
+                        // expanded panel — so the slider
+                        // overlay doesn't fade out from
+                        // under the user's finger mid-drag.
+                        sliderInteractionStamp.value = System.currentTimeMillis()
+                    },
+                )
         }
     } else {
         // Full minimap panel.
@@ -3730,10 +3827,80 @@ private fun BoxScope.MinimapChrome(
                 .graphicsLayer {
                     shadowElevation = 0f
                 }
-                // Long-press activates zoom slider; double-tap collapses
+                // V_NOW (gesture contract, revised
+                // 2026-06-07 after user feedback): the
+                // expanded minimap supports BOTH a
+                // double-tap-to-collapse AND a
+                // long-press-to-scale. They coexist
+                // without conflict via TWO separate
+                // [Modifier.pointerInput] blocks stacked
+                // on the same Box:
+                //
+                //   1. [detectTapGestures(onDoubleTap=...)]
+                //      — handles fast tap-tap within the
+                //      double-tap timeout (default ~300ms).
+                //      Fires [SetMinimapCollapsed(true)] to
+                //      fold the minimap into the dock bar.
+                //      This detector is the FIRST
+                //      [pointerInput] so it sits behind the
+                //      drag detector in the gesture-pipeline
+                //      order (later detectors get first
+                //      crack at the down event); but both
+                //      detectors only consume the gesture
+                //      after a 300-500ms timeout, so in
+                //      practice a fast tap-tap flows
+                //      through to BOTH detectors and the
+                //      drag detector correctly sees it as
+                //      "released before the long-press
+                //      threshold" and stays quiet.
+                //   2. [detectDragGesturesAfterLongPress(...)]
+                //      — handles long-press-then-drag for
+                //      direct scale manipulation. [onDragStart]
+                //      fires at the 500ms threshold with
+                //      haptic feedback. [onDrag] maps
+                //      dragAmount.y to a multiplicative
+                //      scale delta (向上拖放大, 向下拖
+                //      缩小; 横向 drag 被忽略, 跟双指
+                //      捏合的 y-only 语义一致). [onDragEnd]
+                //      leaves the slider visible for the
+                //      3s auto-dismiss; [onDragCancel]
+                //      collapses immediately.
+                //
+                // Why this works without gesture-pipeline
+                // conflicts:
+                //   - Double-tap (fast tap-tap within
+                //     ~300ms): both detectors see the down
+                //     event, both see up before their own
+                //     timeout. The tap detector fires
+                //     [onDoubleTap]. The drag detector
+                //     doesn't fire [onDragStart] (its 500ms
+                //     threshold isn't met). No conflict.
+                //   - Long-press (≥500ms hold): the drag
+                //     detector commits to drag-mode at 500ms
+                //     and consumes the gesture, so the tap
+                //     detector never gets a chance to fire
+                //     [onDoubleTap] (the second tap would
+                //     arrive after the gesture is already
+                //     consumed). No conflict.
+                //   - Long-press + drag: same as long-press
+                //     + drag fires [onDrag] on every move.
+                //     Tap detector stays quiet.
+                //   - Quick tap (no double-tap, no long
+                //     press): neither detector fires.
+                //     [clickable] on the [CanvasMinimap]
+                //     inner is untouched (no change in
+                //     semantics).
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
+                            // Restore the double-tap-to-
+                            // collapse UX (previously removed
+                            // in 方案 1, restored in this
+                            // revision per user request). The
+                            // `drag detector will see
+                            // <500ms hold and stay quiet, so
+                            // the only response is the
+                            // collapse.
                             zoomSliderActive.value = false
                             val pos = localPosition.value
                             val nearestEdge = when {
@@ -3745,9 +3912,38 @@ private fun BoxScope.MinimapChrome(
                             onAction(PockRefAction.SetMinimapDockEdge(nearestEdge))
                             onAction(PockRefAction.SetMinimapCollapsed(true))
                         },
-                        onLongPress = {
+                    )
+                }
+                .pointerInput(Unit) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = {
                             hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                             zoomSliderActive.value = true
+                            sliderInteractionStamp.value = System.currentTimeMillis()
+                        },
+                        onDrag = { _, dragAmount ->
+                            // dragAmount.y: negative when
+                            // dragging UP. UP = ZOOM IN
+                            // (matches pinch-zoom
+                            // semantics). 0.005f gain
+                            // matched to the canvas
+                            // pinch-zoom baseline so a
+                            // full screen-height drag of
+                            // ~1700px covers a ~2.1x
+                            // scale change.
+                            val scaleDelta = -dragAmount.y * 0.005f
+                            val newScale = (currentCanvasScale * (1f + scaleDelta))
+                                .coerceIn(0.1f, 10f)
+                            currentOnAction(PockRefAction.SetCanvasZoom(newScale))
+                            sliderInteractionStamp.value = System.currentTimeMillis()
+                        },
+                        onDragEnd = {
+                            // Don't collapse here — the
+                            // existing 3s auto-dismiss
+                            // handles teardown.
+                        },
+                        onDragCancel = {
+                            zoomSliderActive.value = false
                         },
                     )
                 }
@@ -3795,7 +3991,39 @@ private fun BoxScope.MinimapChrome(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(start = Dimens.CornerInset, bottom = Dimens.CornerInset)
-                .graphicsLayer(alpha = morphProgress),
+                .graphicsLayer(alpha = morphProgress)
+                // V_NOW: swipe-left to dismiss the slider.
+                // Detects a quick horizontal swipe to the left
+                // on the slider container and collapses it back
+                // to the collapsed bar. Uses
+                // [awaitEachGesture] so it doesn't interfere
+                // with the Slider's own drag handling — the
+                // Slider consumes events inside its bounds,
+                // but a fast swipe that starts on the
+                // container edge (outside the Slider track)
+                // or a swipe that the Slider doesn't consume
+                // will trigger the dismiss.
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var totalDragX = 0f
+                        do {
+                            // Use [PointerEventPass.Initial] to observe
+                            // drag events before the inner Slider
+                            // consumes them. We only read, never
+                            // consume — the Slider still works
+                            // normally.
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull() ?: continue
+                            totalDragX += change.positionChange().x
+                        } while (event.type != PointerEventType.Release)
+                        // Swipe left threshold: at least 60px
+                        // of horizontal movement to the left
+                        if (totalDragX < -60f) {
+                            zoomSliderActive.value = false
+                        }
+                    }
+                },
         ) {
             MinimapZoomSlider(
                 orientation = sliderOrientation,
@@ -5434,6 +5662,37 @@ private fun PockRefCanvas(
     val currentLoaderRef by rememberUpdatedState(imageLazyLoader)
     var lastTapTime by remember { mutableLongStateOf(0L) }
     var lastTapPos by remember { mutableStateOf(Offset.Zero) }
+    // V_NOW: track the image ID of the last tap so that
+    // double-tap detection does NOT depend on
+    // [curState.selectedImageIds]. The first tap dispatches
+    // [CycleImageUnderPoint] which selects the image in the
+    // ViewModel, but [curState] is read via
+    // [rememberUpdatedState] which only refreshes on
+    // recomposition — the state may not have propagated by
+    // the time the second tap fires (< 300 ms later), so
+    // checking [tappedId in curState.selectedImageIds]
+    // would always be false on the second tap.
+    var lastTapImageId by remember { mutableStateOf("") }
+    // V_NOW: in single-select mode, the first tap of a
+    // potential double-tap calls
+    // [CycleImageUnderPoint(showSheet = false)] to select
+    // the image without immediately showing the
+    // SelectionBottomSheet. A delayed [TickSelectionSheet]
+    // is scheduled — if the second tap comes within the
+    // double-tap window, this job is cancelled and the
+    // focus/unfocus action fires instead, preventing the
+    // sheet from flashing open then closed.
+    var pendingSheetJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // V_NOW (2026-06-08 "连续弹出两次" 修复): wall-
+    // clock stamp of the LAST [TickSelectionSheet]
+    // dispatch (single-select path). The scheduling
+    // logic below debounces against this so a confused
+    // "tap-tap" within [SHEET_SHOW_DEBOUNCE_MS] of a
+    // previous tap doesn't dispatch twice. See the
+    // [SHEET_SHOW_DEBOUNCE_MS] constant for the full
+    // rationale.
+    var lastSheetShowMs by remember { mutableLongStateOf(0L) }
+    val tapScope = rememberCoroutineScope()
     // Track empty-canvas taps separately from the existing
     // lastTap* (which is used to detect double-tap-to-fit on a
     // selected image). Resetting on every tap means an empty
@@ -6379,33 +6638,123 @@ private fun PockRefCanvas(
                             currentOnAction(PockRefAction.CommitImageDrag)
                         } else if (isTap) {
                             val tappedId = activeDragImageId
-                            val curState = currentState
-                            val isDoubleTapOnSelected = tappedId in curState.selectedImageIds &&
+                            // V_NOW: use [lastTapImageId] instead
+                            // of [curState.selectedImageIds] for
+                            // double-tap detection. The first tap
+                            // dispatches [CycleImageUnderPoint]
+                            // which selects the image in the VM,
+                            // but [curState] is read via
+                            // [rememberUpdatedState] which only
+                            // refreshes on recomposition — the
+                            // state may not have propagated by
+                            // the time the second tap fires
+                            // (< 300 ms later), so the old check
+                            // [tappedId in curState.selectedImageIds]
+                            // was always false on the second tap.
+                            val isDoubleTapOnImage = tappedId == lastTapImageId &&
                                 (upTime - lastTapTime) < DOUBLE_TAP_MAX_INTERVAL_MS &&
                                 (lastTapPos - downPos).getDistance() < doubleTapMaxDistPx
-                            if (isDoubleTapOnSelected) {
+                            // V_NOW: in multi-select / box-select
+                            // mode, if the tapped image is already
+                            // selected, [CycleImageUnderPoint] would
+                            // toggle it (remove from selection),
+                            // which is wrong when the user is about
+                            // to double-tap to focus. Skip the
+                            // cycle and just record the tap as a
+                            // double-tap candidate.
+                            val alreadySelected = tappedId in currentState.selectedImageIds
+                            val isMultiSelect = currentState.multiSelectMode || currentState.boxSelectMode
+                            if (isDoubleTapOnImage) {
+                                // V_NOW: cancel the pending sheet
+                                // show — the user double-tapped,
+                                // so the intent is focus/unfocus,
+                                // not sheet interaction.
+                                pendingSheetJob?.cancel()
+                                pendingSheetJob = null
                                 currentOnAction(PockRefAction.FitImageToScreen(tappedId))
-                                // V_NOW (SelectionBottomSheet "弹不出来"
-                                // 修复): bump the show-tick so the
-                                // sheet re-raises after a previous
-                                // dismissal. The double-tap path
-                                // doesn't dispatch
-                                // CycleImageUnderPoint (so the
-                                // tick doesn't fire from the
-                                // selectImage reducer), so we
-                                // need an explicit dispatch.
-                                // Only in single-select mode —
-                                // multi-select uses long-press
-                                // to trigger the sheet.
-                                if (!curState.multiSelectMode && !curState.boxSelectMode) {
-                                    currentOnAction(PockRefAction.TickSelectionSheet)
-                                }
+                                currentOnAction(PockRefAction.DismissSelectionSheet)
                                 lastTapTime = 0L
                                 lastTapPos = Offset.Zero
-                            } else {
-                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos))
+                                lastTapImageId = ""
+                            } else if (isMultiSelect && alreadySelected) {
+                                // Don't toggle — just record for
+                                // double-tap detection.
                                 lastTapTime = upTime
                                 lastTapPos = downPos
+                                lastTapImageId = tappedId
+                            } else {
+                                // V_NOW: in single-select mode, call
+                                // [CycleImageUnderPoint] with
+                                // [showSheet = false] to select the
+                                // image without immediately showing
+                                // the sheet. Schedule a delayed
+                                // [TickSelectionSheet] — if a
+                                // second tap (double-tap) comes
+                                // within the window, the job is
+                                // cancelled and the focus action
+                                // fires instead.
+                                val isSingleSelect = !isMultiSelect
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = !isSingleSelect))
+                                if (isSingleSelect) {
+                                    // V_NOW (2026-06-08 "连续弹出
+                                    // 两次" 修复): debounce against
+                                    // [lastSheetShowMs] so a
+                                    // confused "tap-tap" within
+                                    // [SHEET_SHOW_DEBOUNCE_MS] of
+                                    // a previous tap doesn't
+                                    // dispatch a second
+                                    // [TickSelectionSheet]. See
+                                    // [SHEET_SHOW_DEBOUNCE_MS]
+                                    // for the full rationale.
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastSheetShowMs >= SHEET_SHOW_DEBOUNCE_MS) {
+                                        pendingSheetJob?.cancel()
+                                        pendingSheetJob = tapScope.launch {
+                                            kotlinx.coroutines.delay(SINGLE_TAP_SHEET_DELAY_MS)
+                                            currentOnAction(PockRefAction.TickSelectionSheet)
+                                            // Stamp AFTER the
+                                            // dispatch so the
+                                            // 800ms window
+                                            // measures "time
+                                            // since sheet was
+                                            // last shown", not
+                                            // "time since job
+                                            // was scheduled".
+                                            lastSheetShowMs = System.currentTimeMillis()
+                                        }
+                                    } else {
+                                        // Within the debounce
+                                        // window — the user
+                                        // either saw the sheet
+                                        // pop on the first tap
+                                        // (and this second tap
+                                        // was a mistaken
+                                        // "didn't register"
+                                        // reaction) or this is
+                                        // a slow second-tap of
+                                        // a double-tap (which
+                                        // the [isDoubleTapOnImage]
+                                        // branch above would
+                                        // have caught). Either
+                                        // way, no further
+                                        // [TickSelectionSheet]
+                                        // needed. We still
+                                        // cancel the prior job
+                                        // because it might
+                                        // still be pending
+                                        // (e.g. debounce
+                                        // triggered on a
+                                        // previous tap that
+                                        // was outside the
+                                        // window but the job
+                                        // hadn't fired yet).
+                                        pendingSheetJob?.cancel()
+                                        pendingSheetJob = null
+                                    }
+                                }
+                                lastTapTime = upTime
+                                lastTapPos = downPos
+                                lastTapImageId = tappedId
                             }
                         } else {
                             currentOnAction(PockRefAction.CancelImageDrag)
@@ -6432,31 +6781,72 @@ private fun PockRefCanvas(
                         // keyed off [hitId] instead of
                         // [activeDragImageId].
                         val tappedId = hitId
-                        val curState = currentState
-                        val isDoubleTapOnSelected = tappedId in curState.selectedImageIds &&
+                        // V_NOW: same fix as the unlocked
+                        // branch — use [lastTapImageId]
+                        // instead of
+                        // [curState.selectedImageIds] to
+                        // avoid the state-propagation race.
+                        val isDoubleTapOnImage = tappedId == lastTapImageId &&
                             (upTime - lastTapTime) < DOUBLE_TAP_MAX_INTERVAL_MS &&
                             (lastTapPos - downPos).getDistance() < doubleTapMaxDistPx
-                        if (isDoubleTapOnSelected) {
+                        // V_NOW: same as the unlocked branch —
+                        // in multi-select / box-select, if the
+                        // tapped image is already selected, skip
+                        // the cycle to avoid toggling it off.
+                        val alreadySelected = tappedId in currentState.selectedImageIds
+                        val isMultiSelect = currentState.multiSelectMode || currentState.boxSelectMode
+                        if (isDoubleTapOnImage) {
+                            // V_NOW: cancel pending sheet —
+                            // double-tap means focus/unfocus.
+                            pendingSheetJob?.cancel()
+                            pendingSheetJob = null
                             currentOnAction(PockRefAction.FitImageToScreen(tappedId))
-                            // V_NOW (SelectionBottomSheet "弹不出来"
-                            // 修复): same as the unlocked
-                            // branch above — bump the
-                            // show-tick explicitly since
-                            // the FitImageToScreen path
-                            // doesn't go through
-                            // CycleImageUnderPoint.
-                            // Only in single-select mode —
-                            // multi-select uses long-press
-                            // to trigger the sheet.
-                            if (!curState.multiSelectMode && !curState.boxSelectMode) {
-                                currentOnAction(PockRefAction.TickSelectionSheet)
-                            }
+                            currentOnAction(PockRefAction.DismissSelectionSheet)
                             lastTapTime = 0L
                             lastTapPos = Offset.Zero
-                        } else {
-                            currentOnAction(PockRefAction.CycleImageUnderPoint(downPos))
+                            lastTapImageId = ""
+                        } else if (isMultiSelect && alreadySelected) {
+                            // Don't toggle — just record for
+                            // double-tap detection.
                             lastTapTime = upTime
                             lastTapPos = downPos
+                            lastTapImageId = tappedId
+                        } else {
+                            // V_NOW: same as the unlocked branch —
+                            // in single-select mode, defer the
+                            // sheet so a second tap (double-tap)
+                            // can cancel it and focus instead.
+                            val isSingleSelect = !isMultiSelect
+                                    currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = !isSingleSelect))
+                                    if (isSingleSelect) {
+                                        // V_NOW (2026-06-08): same
+                                        // debounce as the
+                                        // unlocked-image path
+                                        // (L6656-6720). The
+                                        // locked-image branch
+                                        // (which goes through
+                                        // [hitId] instead of
+                                        // [activeDragImageId])
+                                        // would otherwise be
+                                        // susceptible to the
+                                        // same "tap-tap" double-
+                                        // pop bug.
+                                        val now = System.currentTimeMillis()
+                                        if (now - lastSheetShowMs >= SHEET_SHOW_DEBOUNCE_MS) {
+                                            pendingSheetJob?.cancel()
+                                            pendingSheetJob = tapScope.launch {
+                                                kotlinx.coroutines.delay(SINGLE_TAP_SHEET_DELAY_MS)
+                                                currentOnAction(PockRefAction.TickSelectionSheet)
+                                                lastSheetShowMs = System.currentTimeMillis()
+                                            }
+                                        } else {
+                                            pendingSheetJob?.cancel()
+                                            pendingSheetJob = null
+                                        }
+                                    }
+                            lastTapTime = upTime
+                            lastTapPos = downPos
+                            lastTapImageId = tappedId
                         }
                     } else if (isTap && !lassoActive && !boxSelectDragging) {
                         // Tap on empty canvas. Two cases:
@@ -7745,114 +8135,14 @@ internal fun imageWorldAabb(image: SceneImage): Rect {
 }
 
 /**
- * Compute the canvas scale and offset needed to ensure
- * the selected images' combined AABB is fully visible
- * above the SelectionBottomSheet.
- *
- * Returns `null` if no adjustment is needed (the AABB
- * is already fully above the sheet's top edge), or a
- * pair of (newScale, newOffset) if the canvas must be
- * panned and/or zoomed out.
- *
- * Strategy:
- * 1. Project the selected images' combined AABB to
- *    screen coordinates.
- * 2. Check if the AABB bottom is above the sheet top.
- *    If yes → no adjustment needed.
- * 3. If occluded, first try panning only (no zoom).
- *    If the AABB fits in the safe zone after panning,
- *    return the pan-only result.
- * 4. If the AABB is too tall for the safe zone even
- *    after panning, zoom out so it fits. The minimum
- *    scale is clamped to [minScale] (default 0.25x)
- *    to avoid over-shrinking.
- *
- * @param state current UI state
- * @param sheetHeightPx measured sheet height in pixels
- * @param marginPx margin between AABB bottom and sheet top
- * @param minScale minimum allowed canvas scale (zoom-out floor)
+ * V_NOW (2026-06-08 关闭智能规避): 1.1.0 release 把
+ * SelectionBottomSheet 的"自动平移/缩放画布"功能移除。
+ * 之前 sheet 弹了会调 [computeCanvasAdjustmentForSheet]
+ * 让选中图避开 sheet 区域,sheet 收时再还原。user 反馈
+ * 这是干扰性 UX — 画布状态应该完全 user 控制, sheet
+ * 是纯"工具面板"语义,出现时**不**动画布, 收时也
+ * **不**还原。函数已删除。
  */
-internal fun computeCanvasAdjustmentForSheet(
-    state: PockRefUiState,
-    sheetHeightPx: Float,
-    marginPx: Float = 0f,
-    minScale: Float = 0.25f,
-): Pair<Float, Offset>? {
-    val viewportW = state.canvasViewportSize.width
-    val viewportH = state.canvasViewportSize.height
-    if (viewportW <= 0f || viewportH <= 0f) return null
-    if (state.selectedImageIds.isEmpty()) return null
-    val cs = state.canvasScale
-    if (cs <= 0f) return null
-    val co = state.canvasOffset
-    val centerOffsetX = viewportW / 2f
-    val centerOffsetY = viewportH / 2f
-
-    // Compute combined AABB of selected images in world space.
-    val worldRects = state.selectedImageIds.mapNotNull { id ->
-        state.images.firstOrNull { it.id == id }?.let { imageWorldAabb(it) }
-    }
-    if (worldRects.isEmpty()) return null
-
-    val combinedTop = worldRects.minOf { it.top }
-    val combinedBottom = worldRects.maxOf { it.bottom }
-    val combinedLeft = worldRects.minOf { it.left }
-    val combinedRight = worldRects.maxOf { it.right }
-
-    // Safe zone: the screen region above the sheet.
-    val safeZoneBottom = viewportH - sheetHeightPx - marginPx
-    val safeZoneHeight = safeZoneBottom // from screen top (0) to safeZoneBottom
-
-    // Project AABB to screen at current scale/offset.
-    val screenTop = centerOffsetY + co.y + combinedTop * cs
-    val screenBottom = centerOffsetY + co.y + combinedBottom * cs
-
-    // Already fully visible → no adjustment needed.
-    if (screenBottom <= safeZoneBottom && screenTop >= 0f) return null
-
-    // Step 1: try pan-only (no zoom change).
-    val aabbScreenHeight = (combinedBottom - combinedTop) * cs
-
-    if (aabbScreenHeight <= safeZoneHeight) {
-        // AABB fits in safe zone — just pan so it's visible.
-        // Target: AABB bottom at safeZoneBottom (minimal upward pan).
-        val deltaY = safeZoneBottom - screenBottom
-        val newScreenTop = screenTop + deltaY
-        // If top would go off-screen, shift down instead.
-        val adjustedDeltaY = if (newScreenTop < 0f) {
-            -screenTop // pan so top is at Y=0
-        } else {
-            deltaY
-        }
-        val newOffset = Offset(co.x, co.y + adjustedDeltaY)
-        return Pair(cs, newOffset)
-    }
-
-    // Step 2: AABB is taller than safe zone — need to zoom out.
-    val aabbWorldHeight = combinedBottom - combinedTop
-    // Scale so AABB screen height = safeZoneHeight (fits exactly).
-    val targetScale = (safeZoneHeight / aabbWorldHeight).coerceIn(minScale, cs)
-    if (targetScale >= cs) {
-        // Can't zoom out further — just pan as much as possible.
-        val deltaY = safeZoneBottom - screenBottom
-        val newScreenTop = screenTop + deltaY
-        val adjustedDeltaY = if (newScreenTop < 0f) -screenTop else deltaY
-        return Pair(cs, Offset(co.x, co.y + adjustedDeltaY))
-    }
-
-    // Center the AABB vertically in the safe zone at the new scale.
-    // AABB screen height at targetScale = aabbWorldHeight * targetScale = safeZoneHeight
-    // So AABB top = 0, AABB bottom = safeZoneBottom. Perfect fit.
-    // Center the AABB horizontally at the same screen X as before.
-    val aabbWorldCenterX = (combinedLeft + combinedRight) / 2f
-    val aabbWorldCenterY = (combinedTop + combinedBottom) / 2f
-    // AABB center should be at (screenCenterX, safeZoneHeight/2)
-    val screenCenterX = centerOffsetX + co.x + aabbWorldCenterX * cs
-    val newCoX = screenCenterX - centerOffsetX - aabbWorldCenterX * targetScale
-    val newCoY = (safeZoneHeight / 2f) - centerOffsetY - aabbWorldCenterY * targetScale
-
-    return Pair(targetScale, Offset(newCoX, newCoY))
-}
 
 /**
  * World-space axis-aligned bounding box of an image AFTER its rotation

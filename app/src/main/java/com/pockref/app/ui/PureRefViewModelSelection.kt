@@ -119,14 +119,14 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
         val scale = mainVm._uiState.value.canvasScale
         val offset = mainVm._uiState.value.canvasOffset
         val viewport = mainVm._uiState.value.canvasViewportSize
+        // V_NOW (2026-06-08 锁定图可框选): 之前 locked 图
+        // [if (img.locked) return@filter false] 跳过,框选矩形
+        // 拖到它们上面不进 preview。user 期望"被框中的图就被
+        // 选中",不管锁不锁 — 锁只阻止**变换**(移动/缩放/
+        // 旋转/翻转),**不**阻止**选中**。保留 locked 图进
+        // preview(全锁/单锁),跟 [lassoSelect] 行为对齐
+        // (lassoSelect **没** 有 locked filter)。
         val previewIds = mainVm._uiState.value.images.filter { img ->
-            // V_NOW: locked images are immune to box-select. The
-            // drag-rect passes over them and they don't enter the
-            // preview set, so on commit they're not in the
-            // selection. They still render normally (so the user
-            // can see what was skipped) and remain tappable to
-            // unlock.
-            if (img.locked) return@filter false
             val screenX = viewport.width / 2f + offset.x + img.center.x * scale
             val screenY = viewport.height / 2f + offset.y + img.center.y * scale
             rect.contains(screenX, screenY)

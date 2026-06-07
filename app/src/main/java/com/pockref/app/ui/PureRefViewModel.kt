@@ -123,6 +123,17 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             // frame" race that a `mutableStateOf` local
             // + set-on-action pattern would have.
             autoSaveEnabled = appPrefs.autoSaveEnabled,
+            // V_NOW (2026-06-08 "global image lock" feature):
+            // mirror the persisted app-wide lock toggle into
+            // [uiState] at startup so the top-right lock
+            // button shows the correct state on the very
+            // first frame after launch — without this, the
+            // button would briefly show "unlocked" before
+            // the action handler ran and read the pref, which
+            // a fast-finger user could exploit (tap → no
+            // change) or be confused by. Same pref → state
+            // mirror pattern as [autoSaveEnabled] above.
+            globalImageLock = appPrefs.globalImageLock,
             // V_NOW (follow-up after auto-save-switch task):
             // mirror the persisted auto-save interval into
             // [uiState] at startup so the SettingsAutoSaveSection
@@ -475,7 +486,78 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 // instance is the same). See
                 // [PockRefUiState.selectionSheetShowTick]
                 // for the full rationale.
-                it.copy(selectionSheetShowTick = it.selectionSheetShowTick + 1)
+                //
+                // V_NOW (2026-06-08 "连续弹出两次"
+                // 修复 v2): debounce against
+                // [lastSheetShowMs]. The previous v1
+                // debounce in the [PureRefApp]
+                // pointerInput only covered the
+                // single-finger-tap path
+                // (CycleImageUnderPoint with
+                // [showSheet = false] → 200ms
+                // scheduled TickSelectionSheet). It
+                // MISSED the two-finger-down
+                // [SelectImage] + [TickSelectionSheet]
+                // pair, the long-press-on-selected
+                // path, and the
+                // [cycleImageUnderPoint] internal
+                // bump — all three of which dispatch
+                // [TickSelectionSheet] directly. When
+                // the user's tap brought a second
+                // pointer down (S Pen barrel, palm,
+                // ghost touch), the single-finger
+                // path AND the two-finger path both
+                // bumped [selectionSheetShowTick] in
+                // the same gesture window, the
+                // `key(selectionSheetShowTick)` block
+                // re-keyed twice, M3's
+                // `LaunchedEffect(sheetState)
+                // { sheetState.show() }` re-ran twice,
+                // and the user saw the sheet pop
+                // twice. The debounce window of 800ms
+                // covers the M3 slide-up animation
+                // (~200ms) + the user's "is it there?"
+                // reaction time (~600ms). Anything
+                // within 800ms is treated as the same
+                // "user wants the sheet on this image"
+                // intent.
+                val now = System.currentTimeMillis()
+                if (now - it.lastSheetShowMs < 800L) {
+                    // Within the debounce window —
+                    // the sheet was already shown
+                    // (or just shown) in the last
+                    // 800ms. Skip the bump so the
+                    // `key(selectionSheetShowTick)`
+                    // block doesn't re-key, M3's
+                    // `LaunchedEffect(sheetState)
+                    // { sheetState.show() }` doesn't
+                    // re-run, and the sheet doesn't
+                    // pop a second time. The
+                    // [selectionSheetDismissTick]
+                    // reset is also skipped so any
+                    // pending dismiss isn't cancelled
+                    // by a no-op show.
+                    return@update it
+                }
+                it.copy(
+                    selectionSheetShowTick = it.selectionSheetShowTick + 1,
+                    // V_NOW: reset dismiss-tick so the
+                    // [SelectionBottomSheet]'s
+                    // [LaunchedEffect(selectionSheetDismissTick)]
+                    // doesn't re-fire with a stale non-zero
+                    // value when the [key(showTick)] block
+                    // is re-created on the next tap.
+                    selectionSheetDismissTick = 0,
+                    // V_NOW: stamp AFTER the bump so
+                    // the 800ms window measures "time
+                    // since sheet was last shown",
+                    // not "time since job was
+                    // scheduled".
+                    lastSheetShowMs = now,
+                )
+            }
+            PockRefAction.DismissSelectionSheet -> _uiState.update {
+                it.copy(selectionSheetDismissTick = it.selectionSheetDismissTick + 1)
             }
             PockRefAction.DismissBottomRightPanel -> _uiState.update {
                 if (it.bottomRightPanelExpanded) {
@@ -484,7 +566,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                     it
                 }
             }
-            is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(action.point)
+            is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(action.point, action.showSheet)
             is PockRefAction.BringImageToFront -> transformController.bringImageToFront(action.imageId)
             PockRefAction.BeginSceneGesture -> beginSceneGesture()
             PockRefAction.EndSceneGesture -> endSceneGesture()
@@ -502,9 +584,25 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.SetCanvasOffsetFromMinimap -> _uiState.update {
                 it.copy(canvasOffset = action.offset, fittedImageId = null)
             }
-            is PockRefAction.SetCanvasScaleAndOffset -> _uiState.update {
-                val newScale = action.scale.coerceIn(0.1f, 10f)
-                it.copy(canvasScale = newScale, canvasOffset = action.offset, fittedImageId = null)
+            is PockRefAction.SetCanvasScaleAndOffset -> {
+                // V_NOW: when an image is focused
+                // ([fittedImageId] != null), ignore
+                // canvas adjustments from the
+                // auto-adjust / restore animations.
+                // Without this guard, the animation
+                // overwrites [FitImageToScreen]'s
+                // canvas state and clears
+                // [fittedImageId], causing the focus
+                // to be immediately cancelled.
+                val current = _uiState.value
+                if (current.fittedImageId != null) {
+                    // focused — don't touch the canvas
+                } else {
+                    _uiState.update {
+                        val newScale = action.scale.coerceIn(0.1f, 10f)
+                        it.copy(canvasScale = newScale, canvasOffset = action.offset, fittedImageId = null)
+                    }
+                }
             }
             is PockRefAction.ZoomCanvas -> transformController.zoomCanvas(action.scaleChange, action.focus)
             is PockRefAction.SetCanvasZoom -> transformController.setCanvasZoom(action.scale)
@@ -519,6 +617,19 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             PockRefAction.DeleteSelected -> transformController.deleteSelected()
             PockRefAction.DuplicateSelected -> transformController.duplicateSelected()
             PockRefAction.ToggleLockSelected -> transformController.toggleLockSelected()
+            // V_NOW (2026-06-08 "global image lock" feature):
+            // flip the [PockRefUiState.globalImageLock] flag
+            // in-place AND mirror to prefs so a process kill /
+            // fresh launch restores the user's last choice.
+            // This is a view-mode toggle (not a scene change),
+            // so it intentionally does NOT enter the undo
+            // stack and does NOT clear redo — same policy as
+            // [ToggleMultiSelectMode] / [ToggleBoxSelectMode].
+            PockRefAction.ToggleGlobalImageLock -> {
+                val newValue = !_uiState.value.globalImageLock
+                appPrefs.globalImageLock = newValue
+                _uiState.update { it.copy(globalImageLock = newValue) }
+            }
             PockRefAction.BeginRenameScene -> _uiState.update {
                 it.copy(renameDialogValue = SceneNaming.sanitizeForStorage(it.sceneName))
             }

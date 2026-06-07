@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -1299,6 +1300,36 @@ internal fun CollapsedMinimapIcon(
     // both call sites).
     onLongPress: () -> Unit = {},
     onLongPressEnd: () -> Unit = {},
+    // V_NOW (2026-06-07): drag-after-long-press on
+    // the collapsed capsule is treated the same as
+    // drag on the expanded minimap panel — both
+    // dispatch a multiplicative scale change via
+    // [PockRefAction.SetCanvasZoom] through the
+    // parent. The drag is detected inside the same
+    // [awaitEachGesture] loop that already handles
+    // the long-press timing, so the gesture
+    // contract for the collapsed capsule becomes:
+    //   - quick tap (released before
+    //     [longPressTimeoutMillis]) → [onExpand]
+    //     via the `.clickable { onExpand() }`
+    //     modifier (this [awaitEachGesture] does
+    //     nothing in this case — it returns
+    //     early).
+    //   - long-press (≥ longPressTimeoutMillis
+    //     hold) → [onLongPress] fires; subsequent
+    //     [PointerEvent]s with non-zero
+    //     [PointerInputChange.positionChange] fire
+    //     [onDrag] until the pointer is released
+    //     (which fires [onLongPressEnd]).
+    //   - double-tap is NOT handled here — it's
+    //     handled at the OUTER Box in
+    //     [PureRefApp.kt]'s MinimapChrome (where
+    //     the second pointerInput wraps the
+    //     [CollapsedMinimapIcon]). Keeping
+    //     double-tap out of this inner gesture
+    //     loop avoids interference with the
+    //     long-press timer.
+    onDrag: (androidx.compose.ui.geometry.Offset) -> Unit = {},
 ) {
     // V_NOW (iOS PiP-style minimap — visual redesign):
     // the bar now follows the iOS Picture-in-Picture
@@ -1405,11 +1436,43 @@ internal fun CollapsedMinimapIcon(
                         return@awaitEachGesture
                     }
                     onLongPress()
+                    // V_NOW (2026-06-07): after the
+                    // long-press threshold, drain pointer
+                    // events and forward [positionChange]s
+                    // to [onDrag] so the parent can map
+                    // drag-to-zoom. We only react to the
+                    // FIRST pointer's deltas (matching
+                    // [detectDragGesturesAfterLongPress]'s
+                    // semantics) and we consume the change
+                    // so downstream gesture detectors
+                    // don't re-interpret the same motion
+                    // (e.g. the outer Box's
+                    // [detectTapGestures] wouldn't try to
+                    // turn a 1.5-second hold+drag into a
+                    // double-tap).
                     while (true) {
                         val event = awaitPointerEvent()
-                        if (event.changes.all { !it.pressed }) {
+                        val change = event.changes.firstOrNull { it.pressed }
+                        if (change == null) {
+                            // No pressed pointer — all
+                            // fingers are up, gesture is
+                            // over.
                             onLongPressEnd()
                             return@awaitEachGesture
+                        }
+                        val delta = change.positionChange()
+                        if (delta != androidx.compose.ui.geometry.Offset.Zero) {
+                            onDrag(delta)
+                            // Consume so the gesture
+                            // is committed to drag mode
+                            // (the [clickable] won't
+                            // misinterpret a long-
+                            // press+release as a tap if
+                            // it had any future use case
+                            // for that — currently it
+                            // doesn't, but defence in
+                            // depth).
+                            change.consume()
                         }
                     }
                 }

@@ -607,6 +607,30 @@ data class PockRefUiState(
     val boxSelectMode: Boolean = false,
     val boxSelectRect: RectF? = null,
     val boxSelectPreviewIds: Set<String> = emptySet(),
+    // V_NOW (2026-06-08): global image lock. When `true`,
+    // every image on the canvas is treated as locked
+    // for the purposes of move / rotate / scale /
+    // select / delete / duplicate / etc. — the
+    // "effective lock" of an image is
+    // `image.locked || state.globalImageLock`, queried
+    // via the [isImageLocked] extension below.
+    //
+    // This is a VIEW-MODE flag (like multiSelectMode /
+    // boxSelectMode), not a scene change: toggling it
+    // does NOT enter the undo stack — the same way
+    // the single-image `lock` field isn't a scene
+    // change either (and the per-image `lock` is
+    // toggled via the SelectionBottomSheet's "锁定"
+    // button without going through undo either, in
+    // the existing design).
+    //
+    // Persisted via [com.pockref.app.data.AppPreferences.globalImageLock]
+    // so a user who locks the canvas can restart the
+    // app and find it still locked. Default `false`
+    // — a fresh install must NOT come up with all
+    // images locked, that would be hostile to anyone
+    // who imported a few pictures.
+    val globalImageLock: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     val recentScenes: List<RecentSceneEntry> = emptyList(),
@@ -717,9 +741,10 @@ data class PockRefUiState(
      * traditional thumbnail overview; SLIDER = a persistent zoom
      * slider. Persisted via
      * [com.pockref.app.data.AppPreferences.minimapDisplayMode].
-     * Default MINIMAP preserves existing behavior.
+     * Default SLIDER shows the zoom slider on first
+     * launch.
      */
-    val minimapDisplayMode: MinimapDisplayMode = MinimapDisplayMode.MINIMAP,
+    val minimapDisplayMode: MinimapDisplayMode = MinimapDisplayMode.SLIDER,
     /**
      * V_NOW: orientation of the minimap slider when
      * [minimapDisplayMode] is [MinimapDisplayMode.SLIDER].
@@ -727,7 +752,7 @@ data class PockRefUiState(
      * aspect ratio. Persisted via
      * [com.pockref.app.data.AppPreferences.minimapSliderOrientation].
      */
-    val minimapSliderOrientation: MinimapSliderOrientation = MinimapSliderOrientation.ADAPTIVE,
+    val minimapSliderOrientation: MinimapSliderOrientation = MinimapSliderOrientation.VERTICAL,
     /**
      * Active settings tab (V_NOW: tabbed settings sheet).
      * Persists across sheet open/close so the user comes
@@ -1033,6 +1058,50 @@ data class PockRefUiState(
      * / sec — well outside the app's lifetime).
      */
     val selectionSheetShowTick: Int = 0,
+    // V_NOW (2026-06-08 "连续弹出两次" 修复 v2):
+    // wall-clock stamp of the LAST [TickSelectionSheet]
+    // bump, used by the [PockRefViewModel] reducer to
+    // debounce against. The previous v1 fix lived in
+    // the [PureRefApp] pointerInput block and only
+    // protected the single-finger-tap path
+    // ([PockRefAction.CycleImageUnderPoint] with
+    // [showSheet = false] → 200ms-delayed
+    // [PockRefAction.TickSelectionSheet]). It MISSED
+    // the two-finger-down path at L6287 of
+    // [PureRefApp] (which dispatches
+    // [PockRefAction.TickSelectionSheet] DIRECTLY,
+    // not through the scheduled job) — so when an
+    // S Pen's barrel / a tablet's palm / a ghost
+    // touch brought a second pointer down inside the
+    // same gesture window, both paths bumped
+    // [selectionSheetShowTick] independently, the
+    // `key(selectionSheetShowTick)` block re-keyed
+    // twice, and M3's
+    // [LaunchedEffect(sheetState) { sheetState.show() }]
+    // re-ran twice → user saw the sheet pop twice.
+    //
+    // Moving the debounce to the reducer means the
+    // SAME 800ms window protects ALL four
+    // dispatch sites:
+    //   1. Single-finger tap (L6717) — scheduled job
+    //   2. Two-finger down on unselected image (L6306) — direct
+    //   3. Long-press on selected image in multi-select (L6541) — direct
+    //   4. cycleImageUnderPoint internal bump (L735) — direct
+    // The double-tap fit-image path is unaffected
+    // (it doesn't dispatch [TickSelectionSheet]).
+    //
+    // Default `0L` so the first user-tap on an empty
+    // canvas never short-circuits the debounce.
+    val lastSheetShowMs: Long = 0L,
+    // V_NOW: monotonically increasing counter bumped
+    // when the SelectionBottomSheet should be
+    // dismissed programmatically (e.g. on double-tap
+    // focus/unfocus — the user's intent is to zoom,
+    // not to interact with the sheet). The
+    // [SelectionBottomSheet] composable keys a
+    // [LaunchedEffect] on this tick and calls
+    // [sheetState.hide()] when it changes.
+    val selectionSheetDismissTick: Int = 0,
 )
 
 /**
@@ -1093,3 +1162,37 @@ fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
     defaultSpacing = sceneDefaultSpacing,
     defaultAlignment = sceneDefaultAlignment,
 )
+
+/**
+ * V_NOW (2026-06-08 "global image lock" feature):
+ * Resolve the "effective" lock state of a single image,
+ * considering both the per-image [SceneImage.locked]
+ * flag AND the app-wide [PockRefUiState.globalImageLock]
+ * view-mode flag. Returns `true` if EITHER is on,
+ * matching the user-facing semantic "the canvas
+ * should refuse to move / rotate / scale / select /
+ * delete / etc. this image".
+ *
+ * Pass `imageId = null` to ask "is the global lock
+ * on, ignoring any specific image" — used by the
+ * SelectionBottomSheet's [isLockedPanel] detector
+ * so the "locked" 5-button panel shows up when the
+ * user taps an image while the global lock is on,
+ * not just when the individual image is locked.
+ *
+ * This is the SINGLE entry point for "is this image
+ * locked?" throughout the viewmodel. The previous
+ * design had 9 call sites reading `image.locked`
+ * directly — replacing those with [isImageLocked]
+ * is the only way the global-lock toggle actually
+ * flips behavior across the whole app, and the
+ * single entry point means future lock-like
+ * constraints (e.g. "image in an active crop
+ * gesture is locked") only need to be OR'd in
+ * here, not hunted down across the codebase.
+ */
+fun PockRefUiState.isImageLocked(imageId: String?): Boolean {
+    if (globalImageLock) return true
+    if (imageId == null) return false
+    return images.firstOrNull { it.id == imageId }?.locked == true
+}

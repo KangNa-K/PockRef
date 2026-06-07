@@ -260,6 +260,28 @@ class AppPreferences(context: Context) {
         }
 
     /**
+     * V_NOW (2026-06-08 "global image lock" feature):
+     * Whether the app-wide image lock is on. When `true`,
+     * every image on the canvas is treated as locked —
+     * users can't select, move, rotate, scale, or
+     * delete any image. The view-only flag is toggled
+     * by the top-right lock button in [PockRefApp] and
+     * persisted across launches so a user who locks the
+     * canvas can close and reopen the app and find it
+     * still locked.
+     *
+     * Default `false` — a fresh install must NOT come
+     * up with all images locked, that would be hostile
+     * to anyone who imported a few pictures on first
+     * launch.
+     */
+    var globalImageLock: Boolean
+        get() = prefs.getBoolean(KEY_GLOBAL_IMAGE_LOCK, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GLOBAL_IMAGE_LOCK, value).apply()
+        }
+
+    /**
      * V_NOW: how the minimap area is displayed. MINIMAP = the
      * traditional thumbnail overview; SLIDER = a persistent zoom
      * slider. Stored as the enum name string.
@@ -283,9 +305,9 @@ class AppPreferences(context: Context) {
     var minimapSliderOrientation: com.pockref.app.model.MinimapSliderOrientation
         get() {
             val stored = prefs.getString(KEY_MINIMAP_SLIDER_ORIENTATION, null)
-                ?: return com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE
+                ?: return com.pockref.app.model.MinimapSliderOrientation.VERTICAL
             return runCatching { com.pockref.app.model.MinimapSliderOrientation.valueOf(stored) }
-                .getOrDefault(com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE)
+                .getOrDefault(com.pockref.app.model.MinimapSliderOrientation.VERTICAL)
         }
         set(value) {
             prefs.edit().putString(KEY_MINIMAP_SLIDER_ORIENTATION, value.name).apply()
@@ -332,6 +354,8 @@ class AppPreferences(context: Context) {
         private const val KEY_MINIMAP_ZOOM_SCALE = "minimap_zoom_scale"
         private const val KEY_MINIMAP_DISPLAY_MODE = "minimap_display_mode"
         private const val KEY_MINIMAP_SLIDER_ORIENTATION = "minimap_slider_orientation"
+        // V_NOW (2026-06-08): see [globalImageLock] field above.
+        private const val KEY_GLOBAL_IMAGE_LOCK = "global_image_lock"
     }
 }
 

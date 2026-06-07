@@ -32,6 +32,21 @@ sealed interface PockRefAction {
     data object DeleteSelected : PockRefAction
     data object DuplicateSelected : PockRefAction
     data object ToggleLockSelected : PockRefAction
+    // V_NOW (2026-06-08 "global image lock" feature):
+    // Flip the app-wide [PockRefUiState.globalImageLock]
+    // flag, persisted via AppPreferences so a fresh
+    // launch restores the user's last choice. The
+    // flag is a VIEW-MODE switch (like
+    // [ToggleMultiSelectMode] / [ToggleBoxSelectMode]),
+    // not a scene change — toggling it does NOT enter
+    // the undo stack, and the existing canvas state is
+    // untouched. Selection-chrome is updated in-place
+    // to reflect the new lock state (e.g. an image
+    // that's currently selected and shown in the
+    // single-select action panel will, on the next
+    // image-tap event, be filtered out by
+    // [PockRefUiState.isImageLocked]).
+    data object ToggleGlobalImageLock : PockRefAction
     data object BeginRenameScene : PockRefAction
     data class ConfirmRenameScene(val newName: String) : PockRefAction
     data object CancelRenameScene : PockRefAction
@@ -98,8 +113,16 @@ sealed interface PockRefAction {
      * rememberSaveable rationale.
      */
     data object TickSelectionSheet : PockRefAction
+    // V_NOW: programmatically dismiss the SelectionBottomSheet.
+    // Used when a double-tap focus/unfocus gesture fires — the
+    // user's intent is to zoom the image, not to interact with
+    // the sheet. The first tap of the double-tap may have already
+    // triggered [TickSelectionSheet] via [CycleImageUnderPoint],
+    // so this action bumps [PockRefUiState.selectionSheetDismissTick]
+    // to force the sheet to hide.
+    data object DismissSelectionSheet : PockRefAction
     data class MoveImage(val imageId: String, val delta: Offset) : PockRefAction
-    data class CycleImageUnderPoint(val point: Offset) : PockRefAction
+    data class CycleImageUnderPoint(val point: Offset, val showSheet: Boolean = true) : PockRefAction
     data class BringImageToFront(val imageId: String) : PockRefAction
     data class PanCanvas(val delta: Offset) : PockRefAction
     data class ZoomCanvas(val scaleChange: Float, val focus: Offset) : PockRefAction

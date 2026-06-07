@@ -5,10 +5,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.model.AngleSnapGuide
 import com.pockref.app.model.ColorAdjust
+import com.pockref.app.model.SelectionFlash
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import com.pockref.app.model.SpeedSample
+import com.pockref.app.model.isImageLocked
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
@@ -561,19 +563,57 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
      */
     internal fun deselect() {
         val before = mainVm._uiState.value
-        // Only record undo if there was an actual selection to lose.
+        // Only do work if there was an actual selection to lose.
         if (before.selectedImageIds.isEmpty() && before.selectedImageId == null) return
-        val diff = SceneDiff.ChangeSelection(
-            oldSelectedImageId = before.selectedImageId,
-            oldSelectedImageIds = before.selectedImageIds,
-            oldMultiSelectMode = before.multiSelectMode,
-            newSelectedImageId = null,
-            newSelectedImageIds = emptySet(),
-            newMultiSelectMode = false,
-        )
-        mainVm.undoStack.addLast(HistoryEntry.Diff(diff))
-        if (mainVm.undoStack.size > 50) mainVm.undoStack.removeFirst()
-        mainVm.redoStack.clear()
+        // V_NOW (2026-06-08 "双指撤销后无法继续撤销" 修复):
+        // selection is a TRANSIENT user gesture, not a
+        // durable scene change. The previous design
+        // pushed a `ChangeSelection` diff onto the
+        // undo stack so the user could "undo" the
+        // deselect (re-selecting the image). The
+        // asymmetry with [selectImage] — which does
+        // NOT push to undo because frequent taps
+        // would flood the 50-entry cap — caused the
+        // bug: "deselect → undo" is the ONLY way to
+        // reverse a selection change, but that undo
+        // CONSUMES one undo slot. After the user
+        // undoes the deselect, the undo stack is now
+        // one entry shorter, and a confused user
+        // (who read the deselect+undo pair as a
+        // net-zero "I just undid my select" gesture)
+        // reports that they "can't keep undoing".
+        //
+        // Fix: don't record deselect on the undo
+        // stack either. Selection is a transient
+        // gesture; the user can re-select the same
+        // (or a different) image by tapping it. The
+        // undo button is reserved for DURABLE scene
+        // changes — import, drag, rotate, crop,
+        // delete, color-adjust, etc. — that the
+        // user genuinely wants to revert. This
+        // mirrors the existing `selectImage`
+        // policy and removes the asymmetry that
+        // caused the bug.
+        //
+        // Side effect: the user can no longer
+        // "three-finger-tap redo a deselect" to
+        // resurrect a lost selection. This is
+        // acceptable because:
+        //   - the 50-entry undo cap means a long
+        //     session could lose the diff anyway
+        //   - the 2-finger-tap gesture (the natural
+        //     inverse of "tap to select") is the
+        //     much more common way to "undo a
+        //     selection" — it's a free gesture, no
+        //     stack entry needed
+        //   - "intentionally re-selecting" was a
+        //     discoverability trap anyway; the user
+        //     just taps the image
+        // We also drop the [redoStack.clear()] for
+        // the same reason: selection is transient,
+        // a pending redo target that would resurface
+        // a previous selection would be confusing
+        // (the user moved on).
         mainVm._uiState.update { state ->
             state.copy(
                 selectedImageId = null,
@@ -585,6 +625,42 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     }
 
     internal fun selectImage(imageId: String?) {
+        // V_NOW (2026-06-08 "global image lock" feature):
+        // when the app-wide global lock is on, refuse
+        // to select ANY image — the user's intent in
+        // tapping an image under a global lock is
+        // ambiguous (it might be a misclick, or the
+        // user forgot the lock was on), and the prior
+        // behavior ("tapping still selects, just
+        // shows the locked panel") was reported by
+        // the user as "无法被选中" — they expected the
+        // tap to do nothing while the lock is on. This
+        // matches the existing per-image locked
+        // picture: a locked image also refuses to
+        // enter the drag state on down (see the
+        // [activeDragImageId] guard), so refusing to
+        // select under a global lock is the natural
+        // generalization.
+        //
+        // The user gets visual feedback via a 200ms
+        // [SelectionFlash] on the tapped image (already
+        // used by the two-finger-down SelectImage
+        // path at L6343), so they understand the
+        // canvas is reacting to the tap — the canvas
+        // just isn't selecting.
+        //
+        // We also pass `imageId = null` through
+        // unchanged — deselecting from the
+        // right-bottom-panel collapse action is a
+        // legitimate UX path that must keep working
+        // (the empty-tap-on-canvas [PockRefAction.Deselect]
+        // path still fires even under a global lock, so
+        // the user can clear a stale selection that
+        // pre-dated the lock toggle).
+        if (imageId != null && mainVm._uiState.value.globalImageLock) {
+            mainVm._uiState.update { it.copy(selectionFlash = SelectionFlash(imageId = imageId, atMs = System.currentTimeMillis())) }
+            return
+        }
         mainVm._uiState.update { state ->
             if (imageId == null) {
                 return@update state.copy(
@@ -644,9 +720,14 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // invariant as the drag / scale / rotate / flip paths).
         // Filter locked out before applying the delta so a mixed
         // selection translates only the unlocked members.
+        // V_NOW (2026-06-08 "global image lock" feature):
+        // use [PockRefUiState.isImageLocked] so the global
+        // lock toggle ALSO gates this path — when
+        // [globalImageLock] is on, no image moves even
+        // if the per-image [SceneImage.locked] is off.
         val stateBefore = mainVm._uiState.value
         val targets = selectedIdsFor(imageId).filterTo(linkedSetOf()) { id ->
-            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+            !stateBefore.isImageLocked(id)
         }
         if (targets.isEmpty()) return
         mainVm.updateSceneForGesture {
@@ -673,7 +754,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         }
     }
 
-    internal fun cycleImageUnderPoint(point: Offset) {
+    internal fun cycleImageUnderPoint(point: Offset, showSheet: Boolean = true) {
         val state = mainVm._uiState.value
         val viewportW = state.canvasViewportSize.width
         val viewportH = state.canvasViewportSize.height
@@ -720,10 +801,28 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // appears on long-press of an already-selected
         // image (handled in the pointer input gesture
         // handler). Bump the show-tick only when NOT in
-        // multi-select / box-select mode.
-        if (!state.multiSelectMode && !state.boxSelectMode) {
+        // multi-select / box-select mode AND [showSheet]
+        // is true. The gesture handler passes
+        // [showSheet = false] on the first tap of a
+        // potential double-tap, then schedules a delayed
+        // [TickSelectionSheet] — if the second tap comes
+        // within the double-tap window, the scheduled
+        // show is cancelled and the focus/unfocus action
+        // fires instead, preventing the sheet from
+        // flashing open then closed.
+        if (showSheet && !state.multiSelectMode && !state.boxSelectMode) {
             mainVm._uiState.update {
-                it.copy(selectionSheetShowTick = it.selectionSheetShowTick + 1)
+                it.copy(
+                    selectionSheetShowTick = it.selectionSheetShowTick + 1,
+                    // V_NOW: reset dismiss-tick so the
+                    // [SelectionBottomSheet]'s
+                    // [LaunchedEffect(selectionSheetDismissTick)]
+                    // doesn't re-fire with a stale
+                    // non-zero value when the
+                    // [key(showTick)] block is
+                    // re-created on the next tap.
+                    selectionSheetDismissTick = 0,
+                )
             }
         }
     }
@@ -733,9 +832,13 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // supposed to skip BeginImageDrag for locked images, but the
         // VM is the authoritative state machine — defence in depth.
         // If a locked image's id is somehow passed in, refuse here.
+        // V_NOW (2026-06-08 "global image lock" feature):
+        // use [PockRefUiState.isImageLocked] so the global
+        // lock toggle also gates drag-start. When
+        // [globalImageLock] is on, no image begins a drag
+        // regardless of its per-image lock state.
         val stateBefore = mainVm._uiState.value
-        val hitImage = stateBefore.images.firstOrNull { it.id == imageId }
-        if (hitImage?.locked == true) return
+        if (stateBefore.isImageLocked(imageId)) return
         mainVm.beginSceneGesture()
         // V_NOW (user bug report): 在单选 / 多选 / 框选模式下,锁定的
         // 图片即使被选中了也不能被移动。`selectedIdsFor` 返回的集合
@@ -753,8 +856,13 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // 不动;commit 时 `dragIds` 也只包含非锁定的 → 实际位
         // 置不变。锁定图片的 zIndex / 边框 / 选中高亮照常显示,
         // 用户依然可以选中(用于解锁或检查),只是不能动。
+        // V_NOW (2026-06-08 "global image lock" feature):
+        // use [PockRefUiState.isImageLocked] so the global
+        // lock toggle ALSO gates which images can be
+        // entered into the drag state. When
+        // [globalImageLock] is on, no image is draggable.
         val targets = selectedIdsFor(imageId).filterTo(linkedSetOf()) { id ->
-            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+            !stateBefore.isImageLocked(id)
         }
         // Drag and rotation are mutually exclusive: cancel any pending
         // rotation-snap debounce so it doesn't fire mid-drag and
@@ -934,9 +1042,17 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // 撤销栈应用 [applyDiffForward]、跨设备协同等)可能
         // 让一张图在拖动过程中突然变成 locked。如果不再次过滤,
         // commit 时 delta 就会落到一张不该动的图上。
+        // V_NOW (2026-06-08 "global image lock" feature):
+        // use [PockRefUiState.isImageLocked] so the global
+        // lock toggle (which may have flipped mid-drag)
+        // also blocks the commit. The two checks are
+        // intentionally redundant — the begin-time
+        // filter already does the per-image lock check,
+        // the commit-time filter is the
+        // defence-in-depth fallback.
         val stateNow = mainVm._uiState.value
         val movableIds = dragIds.filter { id ->
-            stateNow.images.firstOrNull { it.id == id }?.locked != true
+            !stateNow.isImageLocked(id)
         }
         if (movableIds.isEmpty()) {
             // 全部被锁住 / 已经空了 — 当成取消处理,清 transient。
@@ -1066,8 +1182,15 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // their pose while the rest transform normally — the locked
         // ones are not part of the pivot, the scale factor, or
         // the per-image transform loop below.
+        // V_NOW (2026-06-08 "global image lock" feature):
+        // use [PockRefUiState.isImageLocked] so the global
+        // lock toggle ALSO blocks the transform. When
+        // [globalImageLock] is on, no selected image can
+        // be scaled / rotated / panned regardless of its
+        // per-image lock state — the call becomes a
+        // no-op for the scene state machine.
         val selectedIds = allSelectedIds.filter { id ->
-            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+            !stateBefore.isImageLocked(id)
         }
         if (selectedIds.isEmpty()) return
         val rotationSnapActive = stateBefore.rotationSnapEnabled
@@ -1492,6 +1615,14 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     internal fun toggleLockSelected() {
         val selectedIds = currentSelectedIds()
         if (selectedIds.isEmpty()) return
+        // V_NOW (2026-06-08 "global image lock" feature):
+        // refuse to toggle per-image lock when the
+        // global lock is on. The semantic is "global
+        // wins" — the user must first turn the global
+        // lock off before they can change any individual
+        // image's lock state. This keeps the
+        // "everything's locked" promise consistent.
+        if (mainVm._uiState.value.globalImageLock) return
         mainVm.mutateScene {
             copy(images = images.map { image ->
                 if (image.id !in selectedIds) image
