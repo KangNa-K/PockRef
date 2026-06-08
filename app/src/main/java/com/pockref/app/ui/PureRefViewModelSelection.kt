@@ -2,6 +2,7 @@ package com.pockref.app.ui
 
 import android.graphics.RectF
 import com.pockref.app.model.SelectionMode
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import com.pockref.app.model.BoxSelectionKind
 import kotlinx.coroutines.flow.update
@@ -140,90 +141,77 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
     }
 
     internal fun updateBoxSelectRect(rect: RectF, current: Offset) {
- val scale = mainVm._uiState.value.canvasScale
- val offset = mainVm._uiState.value.canvasOffset
- val viewport = mainVm._uiState.value.canvasViewportSize
- val start = mainVm._uiState.value.boxSelectStart
-
- // V_NOW (CAD-style box select): direction lock. Only flip
- // WINDOW -> CROSSING, never back — once the drag has gone
- // "right to left" the kind sticks for the rest of the
- // gesture even if the pointer wobbles right again. Matches
- // AutoCAD / Visio / Figma. The first UpdateBoxSelectRect
- // call (when current.x crosses start.x from above) is the
- // trigger; subsequent calls read the locked kind from state.
- val currentKind = mainVm._uiState.value.boxSelectKind
- val newKind = if (
- currentKind == BoxSelectionKind.WINDOW &&
- start != null &&
- current.x < start.x
- ) {
- BoxSelectionKind.CROSSING
- } else {
- currentKind
- }
-
- // V_NOW (CAD-style box select): strict AABB-based hit test
- // instead of the old "rect.contains(centerPoint)" approach.
- // The old behaviour was technically a third mode ("center
- // in rect") that's neither WINDOW nor CROSSING — a small
- // object whose center sits inside the rect was always
- // selected even if the rect only clipped a corner. Using
- // imageRotatedAabb (the rotated, world-space AABB already
- // used by the minimap) gives accurate strict-containment
- // for WINDOW and accurate intersection for CROSSING. The
- // transform world -> screen mirrors what the renderer
- // applies to the image itself (canvasScale + canvasOffset
- // + viewport/2 origin), so a rect drawn by the user's
- // finger and an AABB drawn by the image overlap correctly.
- val selectionRect = Rect(rect.left, rect.top, rect.right, rect.bottom)
- val previewIds = mainVm._uiState.value.images.filter { img ->
- val worldAabb = imageRotatedAabb(img)
- val screenLeft = viewport.width /2f + offset.x + worldAabb.left * scale
- val screenTop = viewport.height /2f + offset.y + worldAabb.top * scale
- val screenRight = viewport.width /2f + offset.x + worldAabb.right * scale
- val screenBottom = viewport.height /2f + offset.y + worldAabb.bottom * scale
- val imageRect = Rect(screenLeft, screenTop, screenRight, screenBottom)
- when (newKind) {
- BoxSelectionKind.WINDOW ->
- selectionRect.contains(
- imageRect.left,
- imageRect.top,
- imageRect.right,
- imageRect.bottom,
- )
- BoxSelectionKind.CROSSING ->
- selectionRect.intersects(imageRect)
- }
- }.map { it.id }.toSet()
-
- mainVm._uiState.update { state ->
- state.copy(
- boxSelectRect = rect,
- boxSelectPreviewIds = previewIds,
- boxSelectKind = newKind,
- )
- }
-}
         val scale = mainVm._uiState.value.canvasScale
         val offset = mainVm._uiState.value.canvasOffset
         val viewport = mainVm._uiState.value.canvasViewportSize
-        // V_NOW (2026-06-08 锁定图可框选): 之前 locked 图
-        // [if (img.locked) return@filter false] 跳过,框选矩形
-        // 拖到它们上面不进 preview。user 期望"被框中的图就被
-        // 选中",不管锁不锁 — 锁只阻止**变换**(移动/缩放/
-        // 旋转/翻转),**不**阻止**选中**。保留 locked 图进
-        // preview(全锁/单锁),跟 [lassoSelect] 行为对齐
-        // (lassoSelect **没** 有 locked filter)。
+        val start = mainVm._uiState.value.boxSelectStart
+
+        // V_NOW (CAD-style box select): direction lock.
+        // Only flip WINDOW -> CROSSING, never back. Once the drag
+        // has gone "right to left" the kind sticks for the rest
+        // of the gesture even if the pointer wobbles right
+        // again. Matches AutoCAD / Visio / Figma. The first
+        // UpdateBoxSelectRect call (when current.x crosses
+        // start.x from above) is the trigger; subsequent calls
+        // read the locked kind from state.
+        val currentKind = mainVm._uiState.value.boxSelectKind
+        val newKind = if (
+            currentKind == BoxSelectionKind.WINDOW &&
+            start != null &&
+            current.x < start.x
+        ) {
+            BoxSelectionKind.CROSSING
+        } else {
+            currentKind
+        }
+
+        // V_NOW (CAD-style box select): strict AABB-based hit test
+        // instead of the old `rect.contains(centerPoint)` approach.
+        // The old behaviour was technically a third mode ("center
+        // in rect") that`s neither WINDOW nor CROSSING - a small
+        // object whose center sits inside the rect was always
+        // selected even if the rect only clipped a corner. Using
+        // imageRotatedAabb (the rotated, world-space AABB already
+        // used by the minimap) gives accurate strict-containment
+        // for WINDOW and accurate intersection for CROSSING. The
+        // transform world -> screen mirrors what the renderer
+        // applies to the image itself (canvasScale + canvasOffset
+        // + viewport/2 origin), so a rect drawn by the user`s
+        // finger and an AABB drawn by the image overlap
+        // correctly.
+        val selectionRect = Rect(rect.left, rect.top, rect.right, rect.bottom)
         val previewIds = mainVm._uiState.value.images.filter { img ->
-            val screenX = viewport.width / 2f + offset.x + img.center.x * scale
-            val screenY = viewport.height / 2f + offset.y + img.center.y * scale
-            rect.contains(screenX, screenY)
+            val worldAabb = imageRotatedAabb(img)
+            val screenLeft = viewport.width /2f + offset.x + worldAabb.left * scale
+            val screenTop = viewport.height /2f + offset.y + worldAabb.top * scale
+            val screenRight = viewport.width /2f + offset.x + worldAabb.right * scale
+            val screenBottom = viewport.height /2f + offset.y + worldAabb.bottom * scale
+            val imageRect = Rect(screenLeft, screenTop, screenRight, screenBottom)
+            when (newKind) {
+                BoxSelectionKind.WINDOW ->
+                    imageRect.left >= selectionRect.left &&
+                    imageRect.right <= selectionRect.right &&
+                    imageRect.top >= selectionRect.top &&
+                    imageRect.bottom <= selectionRect.bottom
+                BoxSelectionKind.CROSSING ->
+                    // Compose Rect has no intersects() - emulate via4 corner
+                    // overlap (open intervals): two AABBs intersect iff
+                    // each edge of one overlaps the corresponding edge of
+                    // the other (strict inequality so touching-at-the-edge
+                    // counts as non-intersection, matching the user's
+                    // "any contact at all" mental model for CROSSING).
+                    imageRect.left <= selectionRect.right &&
+                    imageRect.right >= selectionRect.left &&
+                    imageRect.top <= selectionRect.bottom &&
+                    imageRect.bottom >= selectionRect.top
+            }
         }.map { it.id }.toSet()
+
         mainVm._uiState.update { state ->
             state.copy(
                 boxSelectRect = rect,
                 boxSelectPreviewIds = previewIds,
+                boxSelectKind = newKind,
             )
         }
     }

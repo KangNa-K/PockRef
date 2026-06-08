@@ -90,6 +90,8 @@ import androidx.compose.material.icons.rounded.FlipToBack
 import androidx.compose.material.icons.rounded.FlipToFront
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LinearScale
 import androidx.compose.material.icons.rounded.Lock
@@ -166,6 +168,7 @@ import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -946,7 +949,17 @@ fun PockRefApp(
             // accidentally survive across a practice
             // session).
             if (state.images.isNotEmpty() && state.cropImageId == null &&
-                state.practiceState == null
+                state.practiceState == null &&
+                // V_NOW (2026-06-08, sheet auto-hide):
+                // when the selection sheet is up, the
+                // bottom-right FAB and its 4 expandable list
+                // items compete with the sheet for the
+                // bottom row. Auto-hide the entire panel
+                // while the sheet is visible. The sheet
+                // itself has its own "一键排版" entry in
+                // row2 (multi/box) so the action stays
+                // reachable while a selection is active.
+                state.selectedImageIds.isEmpty()
             ) {
                 BottomRightActionPanel(
                     state = state,
@@ -1239,6 +1252,22 @@ fun PockRefApp(
                         end = Dimens.CornerInset,
                     )
                     .size(Dimens.BottomPanelChromeSize)
+                    // V_NOW (2026-06-08): 1dp outlineVariant@40%
+                    // border matching the bottom-sheet chrome so
+                    // the global-lock button reads as the same
+                    // "outlined chrome" family. The border is
+                    // applied first (just after .size()) so the
+                    // three subsequent .background() modifiers
+                    // (frosted surface + active-tint + state-layer)
+                    // all paint INSIDE the rounded border, not
+                    // spilling past it. The shape on .border() is
+                    // required to keep the border itself rounded.
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant
+                            .copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+                    )
                     .background(
                         color = MaterialTheme.colorScheme.surface
                             .copy(alpha = Dimens.ChromeSurfaceAlpha),
@@ -1436,6 +1465,13 @@ fun PockRefApp(
     canvasBitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
 ) {
 
+    // V_NOW (S-04 chip alignment): recompute statusBarTopDp here
+    // so [SelectionModeOverlay] (a BoxScope extension called from
+    // inside this Box) can use it without having to thread it through
+    // the CanvasPanel parameter list. The cost is one extra
+    // WindowInsets read per recomposition, which is negligible.
+    val statusBarTopPx = WindowInsets.statusBars.getTop(LocalDensity.current)
+    val statusBarTopDp = with(LocalDensity.current) { statusBarTopPx.toDp() }
     Box(
         modifier
             .fillMaxSize()
@@ -1643,8 +1679,13 @@ fun PockRefApp(
                 // practice session (the user is staring
                 // at an image, not selecting).
                 if (state.practiceState == null) {
-                SelectionModeOverlay(state = state)
-                }
+  SelectionModeOverlay(
+  state = state,
+  modifier = Modifier.padding(
+  top = statusBarTopDp + Dimens.CornerInset +8.dp,
+  ),
+  )
+ }
             }
             // Bottom-left minimap. The composable itself
             // returns early when state.canvasScale ≤ 1, so we
@@ -1731,7 +1772,9 @@ fun PockRefApp(
                 // need the size at composition time (before the
                 // pointerInput's coroutine starts) so the default
                 // position can be computed without an async wait.
-                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                BoxWithConstraints(modifier = Modifier
+                    .fillMaxSize(),
+                ) {
                     MinimapChrome(
                         state = state,
                         onAction = onAction,
@@ -2412,13 +2455,17 @@ private fun SheetActionButton(
 }
 
 @Composable
-private fun SheetModeToggle(
+ private fun SheetModeToggle(
     singleSelected: Boolean,
     boxSelectMode: Boolean,
     onSingle: () -> Unit,
     onMulti: () -> Unit,
     onBox: () -> Unit,
 ) {
+    // V_NOW (2026-06-08, M3 motion): the previous toggle
+    // had 3 chips with a static background-color flip on
+    // selection — no indicator, no transition. The user
+    // spec ("M3 流畅的过渡动效") wants a moving indicator
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
@@ -2468,54 +2515,106 @@ private fun SheetModeChip(
 
 
 @Composable
-private fun BoxScope.SelectionModeOverlay(state: PockRefUiState) {
-    // R-04: only render in multi-select / box-select
-    // modes. The SINGLE mode is the obvious default and
-    // doesn't need a confirmation badge (would be visual
-    // noise on every scene).
-    val isMulti = state.multiSelectMode && !state.boxSelectMode
-    val isBox = state.boxSelectMode
-    if (!isMulti && !isBox) return
-    val tint = MaterialTheme.colorScheme.primary
-    // 4-edge border: drawn via a fillMaxSize Box with a
-    // border modifier. Border is a draw-only modifier
-    // (no pointer-input impact), so all canvas gestures
-    // (pan / pinch / rotate / tap / lasso / box-select)
-    // pass through to [PockRefCanvas] underneath. The
-    // 3dp width + 35% alpha reads as "noticeable
-    // status" without competing with the images.
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .border(
-                width = 3.dp,
-                color = tint.copy(alpha = 0.35f),
-            ),
-    )
-    // Top-centre status chip. Floats above the canvas
-    // and the border; sits below the top toolbar's
-    // z-order (the toolbar is in [PureRefApp]'s outer
-    // Scaffold, not in this Box, so it renders above
-    // by virtue of being earlier in the tree).
-    Box(
-        modifier = Modifier
-            .align(Alignment.TopCenter)
-            .padding(top = 12.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(tint.copy(alpha = 0.92f))
-            .padding(horizontal = 14.dp, vertical = 6.dp),
-    ) {
-        val label = if (isBox) {
-            "框选模式 · 拖动画出选区"
-        } else {
-            "多选模式 · 点击图片累加选中"
-        }
-        Text(
-            text = label,
-            color = MaterialTheme.colorScheme.onPrimary,
-            style = MaterialTheme.typography.labelMedium,
-        )
+private fun BoxScope.SelectionModeOverlay(
+ state: PockRefUiState,
+ modifier: Modifier = Modifier,
+) {
+ // V_NOW (S-04): render a chip in ALL three selection modes
+ // (SINGLE / MULTI / BOX). SINGLE uses a muted surfaceVariant
+ // background so it reads as "default state confirmation"
+ // rather than the loud primary tint MULTI/BOX get. The
+ //4-edge canvas border is MULTI/BOX-only (SINGLE is the
+ // default, no border cue needed).
+ val isMulti = state.multiSelectMode && !state.boxSelectMode
+ val isBox = state.boxSelectMode
+ val isSingle = !isMulti && !isBox
+ val isBoxWindow = isBox &&
+ state.boxSelectKind == com.pockref.app.model.BoxSelectionKind.WINDOW
+ val isBoxCrossing = isBox &&
+ state.boxSelectKind == com.pockref.app.model.BoxSelectionKind.CROSSING
+  val isDragging = state.boxSelectRect != null
+  // Chip visual: pick background / foreground / icon / label
+  // based on current mode + kind + drag state. Direction arrow
+ // is the visual cue for WINDOW vs CROSSING (AutoCAD /
+ // Visio / Figma convention).
+ //
+ // Color scheme:3 modes use3 DISTINCT M3 roles so the chip
+ // reads as a different colour per mode:
+  // - All 4 modes (SINGLE / MULTI / BOX WINDOW / BOX CROSSING)
+  // use the same pale-blue secondaryContainer chip with
+  // onSecondaryContainer text. The user explicitly asked for
+  // a UNIFORM chip style across modes (2026-06-08): the
+  // visual difference between modes is communicated by the
+  // LABEL TEXT (e.g. "单选" vs "多选" vs "框选 · 左→右") and
+  // the DIRECTION ICON (←/→ for BOX, none for SINGLE/MULTI),
+  // not by background color.
+   val backgroundColor: Color
+   val contentColor: Color
+   val directionIcon: androidx.compose.ui.graphics.vector.ImageVector?
+   val label: String
+   when {
+    isBoxCrossing -> {
+     backgroundColor = MaterialTheme.colorScheme.secondaryContainer
+     contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+     directionIcon = Icons.AutoMirrored.Rounded.KeyboardArrowLeft
+     label = if (isDragging) {
+      val n = state.boxSelectPreviewIds.size
+      "框选 · 右→左 (相交) · 圈了 $n 张"
+     } else {
+      "框选 · 右→左拖动 (相交)"
+     }
     }
+    isBoxWindow -> {
+     backgroundColor = MaterialTheme.colorScheme.secondaryContainer
+     contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+     directionIcon = Icons.AutoMirrored.Rounded.KeyboardArrowRight
+     label = if (isDragging) {
+      val n = state.boxSelectPreviewIds.size
+      "框选 · 左→右 (全包含) · 圈了 $n 张"
+     } else {
+      "框选 · 左→右拖动 (全包含)"
+     }
+    }
+    isMulti -> {
+     backgroundColor = MaterialTheme.colorScheme.secondaryContainer
+     contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+     directionIcon = null
+     label = "多选 · 点击图片累加选中"
+    }
+    else -> {
+     backgroundColor = MaterialTheme.colorScheme.secondaryContainer
+     contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+     directionIcon = null
+     label = "单选 · 点击图片切换选中"
+    }
+   }
+ // Top-centre status chip. The caller passes [modifier] with
+ // the top padding that centres the chip on the same line
+ // as the top toolbar + global lock toggle (see call site
+ // KDoc). Sits below the top toolbar's z-order.
+ Row(
+ verticalAlignment = Alignment.CenterVertically,
+ horizontalArrangement = Arrangement.spacedBy(6.dp),
+ modifier = modifier
+ .align(Alignment.TopCenter)
+  .clip(RoundedCornerShape(999.dp))
+  .background(backgroundColor)
+  .padding(horizontal =14.dp, vertical =6.dp),
+ ) {
+ if (directionIcon != null) {
+ Icon(
+ imageVector = directionIcon,
+ contentDescription = null,
+ tint = contentColor,
+ modifier = Modifier.size(16.dp),
+ )
+ }
+ Text(
+ text = label,
+ color = contentColor,
+ style = MaterialTheme.typography.labelMedium,
+ )
+ }
 }
 
 
@@ -3503,6 +3602,18 @@ private fun BoxScope.MinimapChrome(
     // here lets us skip the auto-collapse timer too (no
     // point in timing a panel that's invisible).
     if (state.images.isEmpty()) return
+    // V_NOW (2026-06-08, sheet auto-hide): when the
+    // selection sheet is up, the minimap chrome
+    // (expanded ~200dp panel OR the collapsed 44dp pill)
+    // would compete with the sheet's bottom-row chrome
+    // for visual room. Auto-hide the ENTIRE minimap chrome
+    // — both the expanded panel AND the collapsed pill —
+    // so the user sees a clean bottom row consisting of
+    // just the sheet, with no floating minimap element to
+    // the side. The check happens BEFORE any long-press
+    // slider or auto-collapse timer is read, so the
+    // chrome doesn't even begin its enter animation.
+    if (state.selectedImageIds.isNotEmpty()) return
 
     val density = LocalDensity.current
     val cornerInsetPx = with(density) { Dimens.CornerInset.toPx() }
@@ -5108,6 +5219,20 @@ private fun TopToolbar(
         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
         tonalElevation = Dimens.ToolbarElevation,
         color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
+        // V_NOW (2026-06-08): 1dp outlineVariant@40% border
+        // matching [BottomSheetPanel]'s chrome so the toolbar
+        // reads as the same family of "outlined chrome surface"
+        // as the bottom sheet. Without the border, the toolbar
+        // is a flat surface tint (ChromeSurfaceAlpha) on top of
+        // a canvas background that may be a light preset (e.g.
+        // #FFFFFF) — the toolbar then visually disappears into
+        // the canvas and the user can't tell where the
+        // interactive region starts and the canvas ends.
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant
+                .copy(alpha = 0.4f),
+        ),
     ) {
         // V6: wrap the toolbar Row + the (now-inline) popup
         // AnimatedVisibility in a single Column. The Surface
@@ -9077,6 +9202,21 @@ private fun BoxScope.BottomRightActionPanel(
         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
         color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
         tonalElevation = Dimens.ToolbarElevation,
+        // V_NOW (2026-06-08): 1dp outlineVariant@40% border
+        // matching the bottom-sheet chrome so the bottom-right
+        // expanded panel reads as the same "outlined chrome
+        // surface" family. Without the border, the panel is a
+        // flat surface tint (ChromeSurfaceAlpha) on the canvas
+        // — the panel and its individual list-item buttons
+        // visually merge into the canvas background on light
+        // presets (the user reported this same issue for the
+        // top toolbar / global-lock / FAB and asked for the
+        // 1dp border to be added everywhere consistently).
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant
+                .copy(alpha = 0.4f),
+        ),
     ) {
         Column(
             horizontalAlignment = Alignment.End,
@@ -9231,6 +9371,17 @@ private fun BoxScope.BottomRightActionPanel(
             Box(
                 modifier = Modifier
                     .size(Dimens.BottomPanelChromeSize)
+                    // V_NOW (2026-06-08): 1dp outlineVariant@40%
+                    // border matching the bottom-sheet chrome.
+                    // Placed first (after .size) so the two
+                    // .background() layers (frosted surface + state
+                    // layer) all paint INSIDE the rounded border.
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant
+                            .copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+                    )
                     .background(
                         color = MaterialTheme.colorScheme.surface
                             .copy(alpha = Dimens.ChromeSurfaceAlpha),
@@ -9345,6 +9496,16 @@ private fun BottomPanelListItem(
     Box(
         modifier = Modifier
             .size(Dimens.BottomPanelChromeSize)
+            // V_NOW (2026-06-08): the per-item border added
+            // in the previous round is removed. The user
+            // explicitly wanted "only the OUTER ring" on
+            // the expanded FAB panel — i.e. the parent
+            // [Surface]'s single 1dp outlineVariant@40%
+            // border around the whole panel, with the 4
+            // inner ListItem cells reading as flat Icon
+            // tappable regions (no internal grid lines).
+            // The outer Surface border is rendered by
+            // [BottomRightActionPanel] on its own Surface.
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

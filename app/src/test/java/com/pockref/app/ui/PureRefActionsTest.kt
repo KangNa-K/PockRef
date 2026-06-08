@@ -108,7 +108,11 @@ class PockRefActionsTest {
     // which is read by the [PracticeConfigSheet]
     // [androidx.compose.material3.ModalBottomSheet] and
     // toggled by these two actions.
-    private val expectedVariantCount: Int = 126
+    // V_NOW (CAD-style box select):126 ->127 - added
+    // [BeginBoxSelectAt] for the screen-space drag-start
+    // capture that drives the WINDOW/CROSSING direction
+    // detection in [PockRefAction.UpdateBoxSelectRect].
+    private val expectedVariantCount: Int = 127
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

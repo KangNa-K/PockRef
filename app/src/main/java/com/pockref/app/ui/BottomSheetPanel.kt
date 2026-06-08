@@ -336,22 +336,37 @@ private fun SheetDragHandle(
     onDragDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
-    // V_NOW: 6dp vertical drag threshold — anything smaller
-    // is treated as a stray jitter / accidental touch on the
-    // handle area, NOT a dismiss intent. M3's ModalBottomSheet
-    // uses a similar threshold (the sheet's hiddenValue is
-    // committed after a ~12% drag of the sheet height, which
-    // lands in roughly the same ballpark on a 280dp sheet).
-    val swipeThresholdPx = with(density) { 6.dp.toPx() }
+    // V_NOW (2026-06-08, bug fix): 24dp cumulative vertical
+    // drag threshold — was 6dp PER-FRAME, which never fired
+    // for slow / medium-speed swipes because
+    // [detectVerticalDragGestures] reports the per-frame
+    // dragAmount (a delta in pixels), NOT the total
+    // distance travelled. A user pulling the handle down
+    // at 4-5px per frame over 30 frames (a natural 200ms
+    // swipe) would accumulate 120-150px of total motion
+    // but each individual frame's dragAmount stayed at
+    // 4-5px, well below the 6dp (=15.6px at 260dpi) per-
+    // frame threshold. The user reported "下滑了但没收
+    // 起来" — that was the bug. The fix tracks the
+    // cumulative displacement with [cumulativeDrag] and
+    // dismisses when the TOTAL downward motion crosses
+    // 24dp (= 62.4px). 24dp matches M3's ModalBottomSheet
+    // commit threshold (~10% of a 240dp sheet height) and
+    // is well above the 6dp jitter baseline so accidental
+    // taps / micro-tremors on the handle still don't fire.
+    // When the gesture ends (pointer up / cancelled) the
+    // counter resets so the next swipe starts fresh.
+    val swipeThresholdPx = with(density) { 24.dp.toPx() }
     Box(
         modifier = Modifier
             .padding(vertical = 10.dp)
             .fillMaxWidth()
             // V_NOW: swipe-down gesture on the handle only.
-            // detectVerticalDragGestures fires AFTER the first
-            // 6dp of downward drag (above the threshold),
-            // preventing accidental dismiss on a stray tap
-            // that happens to land on the handle row. The
+            // detectVerticalDragGestures fires AFTER the
+            // first touch slop is consumed by the gesture
+            // detector; we then accumulate the per-frame
+            // deltas ourselves and commit dismiss when the
+            // total downward motion crosses 24dp. The
             // gesture is registered ONLY on this Box, so
             // swiping on the sheet CONTENT (button grid /
             // title bar) does NOT trigger dismiss — those
@@ -359,11 +374,20 @@ private fun SheetDragHandle(
             .then(
                 if (swipeToDismiss) {
                     Modifier.pointerInput(Unit) {
-                        detectVerticalDragGestures { _, dragAmount ->
-                            if (dragAmount > swipeThresholdPx) {
-                                onDragDismiss()
-                            }
-                        }
+                        var cumulativeDrag = 0f
+                        detectVerticalDragGestures(
+                            onDragStart = {
+                                cumulativeDrag = 0f
+                            },
+                            onVerticalDrag = { _, dragAmount ->
+                                if (dragAmount > 0f) {
+                                    cumulativeDrag += dragAmount
+                                    if (cumulativeDrag > swipeThresholdPx) {
+                                        onDragDismiss()
+                                    }
+                                }
+                            },
+                        )
                     }
                 } else {
                     Modifier
