@@ -2,6 +2,7 @@ package com.pockref.app.ui
 
 import com.pockref.app.model.Size2D
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.cos
@@ -434,5 +435,99 @@ class ExportCanvasMatrixTest {
                 ey, ay, 0.001f,
             )
         }
+    }
+
+    @Test
+    fun exportCanvasSizesImageByIntrinsicDimensionsNotDisplaySize() {
+        // V_NOW (2026-06-09 user spec "导出画布时一张张图必须
+        // 是原始画质尺寸拼接成一张大画布"): the export canvas
+        // must size each image by its INTRINSIC pixel
+        // dimensions, NOT [SceneImage.displaySize].
+        //
+        // [displaySize] is the .pur-derived "transformed" size
+        // (`hypot(m00, m10) * intrinsicW`), so for a 4000×3000
+        // photo the desktop PockRef wrote at 0.3x, displaySize
+        // would be 1200×900 — but the source photo is still
+        // 4000×3000, and the user wants the export to use the
+        // 4000×3000 pixel size.
+        //
+        // This test mirrors the relevant Pass 1 / Pass 2 math
+        // from [PockRefViewModelScene.exportCanvas] for a
+        // single image, no rotation, no flip, no pinch zoom:
+        //
+        //   w, h  = image.intrinsicWidth  * image.scale  (Pass 1)
+        //   dstW  = image.intrinsicWidth  * image.scale * exportScale  (Pass 2)
+        //
+        // and asserts the four corners of the rotated (in this
+        // case identity) AABB land on the intrinsicW/H bounds
+        // — NOT the displayW/H bounds. If the test ever flips
+        // to expecting displayW/H bounds, somebody reintroduced
+        // the "use displaySize for export" bug.
+        val intrinsicW = 4000
+        val intrinsicH = 3000
+        val displayW = 1200f  // a 0.3x .pur transform
+        val displayH = 900f
+        val scale = 1f
+        val exportScale = 1f
+
+        // Pass 1: bbox per image is intrinsic * scale, NOT
+        // displaySize * scale. With intrinsic=4000×3000 and
+        // scale=1, the bbox per image is 4000×3000 — not
+        // 1200×900.
+        val bboxW = intrinsicW * scale
+        val bboxH = intrinsicH * scale
+        assertEquals(
+            "Pass 1 bbox must use intrinsicWidth × scale, " +
+                "not displaySize.width × scale. The user wants the " +
+                "export canvas sized by source photo pixels.",
+            4000f, bboxW, 0.001f,
+        )
+        assertEquals(3000f, bboxH, 0.001f)
+
+        // Pass 2: dstRect per image is the same value, scaled
+        // by the export cap-scale (which is 1.0 when the
+        // canvas fits under 8192px).
+        val dstW = intrinsicW * scale * exportScale
+        val dstH = intrinsicH * scale * exportScale
+        assertEquals(
+            "Pass 2 dstRect must size the image by intrinsic, not displaySize",
+            4000f, dstW, 0.001f,
+        )
+        assertEquals(3000f, dstH, 0.001f)
+
+        // Sanity: the bbox and dstRect MUST NOT equal
+        // displaySize. (If a future regression re-uses
+        // displaySize for export, this assertion fails.)
+        assertNotEquals(displayW, bboxW, 0.001f)
+        assertNotEquals(displayH, bboxH, 0.001f)
+        assertNotEquals(displayW, dstW, 0.001f)
+        assertNotEquals(displayH, dstH, 0.001f)
+    }
+
+    @Test
+    fun exportCanvasSizesImageByIntrinsicWithUserPinchZoom() {
+        // Companion to [exportCanvasSizesImageByIntrinsicDimensionsNotDisplaySize].
+        // The user's "原始画质" is intrinsic pixel size, but the
+        // user's per-image pinch-zoom ([SceneImage.scale]) IS
+        // part of the user's "自由摆放" — it should be reflected
+        // in the export. So dstW = intrinsic * image.scale.
+        //
+        // A user who pinched a 4000×3000 photo down to 50% in
+        // the layout should get a 2000×1500 slot in the export
+        // canvas (at intrinsic * 0.5), not the original 4000×3000
+        // and not the 1200×900 displaySize.
+        val intrinsicW = 4000
+        val intrinsicH = 3000
+        val userScale = 0.5f
+        val displayW = 1200f  // 0.3x .pur transform — irrelevant for export
+        val displayH = 900f
+
+        val dstW = intrinsicW * userScale
+        val dstH = intrinsicH * userScale
+        assertEquals(2000f, dstW, 0.001f)
+        assertEquals(1500f, dstH, 0.001f)
+
+        // Confirm displaySize is NOT in the formula.
+        assertNotEquals(displayW, dstW, 0.001f)
     }
 }

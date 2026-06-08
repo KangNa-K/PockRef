@@ -1585,11 +1585,30 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             intrinsicH = bounds.outHeight,
                         )
 
-                        // Use displaySize (same as on-screen rendering) so the
-                        // export canvas matches what the user sees — not the
-                        // potentially much larger intrinsic pixel dimensions.
-                        val w = image.displaySize.width * image.scale
-                        val h = image.displaySize.height * image.scale
+                        // V_NOW (2026-06-09 user spec "导出画布时一
+                        // 张张图必须是原始画质尺寸拼接成一张大画布"):
+                        // use the image's INTRINSIC pixel dimensions
+                        // (decoded from the .pur's image bytes), NOT
+                        // [SceneImage.displaySize]. [displaySize] is
+                        // derived from the legacy .pur matrix as
+                        // `hypot(m00, m10) * intrinsicW` and reflects
+                        // whatever the .pur writer chose to encode —
+                        // it's the "transformed" size, not the
+                        // source photo's actual pixel size. For a
+                        // 4000×3000 photo that the .pur writer scaled
+                        // down to 0.3x, displaySize = 1200×900 while
+                        // the source photo is still 4000×3000.
+                        //
+                        // The user wants the export to assemble every
+                        // image at its source pixel quality, with the
+                        // user-arranged layout (center, rotation, flip,
+                        // pinch-zoom) preserved. So Pass 1's bbox and
+                        // Pass 2's dstRect both size the image by
+                        // `intrinsic * image.scale` (image.scale
+                        // captures the user's pinch-zoom; default 1.0
+                        // from .pur load).
+                        val w = image.intrinsicWidth * image.scale
+                        val h = image.intrinsicHeight * image.scale
                         val cx = image.center.x
                         val cy = image.center.y
                         val corners = floatArrayOf(
@@ -1863,47 +1882,21 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             }
         }
 
-        // V_NOW (2026-06-08 user feedback "导出图缺失 / 被裁成
-        // 角落"): replace the post* matrix chain with
-        // Canvas.save/translate/rotate/scale/drawBitmap, which
-        // exactly mirrors the Compose nesting in
-        // `drawSceneImage` (translate → rotate(pivot=center) →
-        // scale(pivot=center) → drawImage). The previous
-        // `postTranslate · postRotate · postScale ·
-        // postTranslate` chain is right-multiplied, so the
-        // LAST post* call applies FIRST to the source pixel.
-        // For a non-square image (displaySize.w != displaySize.h)
-        // and a non-zero rotation, post*-chained rotation
-        // happens around the SOURCE-BITMAP center (which is
-        // `floor(displaySize.w * image.scale * scale)`, not
-        // the visual center). Compose rotates around the
-        // DST center. The two diverge once any of (a) the
-        // source has a non-integer width/height (the export
-        // targetW = (...).toInt() is floor-truncated, not
-        // rounded), (b) the image is rotated by a non-axis-
-        // aligned angle (15°/30°/45°), or (c) displaySize.w
-        // and displaySize.h differ — which is true for almost
-        // every photo reference. The user-visible symptom is
-        // the rotated image ending up rendered with its visual
-        // center offset from its declared `image.center`,
-        // often to the degree that bbox clipping crops it to
-        // a single corner triangle (or, in v2.pur's case, two
-        // corners overlap and a third is partially visible).
-        // The Canvas-API form below pivots around
-        // (width/2, height/2) — the SAME point Compose uses —
-        // so the on-screen and export pipelines are now
-        // bit-for-bit equivalent in transform.
+        // V_NOW (2026-06-09 user spec "导出画布时一张张图必须
+        // 是原始画质尺寸拼接成一张大画布"): [dstW]/[dstH] are
+        // the image's INTRINSIC pixel dimensions (× user
+        // pinch-zoom × export cap-scale), NOT [image.displaySize].
+        // See the matching V_NOW in [exportCanvas] Pass 1 for the
+        // full rationale. Compose's on-screen `drawImage` and
+        // this export path use the SAME center/rotation/flip,
+        // so the on-screen and export pipelines agree on
+        // position; only the per-image SIZE differs (canvas
+        // = intrinsic, screen = displaySize), which is the
+        // whole point of the user's "原始画质" spec.
         val canvasCenterX = (image.center.x - minX) * scale
         val canvasCenterY = (image.center.y - minY) * scale
-        // dstSize in canvas pixels — the "visual" size the
-        // user sees on screen (image.displaySize * image.scale
-        // in world units, multiplied by export [scale] to map
-        // to canvas pixels). This is what Compose draws
-        // through `drawImage(dstSize = IntSize(w, h))` and is
-        // NOT the same as source.width (which is
-        // floor(displaySize.w * image.scale * scale)).
-        val dstW = image.displaySize.width * image.scale * scale
-        val dstH = image.displaySize.height * image.scale * scale
+        val dstW = image.intrinsicWidth * image.scale * scale
+        val dstH = image.intrinsicHeight * image.scale * scale
         val srcRect = android.graphics.Rect(0, 0, source.width, source.height)
         val dstRect = android.graphics.RectF(
             -dstW / 2f, -dstH / 2f, dstW / 2f, dstH / 2f,
