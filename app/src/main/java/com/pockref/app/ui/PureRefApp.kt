@@ -30,6 +30,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import android.util.Log
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.BasicTextField
@@ -124,6 +125,7 @@ import androidx.compose.material.icons.rounded.AlignHorizontalLeft
 import androidx.compose.material.icons.rounded.AlignHorizontalRight
 import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
 import androidx.compose.material.icons.rounded.SwipeRight
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
@@ -306,6 +308,7 @@ import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.SelectionMode
 import com.pockref.app.model.isImageLocked
 import com.pockref.app.model.Size2D
+import com.pockref.app.ui.settings.SettingsPanel
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.async
@@ -905,6 +908,67 @@ fun PockRefApp(
                         },
                 )
             }
+            // V_NOW (2026-06-08 速写练习 feedback):
+            // [BottomRightActionPanel] (the FAB + 4 list
+            // items) moved from earlier in this Box to
+            // HERE so the FAB stays on top of the
+            // [SelectionBottomSheet] / [PracticeConfigSheet]
+            // / [PracticeScreen]. The previous order had
+            // the FAB rendered before the sheets, so a
+            // popped-up sheet covered the FAB visually
+            // AND intercepted taps to the FAB area
+            // (because the sheet's scrim is part of the
+            // sheet's [Surface], not the FAB's).
+            //
+            // Render condition unchanged from the
+            // original location: only when the canvas
+            // has at least one image AND we're not in
+            // crop mode (a crop session has its own
+            // commit/cancel chrome at the bottom and
+            // showing the FAB there would conflict).
+            //
+            // The 一键排版 action is also reachable from
+            // [SelectionBottomSheet]'s row2 (in multi/box
+            // mode) — the FAB is the primary path for
+            // canvas-tap workflows, the sheet button is
+            // the primary path for selection-tap workflows.
+            // Both dispatch the same
+            // [PockRefAction.ExecuteAutoLayout].
+            //
+            // V_NOW (2026-06-08 速写练习 focus-mode
+            // revision): gate on
+            // [state.practiceState == null] so the FAB
+            // genuinely doesn't render during practice
+            // (the practice screen's fullscreen black
+            // background would cover it anyway, but
+            // skipping the render is cheaper + the
+            // 4-item panel's expanded state can't
+            // accidentally survive across a practice
+            // session).
+            if (state.images.isNotEmpty() && state.cropImageId == null &&
+                state.practiceState == null
+            ) {
+                BottomRightActionPanel(
+                    state = state,
+                    onAction = onAction,
+                    onImport = onImport,
+                    onOpenScene = onOpenScene,
+                    onSaveScene = onSaveScene,
+                    onExportCanvas = {
+                        val sceneName = state.sceneName.ifBlank { "canvas" }
+                        exportCanvasLauncher.launch("$sceneName.png")
+                    },
+                    // V_NOW: chrome-mutex — any click in the
+                    // right-bottom panel (FAB tap / long-press
+                    // or any of the 4 list items) collapses
+                    // the top toolbar's 3-dots menu so it
+                    // stops competing for visual room with
+                    // whatever the user is now tapping.
+                    // Idempotent setter (already-collapsed is
+                    // a no-op).
+                    onMenuDismiss = { menuExpanded = false },
+                )
+            }
             // V6: tap-outside scrim for the top toolbar's
             // recent-files menu. Same pattern as the
             // scene-name editor scrim above — the menu is
@@ -955,29 +1019,52 @@ fun PockRefApp(
             // [BoxScope.align(Alignment.BottomEnd)] to anchor itself
             // to this [BoxWithConstraints]'s bottom-end, same visual
             // position as the old inside-CanvasPanel placement.
-            if (state.images.isNotEmpty() && state.cropImageId == null) {
-                BottomRightActionPanel(
-                    state = state,
-                    onAction = onAction,
-                    onImport = onImport,
-                    onOpenScene = onOpenScene,
-                    onSaveScene = onSaveScene,
-                    onExportCanvas = {
-                        val sceneName = state.sceneName.ifBlank { "canvas" }
-                        exportCanvasLauncher.launch("$sceneName.png")
-                    },
-                    // V_NOW: chrome-mutex — any click in the
-                    // right-bottom panel (FAB tap / long-press
-                    // or any of the 4 list items) collapses
-                    // the top toolbar's 3-dots menu so it
-                    // stops competing for visual room with
-                    // whatever the user is now tapping.
-                    // Idempotent setter (already-collapsed is
-                    // a no-op).
-                    onMenuDismiss = { menuExpanded = false },
-                )
-            }
-            TopToolbar(
+            // V_NOW (2026-06-08 速写练习 feedback — "sheet
+            // 弹出时一键排版按钮被遮挡"): the
+            // [BottomRightActionPanel] was previously
+            // rendered HERE, BEFORE the
+            // [SelectionBottomSheet] / [PracticeConfigSheet]
+            // / [PracticeScreen], so the sheet covered the
+            // FAB when it popped up. Moved the FAB block
+            // to AFTER the sheets (search for "Moved
+            // BottomRightActionPanel" further down in this
+            // Box) so the FAB + 4 list items stay the
+            // topmost hit target. The FAB's own behaviour
+            // is unchanged — it still runs auto-layout
+            // (or, when long-pressed, expands the action
+            // list) regardless of the sheet state.
+            //
+            // V_NOW (2026-06-08 速写练习 focus-mode
+            // revision): gate on
+            // [state.practiceState == null] so the top
+            // toolbar (recent-files menu, scene-name
+            // editor, 3-dots menu, save button) is
+            // skipped during practice. Same reasoning as
+            // the FAB below — skipping the render
+            // avoids the toolbar's internal
+            // remember{ mutableStateOf(...) } slots
+            // from staying allocated, and ensures no
+            // menu state from a previous session
+            // bleeds into the next.
+            //
+            // V_NOW (2026-06-08 启动页不要显示顶栏和全局锁):
+            // also gate on [state.images.isNotEmpty()]
+            // so the start screen (no images, just the
+            // empty-canvas hero) doesn't show the top
+            // toolbar OR the global-lock button. The
+            // empty state has its own Import / Open .pur
+            // buttons in [EmptyCanvasState] which cover
+            // the same entry points — the toolbar's
+            // recent-files menu, scene-name editor,
+            // 3-dots menu, save button, and lock toggle
+            // are all redundant (or meaningless, for the
+            // lock) when there's no scene to act on. The
+            // FAB ([PockRefAction.ImportImages]) is NOT
+            // gated by this — it stays visible on the
+            // start screen because it's the primary "add
+            // your first image" affordance.
+            if (state.practiceState == null && state.images.isNotEmpty()) {
+                TopToolbar(
                 state = state,
                 // V_NOW: any click on the top toolbar
                 // collapses the right-bottom action panel
@@ -1046,6 +1133,7 @@ fun PockRefApp(
                         start = Dimens.CornerInset,
                     ),
             )
+            }
 
             // V_NOW (2026-06-08 "global image lock" feature):
             // top-right lock toggle. Anchored at
@@ -1089,6 +1177,30 @@ fun PockRefApp(
             //     [PockRefAction.ToggleGlobalImageLock],
             //     which the reducer mirrors to AppPreferences
             //     so the choice survives a process kill.
+            //
+            // V_NOW (2026-06-08 速写练习 focus-mode
+            // revision): gate the whole lock toggle on
+            // [state.practiceState == null] so it
+            // genuinely doesn't render during practice.
+            // Same reasoning as the FAB and toolbar —
+            // skipping the render is cheaper and avoids
+            // the lock-state remembered slot from staying
+            // allocated mid-practice.
+            //
+            // V_NOW (2026-06-08 启动页不要显示全局锁定):
+            // also gate on [state.images.isNotEmpty()] so
+            // the global lock toggle doesn't render on
+            // the empty-canvas start screen. The lock
+            // only makes sense once there's at least one
+            // image to lock, and the start screen already
+            // has its own Import / Open .pur buttons in
+            // [EmptyCanvasState] covering the entry
+            // points. This `if` is independent of the
+            // surrounding [TopToolbar] block — the lock
+            // toggle lives at the top-right of the canvas
+            // (not inside the toolbar's row), so it has
+            // its own gate.
+            if (state.practiceState == null && state.images.isNotEmpty()) {
             val lockInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             val isLockHovered by lockInteractionSource.collectIsHoveredAsState()
             val isLockPressed by lockInteractionSource.collectIsPressedAsState()
@@ -1096,6 +1208,28 @@ fun PockRefApp(
                 isLockPressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                 isLockHovered -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
                 else -> Color.Transparent
+            }
+            // V_NOW (2026-06-08 user feedback "全局锁定按钮激活后
+            // 改成是和其他按钮一样是蓝色的"): the active
+            // lock state now also tints the BACKGROUND
+            // (not just the icon, which the line below
+            // already handles). The active background is
+            // [colorScheme.primaryContainer] with
+            // [onPrimaryContainer] for the icon — the
+            // M3-standard "filled toggle" pair, same
+            // pattern a [FilterChip] uses for its
+            // "selected" state. Inactive stays the
+            // [surface @ 0.92] frosted chrome the rest
+            // of the corner-chrome uses. The user
+            // explicitly wanted the active state to
+            // "read as blue like other buttons" — a
+            // primary-tinted background is the
+            // unambiguous visual signal of "this toggle
+            // is engaged" matching the M3 spec.
+            val activeTint = if (state.globalImageLock) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                Color.Transparent
             }
             Box(
                 modifier = Modifier
@@ -1108,6 +1242,26 @@ fun PockRefApp(
                     .background(
                         color = MaterialTheme.colorScheme.surface
                             .copy(alpha = Dimens.ChromeSurfaceAlpha),
+                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+                    )
+                    .background(
+                        // V_NOW (2026-06-08 user feedback):
+                        // the background now also tints
+                        // [primaryContainer] when the lock
+                        // is active, in addition to the
+                        // existing hover/press feedback
+                        // (which still uses
+                        // [primary.copy(alpha = 0.08-0.12)]
+                        // for the hover/press tints). The
+                        // two `background` modifiers stack
+                        // — the second one paints on top of
+                        // the first, so the active tint
+                        // wins when both apply.
+                        color = if (state.globalImageLock) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            Color.Transparent
+                        },
                         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
                     )
                     .background(
@@ -1132,13 +1286,39 @@ fun PockRefApp(
                         "全局图片未锁定,点击锁定全部图片"
                     },
                     modifier = Modifier.size(24.dp),
+                    // V_NOW (2026-06-08 user feedback
+                    // "全局锁定按钮激活后改成是和其他按钮一样是蓝色的"):
+                    // flip the active tint from
+                    // [colorScheme.error] (the previous
+                    // red — meant to read as a
+                    // "danger / irreversible" affordance)
+                    // to [colorScheme.primary] (the
+                    // brand cyan / deep-teal that every
+                    // other "active" chrome element in
+                    // PockRef uses). The active button
+                    // now reads as "engaged feature"
+                    // rather than "warning state", which
+                    // matches the user's mental model of
+                    // the global lock as just another
+                    // toggle (a counterpart to the FAB's
+                    // primary tint).
                     tint = if (state.globalImageLock) {
-                        MaterialTheme.colorScheme.error
+                        // V_NOW (2026-06-08 user feedback):
+                        // when the lock is active AND the
+                        // background is [primaryContainer],
+                        // the icon MUST be [onPrimaryContainer]
+                        // for WCAG contrast — the M3 pair
+                        // is non-negotiable. (If we kept
+                        // [primary] for the icon, it would
+                        // fail contrast against the
+                        // [primaryContainer] background.)
+                        MaterialTheme.colorScheme.onPrimaryContainer
                     } else {
                         MaterialTheme.colorScheme.onSurface
                     },
                 )
             }
+            }  // close if (state.practiceState == null) gating the lock toggle
 
             if (state.isBusy && !state.batchOptimizeState.isRunning) {
                 Box(
@@ -1342,6 +1522,105 @@ fun PockRefApp(
                     state = state,
                     onAction = onAction,
                 )
+                // V_NOW (2026-06-08 速写练习 commit 3):
+                // full-screen practice view. Renders only
+                // when [state.practiceState] is non-null
+                // (= RUNNING / PAUSED / FINISHED). When
+                // null, [PracticeScreen] early-returns
+                // and the user sees the canvas + chrome
+                // underneath. Mounted AFTER
+                // [SelectionBottomSheet] and
+                // [PracticeConfigSheet] so it overlays
+                // both — these three are mutually exclusive
+                // by the time they're rendered (the
+                // SelectionBottomSheet auto-dismisses on
+                // the "速写练习" click, the config sheet
+                // dispatches DismissPracticeConfigSheet
+                // on its "开始" tap, leaving the practice
+                // screen alone on top).
+                //
+                // Why a [BoxScope] extension on
+                // [PracticeScreen]: the canvas in the
+                // parent Box is `Modifier.matchParentSize()`
+                // and the practice screen needs the same
+                // fill-max-size-with-overlay semantics.
+                // Defining it as `BoxScope.PracticeScreen`
+                // lets it `Modifier.fillMaxSize()` directly
+                // without taking the parent Box as a
+                // parameter.
+                if (state.practiceState != null) {
+                    PracticeScreen(
+                        state = state.practiceState,
+                        images = state.images,
+                        imageDecoder = imageDecoder,
+                        imageLazyLoader = imageLazyLoader,
+                        onAction = onAction,
+                    )
+                }
+                // V_NOW (2026-06-08 速写练习 commit 2):
+                // pre-flight config sheet. Lives next to
+                // [SelectionBottomSheet] in the same
+                // BoxScope so the two are mutually
+                // exclusive on screen (SelectionBottomSheet
+                // auto-dismisses when the user clicks the
+                // "速写练习" entry; the user can re-show
+                // it by tapping any selected image, per
+                // the existing [selectionSheetShowTick]
+                // re-raise contract).
+                //
+                // [lastConfig] is read directly from
+                // [com.pockref.app.data.AppPreferences.lastPracticeConfig]
+                // — the controller's StartPractice side
+                // effect writes a fresh [PracticeConfig]
+                // on every start, so this is always
+                // current. Passing it as a parameter
+                // (not reading prefs inside the sheet)
+                // keeps the sheet testable in isolation
+                // and avoids SharedPreferences I/O in
+                // composition.
+                //
+                // V_NOW: appPrefs is instantiated here
+                // from [LocalContext.current] (same
+                // pattern as [SettingsAutoSaveSection])
+                // — [PockRefApp] doesn't take an
+                // [AppPreferences] parameter and
+                // adding one would force a refactor of
+                // every call site (MainActivity +
+                // androidTest setUp). The instantiation
+                // is cheap (just a SharedPreferences
+                // handle) and the getter for
+                // [lastPracticeConfig] is a
+                // getString/getLong read — no I/O storm.
+                val appPrefs = com.pockref.app.data.AppPreferences(
+                    androidx.compose.ui.platform.LocalContext.current,
+                )
+                PracticeConfigSheet(
+                    visible = state.practiceConfigSheetOpen,
+                    selectedCount = state.selectedImageIds.size,
+                    lastConfig = appPrefs.lastPracticeConfig,
+                    onStart = { config ->
+                        // V_NOW: dismiss the sheet first,
+                        // then dispatch StartPractice. The
+                        // dispatch order matters — if we
+                        // dispatched StartPractice first,
+                        // the practice screen would briefly
+                        // render BEHIND the still-showing
+                        // sheet, which the user perceives
+                        // as a flicker. Closing the sheet
+                        // first means the practice screen
+                        // gets the whole stage to enter on.
+                        onAction(PockRefAction.DismissPracticeConfigSheet)
+                        onAction(
+                            PockRefAction.StartPractice(
+                                imageIds = state.selectedImageIds.toList(),
+                                config = config,
+                            )
+                        )
+                    },
+                    onDismiss = {
+                        onAction(PockRefAction.DismissPracticeConfigSheet)
+                    },
+                )
                 // V_NOW (R-04): subtle "multi-select mode is
                 // active" overlay above the canvas. Three
                 // states:
@@ -1353,7 +1632,19 @@ fun PockRefApp(
                 // Border is a draw-only modifier (no
                 // pointer-input impact) so canvas gestures
                 // keep working normally.
+                //
+                // V_NOW (2026-06-08 速写练习 focus-mode
+                // revision): gate on
+                // [state.practiceState == null] so the
+                // mode-border + mode-chip are not drawn
+                // during practice. The overlay's purpose
+                // is to confirm the user is in MULTI/BOX
+                // select mode — irrelevant during the
+                // practice session (the user is staring
+                // at an image, not selecting).
+                if (state.practiceState == null) {
                 SelectionModeOverlay(state = state)
+                }
             }
             // Bottom-left minimap. The composable itself
             // returns early when state.canvasScale ≤ 1, so we
@@ -1418,7 +1709,19 @@ fun PockRefApp(
             // no images; we add a parallel early-return for
             // crop mode here at the call site so the
             // composable's own API surface stays unchanged.
-            if (state.cropImageId == null) {
+            //
+            // V_NOW (2026-06-08 速写练习 focus-mode
+            // revision): also gate on
+            // [state.practiceState == null] — same
+            // reasoning as the FAB / toolbar. The
+            // minimap's persistence writes
+            // (minimapPositionX/Y on every drag) are
+            // especially wasteful during practice
+            // because the user can't see the minimap
+            // anyway, so skipping the render saves a
+            // few pref writes per second of a long
+            // session.
+            if (state.cropImageId == null && state.practiceState == null) {
                 // V_NOW: wrap in BoxWithConstraints so the
                 // drag-clamping math below can read the
                 // parent size (the call site itself is outside
@@ -1732,6 +2035,24 @@ private fun SelectionBottomSheet(
                         SheetActionSpec(Icons.Rounded.AlignHorizontalRight, "向右对齐", false) {
                             onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_RIGHT))
                         },
+                        // V_NOW (2026-06-08 速写练习):
+                        // 6th entry — opens the pre-flight
+                        // config sheet (commit 2 of the
+                        // slideshow feature) where the user
+                        // picks duration / rest / shuffle /
+                        // sound. Pinned to the row1 end so
+                        // it's at the right edge of the
+                        // action grid (mirrors the legacy
+                        // SelectionFloatingToolbar's "练习"
+                        // button which was the rightmost
+                        // control). The icon is `Timer`
+                        // (clock-face with a top mark) —
+                        // universally readable as "time
+                        // based action" without depending
+                        // on text for icon-meaning.
+                        SheetActionSpec(Icons.Rounded.Timer, "速写练习", false) {
+                            onAction(PockRefAction.OpenPracticeConfigSheet)
+                        },
                     )
                 } else {
                     listOf(
@@ -1752,23 +2073,104 @@ private fun SelectionBottomSheet(
                         },
                     )
                 }
-                val row2 = listOf(
-                    SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
-                        onAction(PockRefAction.DuplicateSelected)
-                    },
-                    SheetActionSpec(Icons.Rounded.Layers, "灰度", allGrayscale) {
-                        onAction(PockRefAction.ConvertToGrayscale)
-                    },
-                    SheetActionSpec(Icons.Rounded.Lock, "锁定", false) {
-                        onAction(PockRefAction.ToggleLockSelected)
-                    },
-                    SheetActionSpec(Icons.Rounded.Image, "导出", false) {
-                        onAction(PockRefAction.ExportSelected)
-                    },
-                    SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
-                        onAction(PockRefAction.DeleteSelected)
-                    },
-                )
+                val row2 = if (state.multiSelectMode || state.boxSelectMode) {
+                    listOf(
+                        SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
+                            onAction(PockRefAction.DuplicateSelected)
+                        },
+                        SheetActionSpec(Icons.Rounded.Layers, "灰度", allGrayscale) {
+                            onAction(PockRefAction.ConvertToGrayscale)
+                        },
+                        // V_NOW (2026-06-08 user feedback
+                        // "把 sheet 里的锁定按钮改成激活锁定的图标是上锁的图标，没激活锁定时是解锁的图标"):
+                        // mirror the actual lock state on the
+                        // button. [allSelectedLocked] is the
+                        // existing "every selected image is
+                        // locked" boolean computed earlier in
+                        // the same composable scope. Locked
+                        // → [Icons.Rounded.Lock] (the "padlock
+                        // closed" icon), unlocked →
+                        // [Icons.Rounded.LockOpen] (the
+                        // "padlock open" icon). The "active"
+                        // slot is also wired to
+                        // [allSelectedLocked] so the visual
+                        // state matches (the previous version
+                        // hard-coded `active = false`, which
+                        // meant a locked selection still
+                        // showed the chrome as if it were
+                        // inactive).
+                        SheetActionSpec(
+                            icon = if (allSelectedLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                            label = if (allSelectedLocked) "已锁定" else "锁定",
+                            active = allSelectedLocked,
+                        ) {
+                            onAction(PockRefAction.ToggleLockSelected)
+                        },
+                        SheetActionSpec(Icons.Rounded.Image, "导出", false) {
+                            onAction(PockRefAction.ExportSelected)
+                        },
+                        SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
+                            onAction(PockRefAction.DeleteSelected)
+                        },
+                        // V_NOW (2026-06-08 速写练习 commit 2
+                        // + 6th-button feedback): 一键排版
+                        // shortcut, only in multi/box mode.
+                        // The bottom-right FAB also runs
+                        // [PockRefAction.ExecuteAutoLayout] but
+                        // gets covered by the sheet; this
+                        // sheet-row entry keeps the action
+                        // reachable while the sheet is up.
+                        // The FAB is moved to render AFTER the
+                        // sheet (see the reorder below) so the
+                        // canvas-FAB path also stays accessible,
+                        // but the sheet button is the primary
+                        // path when the user is interacting
+                        // with the selection.
+                        SheetActionSpec(Icons.Rounded.AutoFixHigh, "一键排版", false) {
+                            onAction(PockRefAction.ExecuteAutoLayout)
+                        },
+                    )
+                } else {
+                    listOf(
+                        SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
+                            onAction(PockRefAction.DuplicateSelected)
+                        },
+                        SheetActionSpec(Icons.Rounded.Layers, "灰度", allGrayscale) {
+                            onAction(PockRefAction.ConvertToGrayscale)
+                        },
+                        // V_NOW (2026-06-08 user feedback
+                        // "把 sheet 里的锁定按钮改成激活锁定的图标是上锁的图标，没激活锁定时是解锁的图标"):
+                        // mirror the actual lock state on the
+                        // button. [allSelectedLocked] is the
+                        // existing "every selected image is
+                        // locked" boolean computed earlier in
+                        // the same composable scope. Locked
+                        // → [Icons.Rounded.Lock] (the "padlock
+                        // closed" icon), unlocked →
+                        // [Icons.Rounded.LockOpen] (the
+                        // "padlock open" icon). The "active"
+                        // slot is also wired to
+                        // [allSelectedLocked] so the visual
+                        // state matches (the previous version
+                        // hard-coded `active = false`, which
+                        // meant a locked selection still
+                        // showed the chrome as if it were
+                        // inactive).
+                        SheetActionSpec(
+                            icon = if (allSelectedLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                            label = if (allSelectedLocked) "已锁定" else "锁定",
+                            active = allSelectedLocked,
+                        ) {
+                            onAction(PockRefAction.ToggleLockSelected)
+                        },
+                        SheetActionSpec(Icons.Rounded.Image, "导出", false) {
+                            onAction(PockRefAction.ExportSelected)
+                        },
+                        SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
+                            onAction(PockRefAction.DeleteSelected)
+                        },
+                    )
+                }
                 Column(
                     modifier = gridModifier,
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -2899,7 +3301,7 @@ private fun BoxScope.CropOverlay(
     // [WindowInsets.systemBars]).
     Surface(
         modifier = Modifier
-            .widthIn(max = 560.dp)
+            .widthIn(max = Dimens.SheetMaxWidth)
             .fillMaxWidth()
             .align(Alignment.CenterHorizontally),
         color = MaterialTheme.colorScheme.surface,
@@ -5992,7 +6394,7 @@ private fun PockRefCanvas(
                         if (!s.boxSelectMode) {
                             currentOnAction(PockRefAction.SetSelectionMode(SelectionMode.BOX))
                         }
-                        currentOnAction(PockRefAction.BeginBoxSelect)
+                        currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                         boxSelectStart = downPos
                         boxSelectDragging = true
                     } else if (hitId != null && !s.globalImageLock) {
@@ -6025,7 +6427,7 @@ private fun PockRefCanvas(
                         // — matching the user's intent
                         // "image 上单指拖动 = 移动画布".
                         if (s.boxSelectMode && hitId !in s.selectedImageIds) {
-                            currentOnAction(PockRefAction.BeginBoxSelect)
+                            currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                             boxSelectStart = downPos
                             boxSelectDragging = true
                         } else {
@@ -6058,7 +6460,7 @@ private fun PockRefCanvas(
                             }
                         }
                     } else if (s.boxSelectMode) {
-                        currentOnAction(PockRefAction.BeginBoxSelect)
+                        currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                         boxSelectStart = downPos
                         boxSelectDragging = true
                     } else if (s.multiSelectMode && hitId != null) {
@@ -6494,7 +6896,7 @@ private fun PockRefCanvas(
                                 val top = minOf(start.y, cur.y)
                                 val right = maxOf(start.x, cur.x)
                                 val bottom = maxOf(start.y, cur.y)
-                                currentOnAction(PockRefAction.UpdateBoxSelectRect(RectF(left, top, right, bottom)))
+                                currentOnAction(PockRefAction.UpdateBoxSelectRect(RectF(left, top, right, bottom), cur))
                             } else if (lassoActive) {
                                 lassoStart = lassoStart?.let { ls ->
                                     Offset(
@@ -6607,6 +7009,13 @@ private fun PockRefCanvas(
                                 // not sheet interaction.
                                 pendingSheetJob?.cancel()
                                 pendingSheetJob = null
+                                Log.d(
+                                    "ExportCanvas",
+                                    "DT_FIT id=$tappedId " +
+                                        "lastTapId=$lastTapImageId " +
+                                        "dt=${upTime - lastTapTime}ms " +
+                                        "currentFittedId=${currentState.fittedImageId}",
+                                )
                                 currentOnAction(PockRefAction.FitImageToScreen(tappedId))
                                 currentOnAction(PockRefAction.DismissSelectionSheet)
                                 lastTapTime = 0L
@@ -8141,45 +8550,17 @@ private fun UnsavedChangesDialog(isSaving: Boolean, onAction: (PockRefAction) ->
                     Text("保存中...")
                 }
             } else {
-                // V_NOW (R-03 / Nielsen heuristic "User
-                // control and freedom"): the dialog body
-                // now makes the auto-backup guarantee
-                // EXPLICIT before the user clicks "放弃
-                // 更改". Previously the user had to know
-                // about [AppPreferences] / `auto_save`
-                // from the USER_GUIDE FAQ §8 to feel safe
-                // clicking the destructive Discard button.
-                // The new body says (a) the change is
-                // auto-backed up so "放弃更改" doesn't
-                // lose work, and (b) how long the backup
-                // is retained.
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("此文件有未保存的更改。关闭前是否保存？")
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        tonalElevation = 0.dp,
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = androidx.compose.material.icons.Icons.Rounded.Lock,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                text = "上次保存后到现在的更改会自动备份,保留7天," +
-                                    "即使选择「放弃更改」也能从备份恢复。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
+                // V_NOW (2026-06-08 user request): removed
+                // the auto-backup guarantee callout
+                // (Surface-wrapped Row with the lock icon
+                // + the "保留 7 天..." body text) — the
+                // dialog now only asks the question. The
+                // backup behavior is unchanged; it just
+                // doesn't get a dedicated callout in this
+                // dialog anymore. Drop the now-unused
+                // Surface / Row / Icon imports below if
+                // they're no longer referenced elsewhere.
+                Text("此文件有未保存的更改。关闭前是否保存？")
             }
         },
         confirmButton = {
@@ -8552,804 +8933,6 @@ private fun ExportDialogHost(
 // with it the gear entry + sheet) with its inline
 // toolbar; this commit brings the sheet back.
 
-// ─── SettingsPanel ──────────────────────────────────────
-/**
- * 5-section settings sheet. Sections in order:
- *   1. 边缘吸附 (edge snap — M3 Switch)
- *   2. 旋转角度吸附 (rotation snap — M3 Switch)
- *   3. 主题 (theme — SingleChoiceSegmentedButtonRow:
- *      SYSTEM / LIGHT / DARK)
- *   4. 背景颜色 (background color — BackgroundColorPanel
- *      preset swatches, plus the HSV wheel inline when the
- *      active preset is [BackgroundPreset.Custom])
- *   5. 手势 (7 per-gesture toggles, one per [GestureId] in
- *      the spec's order: single-finger drag → compound
- *      double-tap)
- *
- * The inner [Column] is wrapped in [verticalScroll] because
- * the 5 sections + HSV wheel + 7 toggle rows overflow the
- * default partially-expanded sheet height on portrait
- * phones. Without scroll the bottom gesture
- * (双击空白) gets clipped. The user can drag the
- * sheet up to fully expand, or scroll within the content.
- */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsPanel(
-    open: Boolean,
-    onDismiss: () -> Unit,
-    state: PockRefUiState,
-    onAction: (PockRefAction) -> Unit,
-) {
-    if (!open) return
-    val sheetState = rememberModalBottomSheetState()
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-    ) {
-        // V_NOW (tabbed settings): the sheet content switches
-        // between TabRow (phone) and NavigationRail (tablet)
-        // based on the current window width. Below 600dp wide
-        // (typical phone portrait, e.g. 360x780), a TabRow on
-        // top keeps the sheet compact and phone-thumb reachable;
-        // at >= 600dp (tablet landscape, e.g. 1280x800), a
-        // left-side NavigationRail frees the right pane for the
-        // content and matches the M3 large-screen idiom.
-        val configuration = LocalConfiguration.current
-        val isWide = configuration.screenWidthDp >= 600
-        if (isWide) {
-            Row(modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp)) {
-                SettingsNavigationRail(
-                    selectedTab = state.settingsTab,
-                    onTabSelected = { tab ->
-                        onAction(PockRefAction.SetSettingsTab(tab))
-                    },
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                ) {
-                    SettingsTabContent(
-                        state = state,
-                        onAction = onAction,
-                        selectedTab = state.settingsTab,
-                    )
-                }
-            }
-        } else {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 24.dp, end = 8.dp, top = 16.dp),
-                ) {
-                    Text(
-                        text = "设置",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            Icons.Rounded.Close,
-                            contentDescription = "关闭",
-                        )
-                    }
-                }
-                SettingsTabRow(
-                    selectedTab = state.settingsTab,
-                    onTabSelected = { tab ->
-                        onAction(PockRefAction.SetSettingsTab(tab))
-                    },
-                )
-                HorizontalDivider()
-                SettingsTabContent(
-                    state = state,
-                    onAction = onAction,
-                    selectedTab = state.settingsTab,
-                )
-            }
-        }
-    }
-}
-
-/**
- * A single row in the settings sheet — title on top,
- * helper text below, Switch on the right. Mirrors the M3
- * list-item pattern with a small vertical padding gap so
- * the rows feel separated without using dividers.
- */
-@Composable
-private fun SettingsToggleRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, style = MaterialTheme.typography.titleSmall)
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-        )
-    }
-}
-// ─── CustomColorWheel (HSV) ──────────────────────────────
-/**
- * HSV color picker. Top → bottom:
- *   1. Preview swatch + RGB readout
- *   2. Circular picker: outer ring = hue wheel (0–360°
- *      sweep, Brush.sweepGradient); inner disc = radial
- *      gradient (white at centre → current hue at edge) so
- *      radial position picks saturation. The user's touch
- *      point's angle picks hue, distance from centre picks
- *      saturation. The white-fill / black-edge dot marks
- *      the current (hue, sat) so the user sees where they
- *      are before lifting their finger.
- *   3. Value (V) slider for brightness.
- *
- * Used only when the active preset is
- * [BackgroundPreset.Custom]. The parent [SettingsPanel]
- * only renders this composable under that condition.
- */
-@Composable
-private fun CustomColorWheel(
-    currentColor: Color,
-    onConfirm: (Color) -> Unit,
-    onCancel: () -> Unit,
-) {
-    // Local preview state (V_NOW: preview/commit pattern). Dragging
-    // the wheel or moving any of the 3 HSV sliders only mutates
-    // these [hue] / [sat] / [value] remember-state variables — the
-    // global [PockRefUiState.backgroundColor] is NOT touched until
-    // the user taps "确定". This matches the user's explicit spec
-    // "在色环或 HSV 滑块上的所有操作均**仅作为实时预览**,不立即
-    // 应用为选定颜色".
-    //
-    // [remember(currentColor)] re-initialises the preview to the
-    // just-saved (or still-original) colour each time the parent
-    // re-passes [currentColor] — e.g. when the user reopens the
-    // picker after a prior "确定"/"取消" cycle.
-    val initialHsv = remember(currentColor) { rgbToHsv(currentColor) }
-    var hue by remember(currentColor) { mutableStateOf(initialHsv[0]) }
-    var sat by remember(currentColor) { mutableStateOf(initialHsv[1]) }
-    var value by remember(currentColor) { mutableStateOf(initialHsv[2]) }
-    val previewColor = Color.hsv(hue, sat, value)
-
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // 1. Preview + Original swatch row.
-        // [previewColor] is the live HSV-composed colour (left,
-        // 48dp, the bigger one — this is the swatch the user is
-        // adjusting). [currentColor] is the colour that was active
-        // when the picker opened, i.e. the colour the user will
-        // get back to if they tap "取消" (right, 32dp, smaller).
-        // Both are bordered so the contrast against the sheet's
-        // translucent surface is obvious regardless of which
-        // underlying hue/S/V the user lands on.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(previewColor)
-                    .border(1.dp, Color(0x44000000), RoundedCornerShape(8.dp)),
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(currentColor)
-                    .border(1.dp, Color(0x44000000), RoundedCornerShape(8.dp)),
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "预览 / 调整前",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = "R ${(previewColor.red * 255).toInt()}  " +
-                        "G ${(previewColor.green * 255).toInt()}  " +
-                        "B ${(previewColor.blue * 255).toInt()}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-
-        // 2. Hue ring (outer) + triangle S/V picker (inner).
-        // The ring is unchanged from the previous design —
-        // angle picks hue (0–360°), V-dependent sweep colours
-        // so the ring dims as V drops. The inner area is now
-        // an equilateral triangle (white at top-left, black at
-        // bottom-left, full hue at right) replacing the
-        // previous radial SV disc. Triangle vertices are
-        // inscribed in innerRadius (the ring's inner edge
-        // minus a 4dp gap). Per-row horizontal scanline fills
-        // the triangle — left side is a white-to-black vertical
-        // gradient (constant in y), right side is the full
-        // hue; mixing them along the row gives the standard
-        // 2D HSV interpolation.
-        //
-        // Touch region split:
-        //   - distance >= innerRadius: ring → H
-        //   - distance <  innerRadius: triangle → S+V
-        // The two regions are independent: a drag that started
-        // on the ring keeps updating H even if the finger
-        // crosses into the inner area, and vice versa. The
-        // user can lift + re-touch to switch regions.
-        //
-        // Markers:
-        //   - Ring marker (white + black border, ~10dp
-        //     radius) sits on the ring's mid-radius at the
-        //     hue angle.
-        //   - Triangle marker (white + black border, ~8dp
-        //     radius) sits inside the triangle at the
-        //     position computed from (sat, value) via the
-        //     inverse barycentric formula:
-        //       Px = cx + R·(3s − 1) / 2
-        //       Py = cy + (R·√3/2)·(1 + s − 2v)
-        Box(
-             modifier = Modifier
-                 .fillMaxWidth()
-                 .height(200.dp)
-                 .pointerInput(Unit) {
-                     // V_NOW (user bug report — "ring doesn't
-                     // support touch drag, can only tap"):
-                     // [detectDragGestures] gates both
-                     // [onDragStart] and [onDrag] on the
-                     // Compose touch-slop (≈8dp) — the
-                     // gesture doesn't fire until the
-                     // user's first move crosses that
-                     // threshold, which made the ring
-                     // feel "dead" for slow drags and
-                     // small movements (the finger had to
-                     // twitch by ~8dp before the marker
-                     // snapped to the touch position).
-                     // We replace it with
-                     // [awaitEachGesture] + a direct
-                     // [awaitPointerEvent] loop, which:
-                     //   - dispatches on the INITIAL
-                     //     down (no slop gate) so a tap
-                     //     immediately positions the
-                     //     marker
-                     //   - dispatches on every subsequent
-                     //     move event (no slop gate) so
-                     //     slow drags track the finger
-                     //     smoothly
-                     //   - exits cleanly on release (the
-                     //     `change.pressed == false` break
-                     //     drops out of the while loop and
-                     //     the awaitEachGesture re-arms
-                     //     for the next touch)
-                     // The dispatch is the same
-                     // [updateHueFromRingTouch] +
-                     // [updateSvFromTriangleTouch] pair,
-                     // which already ignores touches
-                     // outside its region (ring /
-                     // triangle respectively), so the
-                     // region split is preserved.
-                     awaitEachGesture {
-                         val down = awaitFirstDown(requireUnconsumed = false)
-                         val downPos = down.position
-                         updateHueFromRingTouch(downPos) { h ->
-                             hue = h
-                         }
-                         updateSvFromTriangleTouch(downPos) { s, v ->
-                             sat = s
-                             value = v
-                         }
-                         down.consume()
-                         while (true) {
-                             val event = awaitPointerEvent()
-                             val change = event.changes
-                                 .firstOrNull { it.id == down.id }
-                                 ?: break
-                             if (!change.pressed) break
-                             change.consume()
-                             val pos = change.position
-                             updateHueFromRingTouch(pos) { h ->
-                                 hue = h
-                             }
-                             updateSvFromTriangleTouch(pos) { s, v ->
-                                 sat = s
-                                 value = v
-                             }
-                         }
-                     }
-                 }
-                .drawBehind {
-                    val centerX = size.width / 2f
-                    val centerY = size.height / 2f
-                    val outerRadius = minOf(centerX, centerY) - 2f
-                    val ringThickness = outerRadius * 0.18f
-                    val innerRadius = outerRadius - ringThickness - 4f
-                    val sqrt3 = kotlin.math.sqrt(3f)
-                    val triHalfH = innerRadius * sqrt3 / 2f
-                    val triR = innerRadius
-
-                    // Hue ring (outer). V-dependent sweep so
-                    // the ring dims as V drops.
-                    val ringColorsFullBrightness = listOf(
-                        Color.hsv(0f, 1f, 1f),
-                        Color.hsv(60f, 1f, 1f),
-                        Color.hsv(120f, 1f, 1f),
-                        Color.hsv(180f, 1f, 1f),
-                        Color.hsv(240f, 1f, 1f),
-                        Color.hsv(300f, 1f, 1f),
-                        Color.hsv(360f, 1f, 1f),
-                    )
-                    rotate(degrees = -90f, pivot = Offset(centerX, centerY)) {
-                        drawCircle(
-                            brush = Brush.sweepGradient(
-                                colors = ringColorsFullBrightness,
-                                center = Offset(centerX, centerY),
-                            ),
-                            radius = outerRadius - ringThickness / 2f,
-                            style = Stroke(width = ringThickness),
-                        )
-                    }
-
-                    // Triangle (inner). Per-row horizontal
-                    // gradient from (white-to-black left mix)
-                    // to (full hue right). 1px step keeps the
-                    // gradient smooth on a 200dp box (~400
-                    // rows on a 2x screen).
-                    val fullColor = Color.hsv(hue, 1f, 1f)
-                    val triangleLeft = centerX - triR / 2f
-                    val triangleTop = centerY - triHalfH
-                    val triangleBottom = centerY + triHalfH
-                    val pixelStep = 1f
-                    var y = triangleTop
-                    while (y <= triangleBottom) {
-                        // Left color: white at top (t=1) to
-                        // black at bottom (t=0).
-                        val t = (centerY + triHalfH - y) / (2f * triHalfH)
-                        val leftColor = androidx.compose.ui.graphics.lerp(Color.Black, Color.White, t)
-                        // Right boundary: AB edge for top half
-                        // (y < centerY), AC edge for bottom
-                        // half (y >= centerY).
-                        val xRight = if (y < centerY) {
-                            centerX + triR * (1f + 1.5f * (y - centerY) / triHalfH)
-                        } else {
-                            centerX + triR * (1f - 1.5f * (y - centerY) / triHalfH)
-                        }
-                        drawRect(
-                            brush = Brush.horizontalGradient(
-                                colors = listOf(leftColor, fullColor),
-                                startX = triangleLeft,
-                                endX = xRight,
-                            ),
-                            topLeft = Offset(triangleLeft, y),
-                            size = Size(xRight - triangleLeft, pixelStep),
-                        )
-                        y += pixelStep
-                    }
-
-                    // Ring marker (H). Sits on the ring's
-                    // mid-radius at the hue angle.
-                    //
-                    // V_NOW (user bug report — "ring marker
-                    // doesn't match the selected hue"): the
-                    // ring gradient is drawn inside
-                    // `rotate(-90f)` so that hue=0° (red)
-                    // sits at the top (12 o'clock) and the
-                    // sweep goes clockwise. The touch
-                    // handler computes hue from
-                    // `atan2(dy, dx) + 90°` — also the
-                    // "0° at top, clockwise" convention.
-                    // The marker MUST use the same
-                    // convention or it lands 180° away
-                    // from the actual hue. The previous
-                    // formula `cos(hue+90°), sin(hue+90°)`
-                    // was the standard math convention
-                    // (0° at right, counter-clockwise) and
-                    // put hue=0° at the BOTTOM, so the
-                    // user saw a marker at 7-8 o'clock
-                    // when the slider said 61° (which
-                    // should be 1-2 o'clock). The
-                    // "0° at top, clockwise" position
-                    // formula in screen coords (y+ is
-                    // down) is:
-                    //   x = cx + r · sin(θ)
-                    //   y = cy − r · cos(θ)
-                    // which matches `atan2(dy, dx) + 90°`
-                    // one-for-one (verified by walking
-                    // through θ = 0° / 60° / 180° / 270°).
-                    val ringMarkerR = ringThickness * 0.55f
-                    val hueRadians = hue.toDouble() * Math.PI / 180.0
-                    val ringMarkerRadius = outerRadius - ringThickness / 2f
-                    val ringMarkerX = centerX + ringMarkerRadius * sin(hueRadians).toFloat()
-                    val ringMarkerY = centerY - ringMarkerRadius * cos(hueRadians).toFloat()
-                    drawCircle(
-                        color = Color.White,
-                        radius = ringMarkerR,
-                        center = Offset(ringMarkerX, ringMarkerY),
-                    )
-                    drawCircle(
-                        color = Color.Black,
-                        radius = ringMarkerR,
-                        center = Offset(ringMarkerX, ringMarkerY),
-                        style = Stroke(width = 1.5f),
-                    )
-
-                    // Triangle marker (S, V). Sits inside the
-                    // triangle at the (s, v) position via the
-                    // inverse barycentric formula. S is always
-                    // ≤ V (the sliders enforce this), so no
-                    // clamping is needed.
-                    val triMarkerR = ringThickness * 0.45f
-                    val triMarkerX = centerX + triR * (3f * sat - 1f) / 2f
-                    val triMarkerY = centerY + triHalfH * (1f + sat - 2f * value)
-                    drawCircle(
-                        color = Color.White,
-                        radius = triMarkerR,
-                        center = Offset(triMarkerX, triMarkerY),
-                    )
-                    drawCircle(
-                        color = Color.Black,
-                        radius = triMarkerR,
-                        center = Offset(triMarkerX, triMarkerY),
-                        style = Stroke(width = 1.5f),
-                    )
-                },
-        )
-
-        // 3. H slider. [hue] is 0-360° internally; the M3 Slider
-        // is normalised 0-1 so we multiply/divide at the boundary.
-        // The label shows the integer degree value the user is
-        // seeing on the ring marker.
-        SliderRow(
-            label = "H",
-            valueText = "${hue.toInt()}°",
-            value = hue / 360f,
-            onValueChange = { hue = it * 360f },
-        )
-        // 4. S slider. [sat] is 0-1 internally, displayed as 0-100%.
-        // When S exceeds V the triangle can't represent it (the
-        // triangle only covers V ≥ S), so we raise V to match S.
-        // This keeps the marker inside the triangle and ensures
-        // it actually moves when the user drags S.
-        SliderRow(
-            label = "S",
-            valueText = "${(sat * 100).toInt()}%",
-            value = sat,
-            onValueChange = { newS ->
-                sat = newS
-                if (newS > value) value = newS
-            },
-        )
-        // 5. V slider. Same shape as S, label "V" / 0-100%.
-        // When V drops below S the triangle can't represent it,
-        // so we lower S to match V.
-        SliderRow(
-            label = "V",
-            valueText = "${(value * 100).toInt()}%",
-            value = value,
-            onValueChange = { newV ->
-                value = newV
-                if (newV < sat) sat = newV
-            },
-        )
-
-        // 6. Confirm / Cancel buttons. The user spec requires
-        // explicit commit: drag/slider changes are preview-only
-        // until "确定" is pressed. "取消" discards the preview
-        // (just closes the picker — preview state is local and
-        // goes away with the composable). "确定" calls the
-        // parent's onConfirm with the composed preview colour;
-        // the parent dispatches SetBackgroundColor which both
-        // applies the colour AND closes the picker (the
-        // existing setBackgroundColor reducer already does the
-        // close, so the caller can dispatch one action and be
-        // done).
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            OutlinedButton(
-                onClick = onCancel,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("取消")
-            }
-            androidx.compose.material3.Button(
-                onClick = { onConfirm(previewColor) },
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("确定")
-            }
-        }
-    }
-}
-
-/**
- * Single labelled slider row: "H  240°" / slider on its own line.
- * M3's built-in [Slider] doesn't render a value indicator, so the
- * label + value pair sits on a row above the track. Width is
- * `fillMaxWidth` so each row spans the full sheet content area.
- */
-@Composable
-private fun SliderRow(
-    label: String,
-    valueText: String,
-    value: Float,
-    onValueChange: (Float) -> Unit,
-) {
-    Column {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = valueText,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = 0f..1f,
-        )
-    }
-}
-
-/**
- * Pure helper — convert an sRGB [Color] to HSV triple
- * (H in [0, 360), S in [0, 1], V in [0, 1]). Used to
- * initialise the HSV state of [CustomColorWheel] from the
- * colour the user picked via the preset swatch row.
- */
-private fun rgbToHsv(color: Color): FloatArray {
-    val r = color.red
-    val g = color.green
-    val b = color.blue
-    val max = maxOf(r, g, b)
-    val min = minOf(r, g, b)
-    val v = max
-    val s = if (max == 0f) 0f else (max - min) / max
-    val h = when {
-        max == min -> 0f
-        max == r -> ((g - b) / (max - min)) * 60f
-        max == g -> ((b - r) / (max - min) + 2) * 60f
-        else -> ((r - g) / (max - min) + 4) * 60f
-    }
-    return floatArrayOf(if (h < 0f) h + 360f else h, s, v)
-}
-
-/**
- * 7-stop colour stops for the hue ring. Standard HSV
- * sweep: red → yellow → green → cyan → blue → magenta → red.
- * Each segment is one third of the circle, so the gradient
- * has no visual banding at the colour boundaries.
- */
-private val hsvRingColors: List<Color> = listOf(
-    Color(0xFFFF0000), // 0   red
-    Color(0xFFFFFF00), // 60  yellow
-    Color(0xFF00FF00), // 120 green
-    Color(0xFF00FFFF), // 180 cyan
-    Color(0xFF0000FF), // 240 blue
-    Color(0xFFFF00FF), // 300 magenta
-    Color(0xFFFF0000), // 360 back to red
-)
-
-/**
- * Touch handler for the hue ring in [CustomColorWheel].
- * Computes hue (0–360°) from the touch offset's angle
- * relative to the centre, then calls [apply] with the
- * new hue. Touches inside the inner area (distance <
- * innerRadius) are ignored — those belong to the
- * triangle picker. Reads the picker size from the
- * surrounding [PointerInputScope] so callers don't have
- * to thread it through manually.
- */
-@OptIn(ExperimentalFoundationApi::class)
-private fun androidx.compose.ui.input.pointer.PointerInputScope.updateHueFromRingTouch(
-    offset: Offset,
-    apply: (hue: Float) -> Unit,
-) {
-    val centerX = size.width / 2f
-    val centerY = size.height / 2f
-    val outerRadius = minOf(centerX, centerY) - 2f
-    val ringThickness = outerRadius * 0.18f
-    val innerRadius = outerRadius - ringThickness - 4f
-    val dx = offset.x - centerX
-    val dy = offset.y - centerY
-    val distance = kotlin.math.hypot(dx, dy)
-    if (distance < innerRadius) return  // in inner area; triangle picker handles this
-    if (distance > outerRadius) return
-        // V_NOW (user bug report — "page-scroll swipe
-        // through the picker area changes the hue"): the
-        // Box around the ring is `fillMaxWidth`.
-        // height(200.dp)` — the ring is centred, but the
-        // 4 box corners (and the strips above / below the
-        // ring) extend well past `outerRadius`. Without
-        // this guard, a vertical drag that starts in a
-        // blank corner was still classified as a ring
-        // touch and re-aimed the hue marker. Now only
-        // touches in the ring annulus
-        // (`innerRadius ≤ distance ≤ outerRadius`) move
-        // the marker; everything else is ignored (the
-        // pointerInput modifier still receives the event
-        // for the Box, but no setter is called, so the
-        // hue stays put and the gesture doesn't hijack
-        // vertical scrolling).
-    // Angle in degrees, 0 = top, clockwise.
-    val angleDeg = ((Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble())) + 90.0) + 360.0) % 360.0
-    apply(angleDeg.toFloat())
-}
-
-/**
- * Touch handler for the inner triangle S/V picker in
- * [CustomColorWheel]. Equilateral triangle inscribed in
- * a circle of radius innerRadius. Vertices in the
- * box-centred coordinate system:
- *   A = (cx + R, cy)         right   = full hue    = (s=1, v=1)
- *   B = (cx − R/2, cy − h)   top    = white       = (s=0, v=1)
- *   C = (cx − R/2, cy + h)   bottom = black       = (s=0, v=0)
- * where h = R·√3/2. A point P inside the triangle has
- * barycentric coordinates (α, β, γ) for A, B, C:
- *   α = (2·dx + R) / (3·R)
- *   β = (R − dx) / (3·R) − dy / (R·√3)
- *   γ = (R − dx) / (3·R) + dy / (R·√3)
- * S = α, V = α + β. Touches outside the triangle
- * (distance ≥ innerRadius, or any barycentric
- * coordinate < 0) are clamped to the nearest point on
- * the triangle's boundary (clamp α, β, γ to [0, 1] then
- * renormalise so they sum to 1).
- */
-@OptIn(ExperimentalFoundationApi::class)
-private fun androidx.compose.ui.input.pointer.PointerInputScope.updateSvFromTriangleTouch(
-    offset: Offset,
-    apply: (saturation: Float, value: Float) -> Unit,
-) {
-    val centerX = size.width / 2f
-    val centerY = size.height / 2f
-    val outerRadius = minOf(centerX, centerY) - 2f
-    val ringThickness = outerRadius * 0.18f
-    val innerRadius = outerRadius - ringThickness - 4f
-    val dx = offset.x - centerX
-    val dy = offset.y - centerY
-    val distance = kotlin.math.hypot(dx, dy)
-    if (distance >= innerRadius) return  // in ring area; hue ring handles this
-    val R = innerRadius
-    val sqrt3 = kotlin.math.sqrt(3f)
-    val alpha = (2f * dx + R) / (3f * R)
-    val beta = (R - dx) / (3f * R) - dy / (R * sqrt3)
-    val gamma = (R - dx) / (3f * R) + dy / (R * sqrt3)
-    val a = alpha.coerceIn(0f, 1f)
-    val b = beta.coerceIn(0f, 1f)
-    val g = gamma.coerceIn(0f, 1f)
-    val sum = a + b + g
-    if (sum <= 0f) return
-    val an = a / sum
-    val bn = b / sum
-    apply(an, an + bn)
-}
-// ─── BackgroundColorPanel (preset swatches) ──────────────
-/**
- * Horizontal row of preset colour chips. The 7 fixed
- * presets are color swatches; the 8th chip ("Custom")
- * opens the inline HSV picker (via the parent
- * [SettingsPanel] conditionally rendering
- * [CustomColorWheel] under it).
- */
-@Composable
-private fun BackgroundColorPanel(
-    currentColor: Color,
-    onPreset: (BackgroundPreset) -> Unit,
-) {
-    val activePreset = BackgroundPreset.fromColor(currentColor)
-    val customDisplayColor = if (activePreset == BackgroundPreset.Custom) currentColor else Color(0xFF808080)
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        BackgroundPreset.values().forEach { preset ->
-            if (preset == BackgroundPreset.Custom) {
-                BackgroundColorChip(
-                    color = customDisplayColor,
-                    label = androidx.compose.ui.res.stringResource(preset.labelRes),
-                    isSelected = activePreset == BackgroundPreset.Custom,
-                    isCustom = true,
-                    onClick = { onPreset(preset) },
-                )
-            } else {
-                BackgroundColorChip(
-                    color = preset.color,
-                    label = androidx.compose.ui.res.stringResource(preset.labelRes),
-                    isSelected = activePreset == preset,
-                    isCustom = false,
-                    onClick = { onPreset(preset) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun BackgroundColorChip(
-    color: Color,
-    label: String,
-    isSelected: Boolean,
-    isCustom: Boolean,
-    onClick: () -> Unit,
-) {
-    val borderColor = if (isSelected) MaterialTheme.colorScheme.primary else Color(0x44000000)
-    val borderWidth = if (isSelected) 2.dp else 1.dp
-    Box(
-        modifier = Modifier
-            .size(30.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .border(borderWidth, borderColor, RoundedCornerShape(8.dp))
-            .background(
-                color = if (isCustom) Color.Transparent else color,
-                shape = RoundedCornerShape(8.dp),
-            )
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (isCustom) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                color,
-                                Color(0xFFE53935),
-                                Color(0xFFFB8C00),
-                                Color(0xFFFDD835),
-                                Color(0xFF43A047),
-                                Color(0xFF1E88E5),
-                                Color(0xFF8E24AA),
-                            ),
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                    ),
-            )
-        }
-        Text(
-            text = label,
-            color = if (isCustom) Color.Transparent else pickChipLabelColor(color),
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-        )
-    }
-}
-
-/**
- * Pick a black/white label color based on the swatch
- * luminance so labels stay readable on both light and
- * dark preset colors.
- */
-private fun pickChipLabelColor(swatch: Color): Color {
-    val argb = swatch.toArgb()
-    val r = ((argb shr 16) and 0xFF) / 255f
-    val g = ((argb shr 8) and 0xFF) / 255f
-    val b = (argb and 0xFF) / 255f
-    val luminance = 0.299f * r + 0.587f * g + 0.114f * b
-    return if (luminance > 0.6f) Color(0xFF111111) else Color(0xFFFFFFFF)
-}
 
 /**
  * Bottom-right action panel — replaces the previous single-FAB
@@ -9775,693 +9358,3 @@ private fun BottomPanelListItem(
 }
 
 
-// ─── Settings tabs (V_NOW: tabbed settings) ───────────────
-
-/**
- * Visual metadata for the 3 settings tabs. Centralised so the
- * TabRow (phones), the NavigationRail (tablets), and any future
- * deep-link / quick-jump all read the same icon + label, and
- * adding a 4th tab is a one-line change here.
- */
-private data class SettingsTabSpec(
-    val tab: com.pockref.app.model.SettingsTab,
-    val label: String,
-    val icon: androidx.compose.ui.graphics.vector.ImageVector,
-)
-
-private val settingsTabSpecs: List<SettingsTabSpec> = listOf(
-    SettingsTabSpec(
-        tab = com.pockref.app.model.SettingsTab.GENERAL,
-        label = "通用",
-        icon = Icons.Rounded.Tune,
-    ),
-    SettingsTabSpec(
-        tab = com.pockref.app.model.SettingsTab.APPEARANCE,
-        label = "外观",
-        icon = Icons.Rounded.Palette,
-    ),
-    SettingsTabSpec(
-        tab = com.pockref.app.model.SettingsTab.GESTURES,
-        label = "手势",
-        icon = Icons.Rounded.SwipeRight,
-    ),
-)
-
-/**
- * Phone-width tab bar across the top of the sheet. 3 fixed
- * tabs (M3 [TabRow]); selected tab inherits
- * [com.pockref.app.model.PockRefUiState.settingsTab] so the
- * choice survives sheet close/reopen within the same app
- * session.
- */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsTabRow(
-    selectedTab: com.pockref.app.model.SettingsTab,
-    onTabSelected: (com.pockref.app.model.SettingsTab) -> Unit,
-) {
-    androidx.compose.material3.TabRow(
-        selectedTabIndex = settingsTabSpecs.indexOfFirst { it.tab == selectedTab }
-            .coerceAtLeast(0),
-    ) {
-        settingsTabSpecs.forEach { spec ->
-            androidx.compose.material3.Tab(
-                selected = selectedTab == spec.tab,
-                onClick = { onTabSelected(spec.tab) },
-                text = { Text(spec.label) },
-                icon = { Icon(spec.icon, contentDescription = spec.label) },
-            )
-        }
-    }
-}
-
-/**
- * Tablet-width vertical rail on the left of the sheet. Same
- * 3 tabs as [SettingsTabRow] but laid out as M3
- * [NavigationRailItem]s. The [selected] state and the icon
- * tint come straight from the same `settingsTabSpecs` list
- * so the two layouts never drift apart.
- */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsNavigationRail(
-    selectedTab: com.pockref.app.model.SettingsTab,
-    onTabSelected: (com.pockref.app.model.SettingsTab) -> Unit,
-) {
-    NavigationRail {
-        settingsTabSpecs.forEach { spec ->
-            NavigationRailItem(
-                selected = selectedTab == spec.tab,
-                onClick = { onTabSelected(spec.tab) },
-                icon = { Icon(spec.icon, contentDescription = spec.label) },
-                label = { Text(spec.label) },
-                colors = NavigationRailItemDefaults.colors(),
-            )
-        }
-    }
-}
-
-/**
- * Dispatcher: renders the active tab's composable inside a
- * [LazyColumn] so off-screen content is not composed. Each
- * tab composable is responsible for its own `items { ... }`
- * blocks — this wrapper just picks the right one and gives
- * it the shared [state] / [onAction] / [paddingValues] (the
- * last for any inner padding the sheet applies, currently
- * unused but plumbed in for future edge-to-edge work).
- */
-@Composable
-private fun SettingsTabContent(
-    state: com.pockref.app.model.PockRefUiState,
-    onAction: (com.pockref.app.ui.PockRefAction) -> Unit,
-    selectedTab: com.pockref.app.model.SettingsTab,
-) {
-    when (selectedTab) {
-        com.pockref.app.model.SettingsTab.GENERAL ->
-            SettingsGeneralTab(state = state, onAction = onAction)
-        com.pockref.app.model.SettingsTab.APPEARANCE ->
-            SettingsAppearanceTab(state = state, onAction = onAction)
-        com.pockref.app.model.SettingsTab.GESTURES ->
-            SettingsGesturesTab(state = state, onAction = onAction)
-    }
-}
-
-/**
- * "通用" tab — device-input behaviors and persistence:
- *   - 边缘吸附 (edge snap to other images)
- *   - 旋转角度吸附 (rotation snap to 0/90/180/270°)
- *   - 自动保存 (interval slider, 1 min ~ 1 h)
- *   - S Pen 按钮 (PRESS_AND_HOLD vs TOGGLE)
- *
- * Uses [LazyColumn] so the long auto-save + S Pen sections
- * compose lazily on phone (portrait, ~700dp tall — the
- * content is ~900dp and used to clip the bottom 2 rows under
- * the old [verticalScroll] approach).
- */
-@Composable
-private fun SettingsGeneralTab(
-    state: com.pockref.app.model.PockRefUiState,
-    onAction: (com.pockref.app.ui.PockRefAction) -> Unit,
-) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            horizontal = 24.dp,
-            vertical = 16.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            SettingsToggleRow(
-                title = "吸附图像",
-                subtitle = if (state.edgeSnapEnabled) "拖动图片时贴近其他图片的边/中线" else "已关闭",
-                checked = state.edgeSnapEnabled,
-                onCheckedChange = { checked ->
-                    onAction(com.pockref.app.ui.PockRefAction.SetEdgeSnapEnabled(checked))
-                },
-            )
-        }
-        item {
-            SettingsToggleRow(
-                title = "吸附旋转",
-                subtitle = if (state.rotationSnapEnabled) "双指旋转时自动吸附 0/90/180/270°" else "已关闭",
-                checked = state.rotationSnapEnabled,
-                onCheckedChange = { checked ->
-                    onAction(com.pockref.app.ui.PockRefAction.SetRotationSnapEnabled(checked))
-                },
-            )
-        }
-        item {
-            SettingsAutoSaveSection(state = state, onAction = onAction)
-        }
-        item {
-            SettingsSpenSection(state = state, onAction = onAction)
-        }
-    }
-}
-
-
-/**
- * "外观" tab — visual look-and-feel:
- *   - 主题 (system / light / dark segmented row)
- *   - 背景颜色 (7 preset swatches + inline HSV wheel on
- *     the "Custom" chip)
- *
- * The HSV wheel is the only section that may scroll off
- * the bottom of a portrait phone — [LazyColumn] keeps
- * the rest of the tab cheap and the wheel's draggable
- * canvas uses its own internal height (180dp) so it
- * doesn't fight the LazyColumn for vertical space.
- */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsAppearanceTab(
-    state: com.pockref.app.model.PockRefUiState,
-    onAction: (com.pockref.app.ui.PockRefAction) -> Unit,
-) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            horizontal = 24.dp,
-            vertical = 16.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        // 主题
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "主题",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                val themeOptions = listOf(
-                    com.pockref.app.data.ThemeMode.SYSTEM to "系统",
-                    com.pockref.app.data.ThemeMode.LIGHT to "浅色",
-                    com.pockref.app.data.ThemeMode.DARK to "深色",
-                )
-                SingleChoiceSegmentedButtonRow {
-                    themeOptions.forEachIndexed { index, (mode, label) ->
-                        SegmentedButton(
-                            selected = state.themeMode == mode,
-                            onClick = { onAction(com.pockref.app.ui.PockRefAction.SetThemeMode(mode)) },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = index,
-                                count = themeOptions.size,
-                            ),
-                            modifier = Modifier.heightIn(min = 56.dp),
-                            icon = { },
-                        ) {
-                            Text(
-                                text = label,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        // 背景颜色
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "背景颜色",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                BackgroundColorPanel(
-                    currentColor = state.backgroundColor,
-                    onPreset = { preset ->
-                        onAction(com.pockref.app.ui.PockRefAction.SetBackgroundPreset(preset))
-                    },
-                )
-                if (state.showBackgroundPicker) {
-                    CustomColorWheel(
-                        currentColor = state.backgroundColor,
-                        // "确定" (V_NOW: preview/commit pattern) —
-                        // apply the composed preview colour. The
-                        // [setBackgroundColor] reducer both writes
-                        // [state.backgroundColor] AND sets
-                        // [showBackgroundPicker = false] in the
-                        // same update, so the picker closes on
-                        // commit (and the next time the user
-                        // taps Custom, the picker reopens with
-                        // the just-saved colour as the new
-                        // starting point).
-                        onConfirm = { color ->
-                            onAction(com.pockref.app.ui.PockRefAction.SetBackgroundColor(color))
-                        },
-                        // "取消" (V_NOW: preview/commit pattern) —
-                        // discard the preview (it's local state
-                        // inside [CustomColorWheel] and goes away
-                        // with the composable) and close the
-                        // picker without touching
-                        // [state.backgroundColor]. Uses the
-                        // pre-existing [ShowBackgroundPicker]
-                        // action — no new reducer needed.
-                        onCancel = {
-                            onAction(com.pockref.app.ui.PockRefAction.ShowBackgroundPicker(false))
-                        },
-                    )
-                }
-            }
-        }
-        // 小地图显示
-        item {
-            SettingsMinimapSection(state = state, onAction = onAction)
-        }
-    }
-}
-
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-@Composable
-private fun SettingsMinimapSection(
-    state: com.pockref.app.model.PockRefUiState,
-    onAction: (com.pockref.app.ui.PockRefAction) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            text = "小地图显示",
-            style = MaterialTheme.typography.titleSmall,
-        )
-        // Level 1: Display mode (Minimap vs Slider)
-        val displayOptions = listOf(
-            com.pockref.app.model.MinimapDisplayMode.MINIMAP to "地图",
-            com.pockref.app.model.MinimapDisplayMode.SLIDER to "滑块",
-        )
-        SingleChoiceSegmentedButtonRow {
-            displayOptions.forEachIndexed { index, (mode, label) ->
-                SegmentedButton(
-                    selected = state.minimapDisplayMode == mode,
-                    onClick = {
-                        onAction(com.pockref.app.ui.PockRefAction.SetMinimapDisplayMode(mode))
-                    },
-                    shape = SegmentedButtonDefaults.itemShape(
-                        index = index,
-                        count = displayOptions.size,
-                    ),
-                    modifier = Modifier.heightIn(min = 48.dp),
-                    icon = { },
-                ) {
-                    Text(
-                        text = label,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-        // Level 2: Slider orientation (only when Slider is selected)
-        androidx.compose.animation.AnimatedVisibility(
-            visible = state.minimapDisplayMode == com.pockref.app.model.MinimapDisplayMode.SLIDER,
-            enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(),
-            exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut(),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "滑块方向",
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                val orientationOptions = listOf(
-                    com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE to "自适应",
-                    com.pockref.app.model.MinimapSliderOrientation.HORIZONTAL to "横向",
-                    com.pockref.app.model.MinimapSliderOrientation.VERTICAL to "纵向",
-                )
-                orientationOptions.forEach { (orientation, label) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .selectable(
-                                selected = state.minimapSliderOrientation == orientation,
-                                onClick = {
-                                    onAction(
-                                        com.pockref.app.ui.PockRefAction.SetMinimapSliderOrientation(
-                                            orientation,
-                                        ),
-                                    )
-                                },
-                                role = androidx.compose.ui.semantics.Role.RadioButton,
-                            )
-                            .padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        androidx.compose.material3.RadioButton(
-                            selected = state.minimapSliderOrientation == orientation,
-                            onClick = null,
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = when (orientation) {
-                                com.pockref.app.model.MinimapSliderOrientation.ADAPTIVE -> "$label — 根据内容方向自动调整"
-                                com.pockref.app.model.MinimapSliderOrientation.HORIZONTAL -> "$label — 滑块水平方向显示"
-                                com.pockref.app.model.MinimapSliderOrientation.VERTICAL -> "$label — 滑块垂直方向显示"
-                            },
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * Static grouping of the 7 [com.pockref.app.ui.GestureId]s
- * into 3 sub-categories (V_NOW: gesture tab visual
- * hierarchy). Mirrors Procreate's "Gestures → [Zoom /
- * Rotate / Edit]" 3-bucket layout so users coming from
- * Procreate find the toggle they want without scanning a
- * flat list of 7.
- */
-private data class GestureGroupSpec(
-    val title: String,
-    val ids: List<String>,
-)
-
-private val gestureGroupSpecs: List<GestureGroupSpec> = listOf(
-    GestureGroupSpec(
-        title = "缩放",
-        ids = listOf(
-            com.pockref.app.ui.GestureId.PINCH_ZOOM,
-        ),
-    ),
-    GestureGroupSpec(
-        title = "旋转",
-        ids = listOf(
-            com.pockref.app.ui.GestureId.PINCH_ROTATE,
-        ),
-    ),
-    GestureGroupSpec(
-        title = "编辑",
-        ids = listOf(
-            com.pockref.app.ui.GestureId.MOVE_IMAGE,
-            com.pockref.app.ui.GestureId.TWO_FINGER_TAP,
-            com.pockref.app.ui.GestureId.THREE_FINGER_TAP,
-            com.pockref.app.ui.GestureId.DOUBLE_TAP_EMPTY,
-        ),
-    ),
-)
-
-/**
- * "手势" tab — 7 per-gesture on/off switches grouped into
- * 缩放 / 旋转 / 编辑 sub-categories. Each group has a
- * small section header (titleSmall, onSurfaceVariant) so
- * the visual rhythm reads as "3 buckets of 1-4 toggles"
- * rather than a single flat list of 7. Uses [LazyColumn]
- * for lazy composition.
- */
-@Composable
-private fun SettingsGesturesTab(
-    state: com.pockref.app.model.PockRefUiState,
-    onAction: (com.pockref.app.ui.PockRefAction) -> Unit,
-) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            horizontal = 24.dp,
-            vertical = 16.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        gestureGroupSpecs.forEach { group ->
-            item(key = "group_${group.title}") {
-                Text(
-                    text = group.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            items(
-                items = group.ids,
-                key = { id -> "gesture_$id" },
-            ) { id ->
-                val isOn = state.gestureToggles[id] ?: true
-                val title = com.pockref.app.ui.GestureId.label(id)
-                val subtitle = gestureSubtitle(id, isOn)
-                SettingsToggleRow(
-                    title = title,
-                    subtitle = subtitle,
-                    checked = isOn,
-                    onCheckedChange = { checked ->
-                        onAction(com.pockref.app.ui.PockRefAction.SetGestureEnabled(id, checked))
-                    },
-                )
-            }
-        }
-    }
-}
-
-/**
- * Per-gesture helper subtitle for [SettingsGesturesTab].
- * Kept as a top-level private fun so the LazyColumn
- * `items` lambda stays a one-liner. Mirrors the original
- * `when` block that used to live inline in
- * [SettingsPanel].
- */
-private fun gestureSubtitle(id: String, isOn: Boolean): String = when (id) {
-    com.pockref.app.ui.GestureId.MOVE_IMAGE -> if (isOn) "单指拖动选中的图片" else "已关闭"
-    com.pockref.app.ui.GestureId.PINCH_ZOOM -> if (isOn) "双指捏合调整缩放" else "已关闭"
-    com.pockref.app.ui.GestureId.PINCH_ROTATE -> if (isOn) "双指旋转(吸附 0/90/180/270°)" else "已关闭"
-    com.pockref.app.ui.GestureId.TWO_FINGER_TAP -> if (isOn) "撤销" else "已关闭"
-    com.pockref.app.ui.GestureId.THREE_FINGER_TAP -> if (isOn) "重做" else "已关闭"
-    com.pockref.app.ui.GestureId.DOUBLE_TAP_EMPTY -> if (isOn) "适应窗口" else "已关闭"
-    else -> if (isOn) "已启用" else "已关闭"
-}
-
-/**
- * Auto-save master switch + interval slider, extracted
- * from [SettingsPanel] so [SettingsGeneralTab] (and the
- * navigation-rail variant on tablet) can render it
- * uniformly. V_NOW layout:
- *
- *   [Switch row] "启用自动保存"  /  subtitle changes
- *               "已开启" ↔ "已关闭" so the user can tell
- *               at a glance whether the slider below is
- *               live or inert.
- *
- *   [Title] "自动保存"
- *   [Body ] "定时把画布快照写到磁盘..."
- *   [Label] "当前:X 分钟"  (greyed out when switch off)
- *   [Slider] discrete stops, 1 / 5 / 10 / 15 / ... / 60 min
- *            (13 entries, see
- *            [com.pockref.app.data.AutoSaveManager.INTERVAL_STOPS_MINUTES])
- *            `enabled = state.autoSaveEnabled` so flipping
- *            the switch off also visually dims the slider
- *            + refuses touch input.
- *
- * The slider uses an *index-based* range
- * (`0f..(stops.size - 1).toFloat()`, `steps = stops.size - 2`)
- * rather than a millisecond-based range. This is the design
- * the existing
- * [com.pockref.app.data.AutoSaveManager.INTERVAL_STOPS_MINUTES]
- * KDoc explicitly anticipates ("uses an `index → value`
- * indirection: `valueRange = 0f..(size-1).toFloat()` +
- * `steps = size-2`"). A millisecond-based range with
- * `steps` would produce linearly-spaced stops (1, 6.4, 11.7,
- * …, 60) — not the desired 1 / 5 / 10 / 15 / … / 60 pattern,
- * because Compose's Slider `steps` parameter spaces stops
- * uniformly. Going index-based + reading
- * [com.pockref.app.data.AutoSaveManager.INTERVAL_STOPS_MINUTES]
- * keeps the auto-save manager as the single source of truth
- * for the available intervals (a future "add 90 min / 120 min
- * stop" edit is one line in that file).
- *
- * [state] is read for both the Switch position
- * ([PockRefUiState.autoSaveEnabled]) and the dim/disabled
- * gating of the slider. The switch's `onCheckedChange`
- * dispatches [PockRefAction.SetAutoSaveEnabled]; the
- * reducer in [PockRefViewModel.setAutoSaveEnabled] writes
- * the pref AND updates the uiState in the same call, so a
- * tap on the switch is reflected in the slider's
- * `enabled` value in the next frame (no `mutableStateOf`
- * shadow, no one-frame desync).
- */
-@Composable
-private fun SettingsAutoSaveSection(
-    state: com.pockref.app.model.PockRefUiState,
-    onAction: (com.pockref.app.ui.PockRefAction) -> Unit,
-) {
-    val stops = com.pockref.app.data.AutoSaveManager.INTERVAL_STOPS_MINUTES
-    val appPrefs = com.pockref.app.data.AppPreferences(
-        androidx.compose.ui.platform.LocalContext.current,
-    )
-    // V_NOW (follow-up after auto-save-switch task): source
-    // of truth for the slider's *position* is now the
-    // [uiState] field [autoSaveIntervalMs] (mirrored from the
-    // pref by the reducer). The previous version read
-    // [appPrefs.autoSaveIntervalMs] directly, which is a
-    // plain Kotlin getter over SharedPreferences — *not* a
-    // Compose State — so dragging the slider wrote the pref
-    // but didn't trigger recomposition, leaving the slider
-    // visually stuck at the old position. The auto-save
-    // coroutine itself still reads the pref directly on
-    // every cycle, so slider position == the value the next
-    // save will use.
-    val currentAutoSaveMs = state.autoSaveIntervalMs
-    // Snap the persisted ms value to the nearest stop's
-    // index. If a future code path writes an
-    // out-of-stops value (e.g. a debug "save every 5s"
-    // toggle), the slider rounds to the closest stop
-    // rather than throwing or showing a position outside
-    // its [valueRange].
-    val currentIndex = com.pockref.app.data.AutoSaveManager.INTERVAL_STOPS_MINUTES
-        .mapIndexed { index, minutes -> index to minutes * 60_000L }
-        .minByOrNull { kotlin.math.abs(it.second - currentAutoSaveMs) }
-        ?.first
-        ?: 0
-
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        // V_NOW: master switch on top so it's the first
-        // thing the user sees (matches the project's
-        // other settings — 吸附图像 / 吸附旋转 — which
-        // all put the Switch on the same row as the
-        // title via [SettingsToggleRow]).
-        SettingsToggleRow(
-            title = "自动保存",
-            subtitle = if (state.autoSaveEnabled) "已开启,定时把画布快照写到磁盘" else "已关闭,画布不会自动保存",
-            checked = state.autoSaveEnabled,
-            onCheckedChange = { checked ->
-                onAction(com.pockref.app.ui.PockRefAction.SetAutoSaveEnabled(checked))
-            },
-        )
-        // V_NOW: dim the value label together with the
-        // slider so the user sees the whole interval
-        // control "go dark" when they flip the master
-        // switch off. `MaterialTheme.colorScheme.onSurface`
-        // at 0.38 alpha is the standard M3 disabled
-        // affordance (matches what the system Slider
-        // uses internally for its disabled state).
-        Text(
-            text = "当前:${stops[currentIndex]} 分钟",
-            style = MaterialTheme.typography.bodySmall,
-            color = if (state.autoSaveEnabled) {
-                MaterialTheme.colorScheme.onSurface
-            } else {
-                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-            },
-        )
-        androidx.compose.material3.Slider(
-            value = currentIndex.toFloat(),
-            onValueChange = { newValue ->
-                val snappedIndex = newValue.toInt().coerceIn(0, stops.size - 1)
-                val snappedMs = stops[snappedIndex] * 60_000L
-                onAction(
-                    com.pockref.app.ui.PockRefAction.SetAutoSaveIntervalMs(snappedMs),
-                )
-            },
-            valueRange = 0f..(stops.size - 1).toFloat(),
-            // 13 stops → 11 internal divisions.
-            // `steps = size - 2` matches the
-            // INTERVAL_STOPS_MINUTES KDoc contract.
-            steps = stops.size - 2,
-            enabled = state.autoSaveEnabled,
-        )
-        // V_NOW (follow-up after "auto-save silent" bug):
-        // show the user when the most recent auto-save
-        // ran, so they can tell at a glance whether the
-        // feature is actually doing its job. Renders as
-        // "上次自动保存:[N秒前 / N分钟前 / N小时前 / 刚刚 / 从未]"
-        // depending on age. Hidden (null renders empty
-        // Text) when the master switch is off — the
-        // "disabled" message in the Switch's subtitle
-        // already covers that case, showing a stale
-        // "last saved" timestamp would be misleading.
-        if (state.autoSaveEnabled) {
-            val lastSaved = state.lastAutoSaveAt
-            Text(
-                text = if (lastSaved == null) {
-                    "上次自动保存:从未(画布有改动时,会在 ${stops[currentIndex]} 分钟后自动写盘)"
-                } else {
-                    "上次自动保存:" + formatRelativeAge(
-                        lastSaved,
-                        System.currentTimeMillis(),
-                    )
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-/**
- * S Pen side-button mode radio. Two options (PRESS_AND_HOLD
- * vs TOGGLE) with their human descriptions. Extracted
- * from the old [SettingsPanel] so [SettingsGeneralTab] can
- * include it without inlining the radio-list boilerplate.
- */
-@Composable
-private fun SettingsSpenSection(
-    state: com.pockref.app.model.PockRefUiState,
-    onAction: (com.pockref.app.ui.PockRefAction) -> Unit,
-) {
-    val currentSpenMode = state.spenMode
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(text = "S Pen 按钮", style = MaterialTheme.typography.titleSmall)
-        Text(
-            text = "选择笔身按钮的触发方式,需 S Pen 实体按钮支持(部分 Samsung 机型支持)",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        com.pockref.app.spen.SpenMode.values().forEach { mode ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .selectable(
-                        selected = (currentSpenMode == mode),
-                        onClick = { onAction(com.pockref.app.ui.PockRefAction.SetSpenMode(mode)) },
-                        role = androidx.compose.ui.semantics.Role.RadioButton,
-                    )
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                androidx.compose.material3.RadioButton(
-                    selected = (currentSpenMode == mode),
-                    onClick = null,
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column {
-                    Text(
-                        text = when (mode) {
-                            com.pockref.app.spen.SpenMode.PRESS_AND_HOLD -> "按住开启,松开关闭"
-                            com.pockref.app.spen.SpenMode.TOGGLE -> "按一下开,再按一下关"
-                            com.pockref.app.spen.SpenMode.DOUBLE_TAP -> "点按开启,双击关闭"
-                        },
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Text(
-                        text = when (mode) {
-                            com.pockref.app.spen.SpenMode.PRESS_AND_HOLD ->
-                                "按住笔身按钮进入框选,松开退出。松手时如果有 2+ 张图被选中则切到多选,否则单选。"
-                            com.pockref.app.spen.SpenMode.TOGGLE ->
-                                "点按笔身按钮进入框选,再次点按退出。关闭时如果有 2+ 张图被选中则切到多选,否则单选。"
-                            com.pockref.app.spen.SpenMode.DOUBLE_TAP ->
-                                "点按笔身按钮进入框选,在 200ms 内再次点按可退出并强制单选;超时后保持框选状态,需要再来一次双击才能退出。"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}

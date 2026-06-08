@@ -192,10 +192,32 @@ sealed interface PockRefAction {
     data object ConvertToGrayscale : PockRefAction
     data class LassoSelect(val rect: RectF) : PockRefAction
     data object ToggleBoxSelectMode : PockRefAction
-    data object BeginBoxSelect : PockRefAction
-    data class UpdateBoxSelectRect(val rect: RectF) : PockRefAction
-    data object CommitBoxSelect : PockRefAction
-    data object ExitBoxSelectMode : PockRefAction
+ data object BeginBoxSelect : PockRefAction
+ /**
+ * V_NOW (CAD-style box select): start a box-select drag with
+ * the given screen-space start point. The reducer stores the
+ * start so the first [UpdateBoxSelectRect] dispatch can decide
+ * the drag direction (WINDOW vs CROSSING) by comparing the
+ * pointer's current X against this start. Replaces the older
+ * [BeginBoxSelect] for the drag entry paths; the legacy
+ * no-arg form is kept so any other dispatch site that doesn't
+ * care about direction (e.g. tests) still works.
+ */
+ data class BeginBoxSelectAt(val start: Offset) : PockRefAction
+ /**
+ * V_NOW (CAD-style box select): update the live drag rectangle.
+ * [rect] is the screen-space normalised rect (left ≤ right,
+ * top ≤ bottom). [current] is the live pointer position — the
+ * reducer compares [current].x against the stored
+ * [PockRefUiState.boxSelectStart].x to decide whether this
+ * drag is WINDOW (left → right) or CROSSING (right → left).
+ * Direction is locked on the first call and read on every
+ * subsequent one (so a mid-drag wobble doesn't flip the
+ * preview).
+ */
+ data class UpdateBoxSelectRect(val rect: RectF, val current: Offset) : PockRefAction
+ data object CommitBoxSelect : PockRefAction
+ data object ExitBoxSelectMode : PockRefAction
     /**
      * Set the selection interaction mode to one of the three
      * exclusive values (SINGLE / MULTI / BOX). Driven by the
@@ -590,6 +612,40 @@ sealed interface PockRefAction {
      *  IDLE. */
     data object ExitPractice : PockRefAction
 
+    // ── Pre-flight config sheet (commit 2) ─────────────────────────
+    // The two actions below toggle the
+    // [com.pockref.app.model.PockRefUiState.practiceConfigSheetOpen]
+    // flag that drives the pre-flight
+    // [com.pockref.app.ui.PracticeConfigSheet]
+    // [androidx.compose.material3.ModalBottomSheet]. The flag
+    // is independent of the actual
+    // [com.pockref.app.model.PockRefUiState.practiceState]
+    // (the in-session reducer) — opening the config sheet
+    // does NOT start a practice session; only the sheet's
+    // "开始" button dispatches [StartPractice].
+
+    /**
+     * Show the pre-flight config sheet. Dispatched by the
+     * "速写练习" entry in the
+     * [com.pockref.app.ui.PureRefApp.SelectionBottomSheet]'s
+     * row1. Idempotent: setting the flag to `true` when
+     * it's already `true` is a no-op. The SelectionBottomSheet
+     * itself auto-dismisses (its `LaunchedEffect` reads
+     * [com.pockref.app.model.PockRefUiState.selectionSheetShowTick]
+     * and re-shows on every user action — clicking a button
+     * that takes the user to a different sheet counts as
+     * "the user moved on" so the SelectionBottomSheet goes
+     * away on its own).
+     */
+    data object OpenPracticeConfigSheet : PockRefAction
+
+    /**
+     * Hide the pre-flight config sheet. Dispatched by the
+     * sheet's [androidx.compose.material3.ModalBottomSheet]
+     * `onDismissRequest` (system back, scrim tap, swipe-down
+     * on the handle). Idempotent.
+     */
+    data object DismissPracticeConfigSheet : PockRefAction
 }
 
 /**

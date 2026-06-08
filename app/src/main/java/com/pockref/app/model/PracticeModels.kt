@@ -11,7 +11,7 @@ package com.pockref.app.model
  * Persisted to [com.pockref.app.data.AppPreferences.lastPracticeConfig]
  * so the next time the user opens the pre-flight config sheet, the
  * chips/switches come up with their last choice (no first-launch
- * "everything is default 60s/30s/off" awkwardness).
+ * "everything is default 60s/30s/shuffle-off" awkwardness).
  *
  * Default values are tuned for an intermediate-level speed-sketcher:
  *   - [practiceDurationMs] = 60s (one minute per image is the most
@@ -21,15 +21,23 @@ package com.pockref.app.model
  *     flow)
  *   - [shuffle] = false (selection order is what the user expected to
  *     practice in — surprise ordering is opt-in)
- *   - [soundEnabled] = false (default OFF because unrequested audio
- *     in a creative tool is hostile — the toggle is in the config
- *     sheet for users who want it)
+ *
+ * V_NOW (user feedback "去掉倒计时提示音的功能"): the previous
+ * `soundEnabled` field was removed entirely. The countdown-sound
+ * feature was scoped for commit 4 (audio) but the user decided the
+ * practice mode should be silent — only the visual countdown text
+ * remains. Removing the field rather than just hiding the switch
+ * means the data class no longer carries dead state, and the
+ * [com.pockref.app.data.AppPreferences.lastPracticeConfig] getter
+ * doesn't need a [coerceIn] / null-handling branch for a value
+ * that nothing reads. Existing users with the
+ * `last_practice_sound` pref on disk will have the key ignored
+ * (no migration needed; new write path drops the key).
  */
 data class PracticeConfig(
     val practiceDurationMs: Long = 60_000L,
     val restDurationMs: Long = 30_000L,
     val shuffle: Boolean = false,
-    val soundEnabled: Boolean = false,
 ) {
     init {
         // Defensive bounds so a corrupted pref (manually edited

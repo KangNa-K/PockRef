@@ -422,10 +422,37 @@ enum class AlignMode(val label: String) {
  * [ToggleBoxSelectMode] for parity with the existing UX.
  */
 enum class SelectionMode {
-    SINGLE,
-    MULTI,
-    BOX,
+ SINGLE,
+ MULTI,
+ BOX,
 }
+
+/**
+ * The two CAD-style box-select directions. Mirrors the
+ * AutoCAD / Visio / Figma convention:
+ *
+ * - **WINDOW** (left → right drag): only objects whose rotated
+ * AABB is **fully contained** by the selection rectangle are
+ * selected. The "strict inclusion" semantic — analogous to
+ * `ls | grep -x` rather than `ls | grep`.
+ *
+ * - **CROSSING** (right → left drag): any object whose rotated
+ * AABB **intersects** the selection rectangle is selected. The
+ * "loose touch" semantic — `ls | grep` rather than `ls | grep -x`.
+ *
+ * Direction is **locked at the start of the drag** (first
+ * movement decides whether the rest of the gesture is
+ * WINDOW or CROSSING and the kind doesn't flip back if the
+ * pointer wanders). The lock lives in
+ * [PockRefUiState.boxSelectKind] which is set on the first
+ * `UpdateBoxSelectRect` call and read by every subsequent one.
+ *
+ * Default is [WINDOW] because that matches user expectation
+ * for the most common case ("drag a rectangle around the things
+ * I want") and matches the old `centerPoint.contains` behavior
+ * closely enough that no existing test case regresses.
+ */
+enum class BoxSelectionKind { WINDOW, CROSSING }
 
 /**
  * Predefined background colors. The `Custom` entry does not represent a fixed
@@ -605,8 +632,21 @@ data class PockRefUiState(
     val selectedImageIds: Set<String> = emptySet(),
     val multiSelectMode: Boolean = false,
     val boxSelectMode: Boolean = false,
-    val boxSelectRect: RectF? = null,
-    val boxSelectPreviewIds: Set<String> = emptySet(),
+ val boxSelectRect: RectF? = null,
+ val boxSelectPreviewIds: Set<String> = emptySet(),
+ // V_NOW (CAD-style box select): start point of the in-progress
+ // box-select drag, captured by [PockRefAction.BeginBoxSelectAt]
+ // so the reducer can decide the [boxSelectKind] (WINDOW vs
+ // CROSSING) on the first [UpdateBoxSelectRect] and lock it for
+ // the remainder of the drag. Null when no drag is in progress.
+ val boxSelectStart: Offset? = null,
+ // V_NOW (CAD-style box select): direction kind (WINDOW = left →
+ // right drag, full-containment; CROSSING = right → left drag,
+ // intersection). Locked on first [UpdateBoxSelectRect] dispatch
+ // and read on every subsequent one. Default [WINDOW] matches
+ // the previous `centerPoint.contains` behavior for backward
+ // compatibility with existing test cases.
+ val boxSelectKind: BoxSelectionKind = BoxSelectionKind.WINDOW,
     // V_NOW (2026-06-08): global image lock. When `true`,
     // every image on the canvas is treated as locked
     // for the purposes of move / rotate / scale /
@@ -682,6 +722,25 @@ data class PockRefUiState(
      * — can all open the same sheet instance.
      */
     val settingsSheetOpen: Boolean = false,
+    // V_NOW (2026-06-08 速写练习 commit 2): the
+    // pre-flight config sheet visibility. True =
+    // [com.pockref.app.ui.PracticeConfigSheet]
+    // [androidx.compose.material3.ModalBottomSheet]
+    // is showing. Toggled by
+    // [com.pockref.app.ui.PockRefAction.OpenPracticeConfigSheet]
+    // (from the SelectionBottomSheet's "速写练习"
+    // button) and [DismissPracticeConfigSheet]
+    // (sheet's own `onDismissRequest`). Independent
+    // of [practiceState] (the in-session reducer) —
+    // opening the config sheet does NOT start a
+    // practice session; the sheet's "开始" button
+    // is what dispatches [StartPractice]. Both
+    // flags can be true at the same time in
+    // theory (config sheet showing while a session
+    // is paused) but in practice the user only
+    // reaches the config sheet BEFORE starting a
+    // session, when [practiceState] is still null.
+    val practiceConfigSheetOpen: Boolean = false,
     /**
      * V_NOW: minimap custom position (screen-space top-left of the minimap
      * panel). [Offset.Unspecified] = "use the default BottomStart 24dp

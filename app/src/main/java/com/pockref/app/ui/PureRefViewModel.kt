@@ -711,7 +711,8 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             PockRefAction.ToggleBoxSelectMode -> selectionController.toggleBoxSelectMode()
             is PockRefAction.SetSelectionMode -> selectionController.setSelectionMode(action.mode)
             PockRefAction.BeginBoxSelect -> selectionController.beginBoxSelect()
-            is PockRefAction.UpdateBoxSelectRect -> selectionController.updateBoxSelectRect(action.rect)
+ is PockRefAction.BeginBoxSelectAt -> selectionController.beginBoxSelectAt(action.start)
+ is PockRefAction.UpdateBoxSelectRect -> selectionController.updateBoxSelectRect(action.rect, action.current)
             PockRefAction.CommitBoxSelect -> selectionController.commitBoxSelect()
             PockRefAction.ExitBoxSelectMode -> selectionController.exitBoxSelectMode()
             PockRefAction.SaveSceneDirect -> sceneController.saveSceneDirect()
@@ -772,6 +773,20 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             PockRefAction.ResumePractice -> practiceController.resume()
             PockRefAction.SkipRest -> practiceController.skipRest()
             PockRefAction.ExitPractice -> practiceController.exit()
+            // V_NOW (2026-06-08 速写练习 commit 2): the
+            // pre-flight config sheet toggle. The
+            // reducer is the single source of truth
+            // for [PockRefUiState.practiceConfigSheetOpen]
+            // so the [PracticeConfigSheet] ModalBottomSheet
+            // re-renders on flag change without the
+            // [PockRefApp] composables needing their own
+            // remember/mutableStateOf.
+            PockRefAction.OpenPracticeConfigSheet -> _uiState.update {
+                it.copy(practiceConfigSheetOpen = true)
+            }
+            PockRefAction.DismissPracticeConfigSheet -> _uiState.update {
+                it.copy(practiceConfigSheetOpen = false)
+            }
         }
     }
 

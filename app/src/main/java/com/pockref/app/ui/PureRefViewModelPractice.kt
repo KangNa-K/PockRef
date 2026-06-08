@@ -205,7 +205,51 @@ internal class PockRefViewModelPractice(
         // pre-flight sheet (separate from the active state
         // — we want the defaults to come up even after Exit).
         mainVm.appPrefs.lastPracticeConfig = config
-        mainVm._uiState.update { it.copy(practiceState = next) }
+        // V_NOW (2026-06-08, "selection clear on practice
+        // start"): clear ALL selection state in the same
+        // state.copy as the practice transition. The
+        // practice session already snapshot the imageIds
+        // into [PracticeState.imageIds] (via the reducer),
+        // so the external selection is no longer the
+        // source of truth — leaving it non-empty would
+        // create the ambiguity "am I in a practice, or
+        // did the practice just not start and my
+        // selection is still active?". The user would
+        // see the SelectionBottomSheet re-raise on
+        // canvas tap (selectionSheetShowTick ticks on
+        // every tap) and think they're back in normal
+        // edit mode, when in fact [practiceState] is
+        // RUNNING and a PracticeScreen is about to
+        // render. Clearing selection + box-mode flag
+        // kills the SelectionBottomSheet re-raise
+        // trigger and keeps the visual state of the
+        // canvas consistent with "I'm in a practice".
+        //
+        // [selectedImageId] is cleared alongside
+        // [selectedImageIds] because the legacy single-
+        // primary field is read by some chrome (the
+        // long-press context menu) — leaving one but
+        // not the other would put the canvas in an
+        // inconsistent half-selected state.
+        //
+        // [boxSelectRect] / [boxSelectPreviewIds] are
+        // mid-drag transient state — if the user was
+        // dragging a box-select rectangle and tapped
+        // "速写练习" via a button, the drag might be
+        // in progress; we drop both to leave no
+        // half-drawn rectangle floating when the
+        // practice screen takes over.
+        mainVm._uiState.update { current2 ->
+            current2.copy(
+                practiceState = next,
+                selectedImageIds = emptySet(),
+                selectedImageId = null,
+                multiSelectMode = false,
+                boxSelectMode = false,
+                boxSelectRect = null,
+                boxSelectPreviewIds = emptySet(),
+            )
+        }
     }
 
     internal fun onTick(remainingMs: Long) {

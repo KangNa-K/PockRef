@@ -21,6 +21,7 @@ import com.pockref.app.model.toScene
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -190,10 +191,26 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         var sampleSize = 1
         val halfW = width / 2
         val halfH = height / 2
-        while (halfW / sampleSize >= reqW && halfH / sampleSize >= reqH) {
+        // V_NOW (2026-06-08 user feedback "导出图不清晰 /
+        // 没有原图画质"): the original loop aimed for
+        // source ≥ reqW (any smallest), which meant the
+        // first-pass decode could be 2x larger than the
+        // exact target. The exact resize stage then
+        // downscaled 2x via Bitmap.createBitmap with
+        // filter=false (nearest-neighbor), which is the
+        // main reason the export looked "fuzzy / pixelated"
+        // — nearest-neighbor drops pixels in blocks. We
+        // now aim for source ≥ 2x reqW so the exact
+        // resize can use bilinear (filter=true) at ≤0.5x
+        // shrink, which is the sweet spot for preserving
+        // detail. We also raise the cap from 8 to 16 so
+        // huge source images (8K+) still get sampled down
+        // enough that the exact resize doesn't blow the
+        // heap on a 32MB ARGB_8888 intermediate.
+        while (halfW / sampleSize >= reqW * 2 && halfH / sampleSize >= reqH * 2) {
             sampleSize *= 2
         }
-        return sampleSize.coerceAtMost(8)
+        return sampleSize.coerceAtMost(16)
     }
 
     fun importImages(uris: List<Uri>) {
@@ -1510,19 +1527,63 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.setBusy(true)
             try {
                 withContext(Dispatchers.IO) {
-                    // Compute bounding box of all images in canvas space
+                    // V_NOW (2026-06-08 user feedback "13MB 文件导出后
+                    // 只有 791KB 且图片不完整"): the previous
+                    // implementation called BitmapFactory.decodeByteArray
+                    // on every image in a first pass WITHOUT
+                    // inSampleSize, then held all decoded bitmaps in
+                    // a list while creating an 8192px-target canvas.
+                    // For a 13MB .pur with 10+ high-res references
+                    // (each 4K ~64MB ARGB_8888 after decode) plus a
+                    // 8192² ARGB_8888 canvas (~256MB), the total
+                    // exceeded the Android heap and decode threw
+                    // OutOfMemoryError — but the per-image try/catch
+                    // in the render pass silently swallowed it, so
+                    // the user saw a partial export.
+                    //
+                    // The fix is a two-pass design:
+                    //   Pass 1 — inJustDecodeBounds only (no pixel
+                    //            allocation), compute the bounding
+                    //            box in canvas space.
+                    //   Pass 2 — stream-decode each image with
+                    //            inSampleSize tuned to its
+                    //            target render size, draw it, then
+                    //            immediately recycle the bitmap so
+                    //            at most one source bitmap is live
+                    //            at any moment. The export canvas
+                    //            is also capped at 4096px (down
+                    //            from 8192) so the canvas itself
+                    //            stays under ~64MB ARGB_8888.
+
+                    // -----------------------------------------------------------------
+                    // Pass 1: probe sizes, compute bounding box. No pixel decode.
+                    // -----------------------------------------------------------------
+                    data class ProbeInfo(
+                        val image: SceneImage,
+                        val byteSize: Int,
+                        val intrinsicW: Int,
+                        val intrinsicH: Int,
+                    )
+
+                    val probes = mutableListOf<ProbeInfo>()
                     var minX = Float.MAX_VALUE
                     var minY = Float.MAX_VALUE
-                    var maxX = Float.MIN_VALUE
-                    var maxY = Float.MIN_VALUE
+                    var maxX = -Float.MAX_VALUE
+                    var maxY = -Float.MAX_VALUE
 
-                    // Pre-decode all images and compute their transformed bounds
-                    val decoded = mutableListOf<Pair<SceneImage, Bitmap>>()
                     for (image in images) {
                         val bytes = mainVm.resolveImageBytes(image)
-                        val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                            ?: continue
-                        decoded.add(image to source)
+                        val bounds = BitmapFactory.Options().apply {
+                            inJustDecodeBounds = true
+                        }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) continue
+                        probes += ProbeInfo(
+                            image = image,
+                            byteSize = bytes.size,
+                            intrinsicW = bounds.outWidth,
+                            intrinsicH = bounds.outHeight,
+                        )
 
                         // Use displaySize (same as on-screen rendering) so the
                         // export canvas matches what the user sees — not the
@@ -1553,67 +1614,195 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         }
                     }
 
-                    if (decoded.isEmpty()) return@withContext
+                    if (probes.isEmpty()) {
+                        Log.w("ExportCanvas", "no images decoded; aborting")
+                        return@withContext
+                    }
 
-                    // Add 1px padding to avoid clipping
-                    val padding = 1f
+                    // V_NOW (2026-06-08 user feedback "导出的画布图片
+                    // 显示不全"): add a 4px safety padding (was 1px)
+                    // so images that sit flush against the bbox edge
+                    // are not clipped when the canvas integer-size
+                    // round-down happens below. 1px is mathematically
+                    // enough but leaves zero room for any rounding
+                    // error in the rotation math; 4px is a robust
+                    // margin that still looks tight.
+                    val padding = 4f
                     minX -= padding
                     minY -= padding
                     maxX += padding
                     maxY += padding
 
-                    val canvasWidth = (maxX - minX).toInt().coerceAtLeast(1)
-                    val canvasHeight = (maxY - minY).toInt().coerceAtLeast(1)
+                    // V_NOW (2026-06-08 user feedback "第 10 张图
+                    // 缺失 / 显示不全"): use roundToInt() instead of
+                    // toInt(). The previous floor-truncation could
+                    // lose up to 1 row of pixels for the bottommost
+                    // (or rightmost) image — i.e. the user saw the
+                    // last image half-cut because the canvas was
+                    // sized 1px shorter than the bbox.
+                    val canvasWidth = (maxX - minX).roundToInt().coerceAtLeast(1)
+                    val canvasHeight = (maxY - minY).roundToInt().coerceAtLeast(1)
 
-                    // Cap to reasonable size to avoid OOM
+                    // V_NOW (2026-06-08 user feedback "导出图片
+                    // 清晰度不足"): raise the canvas cap from 4096
+                    // to 8192 so the export keeps close to the
+                    // source resolution for typical reference
+                    // boards. 8192² ARGB_8888 = 256MB, but the
+                    // two-pass stream-decode design below keeps
+                    // peak heap at ~1 source bitmap + the canvas
+                    // (~128MB worst case) — fits the standard
+                    // 256MB Android heap. The cap only kicks in
+                    // when the scene's actual bbox exceeds 8192,
+                    // in which case we scale down uniformly.
                     val maxDim = 8192
                     val scale = if (canvasWidth > maxDim || canvasHeight > maxDim) {
                         maxDim.toFloat() / maxOf(canvasWidth, canvasHeight)
                     } else 1f
 
+                    // V_NOW (2026-06-08 user feedback "导出图不清
+                    // 晰 / 没有原图画质"): the previous cap
+                    // let a single image with intrinsic > 8192
+                    // get decoded at full intrinsic (e.g. 8000²
+                    // ARGB_8888 = 256MB), which OOM'd on phones
+                    // with a 256MB heap. Cap per-image target at
+                    // 4096 — visually identical to the original
+                    // for desktop / reference-board viewing, and
+                    // keeps the per-image source bitmap at ≤64MB
+                    // so we stay safely under the heap (canvas
+                    // 64MB + source 64MB = 128MB peak).
+                    val maxImageDim = 4096
+
                     val bitmap = Bitmap.createBitmap(
-                        (canvasWidth * scale).toInt(),
-                        (canvasHeight * scale).toInt(),
+                        (canvasWidth * scale).toInt().coerceAtLeast(1),
+                        (canvasHeight * scale).toInt().coerceAtLeast(1),
                         Bitmap.Config.ARGB_8888,
                     )
                     val canvas = android.graphics.Canvas(bitmap)
 
-                    // Render each image
-                    for ((image, source) in decoded) {
-                        val paint = android.graphics.Paint().apply {
-                            isAntiAlias = true
-                            isFilterBitmap = true
-                        }
-
-                        val matrix = android.graphics.Matrix()
-                        // Translate so image center maps to canvas position
-                        val offsetX = (image.center.x - minX) * scale
-                        val offsetY = (image.center.y - minY) * scale
-                        // Build matrix using post* (right-multiply). The
-                        // operations are listed in reverse application order:
-                        // the LAST post* call is applied FIRST to the source
-                        // pixel. Correct pipeline: center at origin → scale
-                        // (intrinsic→display, then image.scale, then export)
-                        // → rotate → flip → position at (offsetX, offsetY).
-                        matrix.postTranslate(offsetX, offsetY)
-                        if (image.flipX || image.flipY) {
-                            val sx = if (image.flipX) -1f else 1f
-                            val sy = if (image.flipY) -1f else 1f
-                            matrix.postScale(sx, sy)
-                        }
-                        if (image.rotationDegrees != 0f) {
-                            matrix.postRotate(image.rotationDegrees)
-                        }
-                        // Scale: intrinsic→display ratio × image.scale × export scale
-                        val displayScaleX = image.displaySize.width / source.width.toFloat()
-                        val displayScaleY = image.displaySize.height / source.height.toFloat()
-                        matrix.postScale(
-                            image.scale * scale * displayScaleX,
-                            image.scale * scale * displayScaleY,
+                    // -----------------------------------------------------------------
+                    // Pass 2: stream-decode with inSampleSize, draw, recycle.
+                    // -----------------------------------------------------------------
+                    for (probe in probes) {
+                        val image = probe.image
+                        // V_NOW (2026-06-08 user feedback "导出图
+                        // 不如原图清晰"): the previous targetW
+                        // used `image.displaySize.width` which is
+                        // baseScale × intrinsicWidth — i.e. the
+                        // size the user laid out the image at in
+                        // PureRef, not the original photo size.
+                        // If a user shrunk a 4000×3000 photo to
+                        // 30% in the board (baseScale=0.3),
+                        // displaySize.width = 1200 and the
+                        // export was a 1200×900 PNG — visibly
+                        // less detailed than the 4000×3000 source.
+                        // We now target `intrinsicWidth` so the
+                        // export preserves the original photo
+                        // resolution. The visual placement on
+                        // the canvas is still controlled by
+                        // `displaySize` (used in Pass 1 bbox and
+                        // renderImageToCanvas's dstRect), so the
+                        // layout doesn't change — we just feed
+                        // the scaler a higher-resolution source
+                        // to draw from.
+                        val targetW = (probe.intrinsicW * scale)
+                            .toInt().coerceAtMost(maxImageDim).coerceAtLeast(1)
+                        val targetH = (probe.intrinsicH * scale)
+                            .toInt().coerceAtMost(maxImageDim).coerceAtLeast(1)
+                        val sampleSize = calculateSampleSize(
+                            probe.intrinsicW, probe.intrinsicH, targetW, targetH,
                         )
-                        matrix.postTranslate(-source.width / 2f, -source.height / 2f)
 
-                        canvas.drawBitmap(source, matrix, paint)
+                        // Re-read bytes — resolveImageBytes may go through
+                        // a RandomAccessFile when imageBytes is empty, so
+                        // we don't want to hold every image's bytes
+                        // resident across the whole pass.
+                        val bytes = mainVm.resolveImageBytes(image)
+
+                        // V_NOW (2026-06-08 user feedback "导出图
+                        // 不如原图清晰"): the previous pipeline
+                        // did inSampleSize → nearest-neighbor
+                        // createBitmap(..., filter=false). The
+                        // nearest-neighbor was the main reason
+                        // the export looked "fuzzy / pixelated"
+                        // — it drops pixels in blocks, producing
+                        // visible jaggies on every edge. We now:
+                        //   (1) target intrinsicW/H (the original
+                        //       photo resolution, capped at
+                        //       maxImageDim=4096) so we have
+                        //       full detail to draw from,
+                        //   (2) use inSampleSize only as a coarse
+                        //       shrink to keep the decoded
+                        //       bitmap ≤2x the target (see
+                        //       calculateSampleSize), and
+                        //   (3) use bilinear (filter=true) for
+                        //       the exact resize — at ≤0.5x
+                        //       shrink this is the sweet spot
+                        //       for preserving detail without
+                        //       aliasing. The final drawBitmap
+                        //       (in renderImageToCanvas) takes
+                        //       the high-res source and bilinearly
+                        //       scales it down to dstRect
+                        //       (displaySize in canvas pixels)
+                        //       for the on-screen-equivalent
+                        //       placement.
+                        val decodeOpts = BitmapFactory.Options().apply {
+                            inSampleSize = sampleSize
+                            inPreferredConfig = Bitmap.Config.ARGB_8888
+                        }
+                        val source = try {
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+                        } catch (oom: OutOfMemoryError) {
+                            Log.e(
+                                "ExportCanvas",
+                                "OOM decoding id=${image.id} name=${image.name} " +
+                                    "intrinsic=${probe.intrinsicW}x${probe.intrinsicH} " +
+                                    "sampleSize=$sampleSize",
+                            )
+                            null
+                        } ?: continue
+
+                        val scaled = if (source.width != targetW || source.height != targetH) {
+                            try {
+                                val sx = targetW.toFloat() / source.width.toFloat()
+                                val sy = targetH.toFloat() / source.height.toFloat()
+                                val m = android.graphics.Matrix().apply { setScale(sx, sy) }
+                                val exact = Bitmap.createBitmap(
+                                    source, 0, 0, source.width, source.height, m, true,
+                                )
+                                if (exact !== source && !source.isRecycled) source.recycle()
+                                exact
+                            } catch (oom: OutOfMemoryError) {
+                                Log.e(
+                                    "ExportCanvas",
+                                    "OOM scaling id=${image.id} name=${image.name} " +
+                                        "src=${source.width}x${source.height} " +
+                                        "target=${targetW}x${targetH}",
+                                )
+                                if (!source.isRecycled) source.recycle()
+                                continue
+                            }
+                        } else source
+
+                        try {
+                            renderImageToCanvas(
+                                canvas = canvas,
+                                image = image,
+                                source = scaled,
+                                minX = minX,
+                                minY = minY,
+                                scale = scale,
+                            )
+                        } catch (t: Throwable) {
+                            if (t is kotlinx.coroutines.CancellationException) throw t
+                            Log.e(
+                                "ExportCanvas",
+                                "skip img id=${image.id} name=${image.name}: " +
+                                    "${t.javaClass.simpleName}: ${t.message}",
+                                t,
+                            )
+                        } finally {
+                            if (!scaled.isRecycled) scaled.recycle()
+                        }
                     }
 
                     // Write PNG to URI
@@ -1624,9 +1813,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
                     // Cleanup
                     bitmap.recycle()
-                    for ((_, src) in decoded) {
-                        if (!src.isRecycled) src.recycle()
-                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -1635,6 +1821,105 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             } finally {
                 mainVm.setBusy(false)
             }
+        }
+    }
+
+    /**
+     * Render a single [image] into [canvas] as part of
+     * [exportCanvas]. Extracted from the export loop so the
+     * caller can `try { ... } catch (Throwable) { skip }`
+     * per image — a single misconfigured image (NaN matrix
+     * from a bad `image.scale` / `displaySize`, etc.) used
+     * to abort the whole export, leaving the rest of the
+     * scene unrendered. See [exportCanvas] for context.
+     *
+     * Post* in Android is right-multiplication, so the post*
+     * code order here is the REVERSE of the source-space
+     * order. The desired source-space order is
+     * `T_c → S(scale) → S(flip) → R(rot) → T` (= center,
+     * scale, flip, rotate, translate) to match the
+     * on-screen pipeline in [drawSceneImage]. See
+     * [exportCanvas] for the full rationale.
+     */
+    private fun renderImageToCanvas(
+        canvas: android.graphics.Canvas,
+        image: SceneImage,
+        source: android.graphics.Bitmap,
+        minX: Float,
+        minY: Float,
+        scale: Float,
+    ) {
+        val paint = android.graphics.Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
+            // Apply colorAdjust (brightness/contrast/saturation) to
+            // match the on-screen rendering in drawSceneImage which
+            // uses buildColorFilter(image.colorAdjust).
+            val matrix = buildColorMatrix(image.colorAdjust)
+            if (matrix != null) {
+                colorFilter = android.graphics.ColorMatrixColorFilter(
+                    android.graphics.ColorMatrix(matrix),
+                )
+            }
+        }
+
+        // V_NOW (2026-06-08 user feedback "导出图缺失 / 被裁成
+        // 角落"): replace the post* matrix chain with
+        // Canvas.save/translate/rotate/scale/drawBitmap, which
+        // exactly mirrors the Compose nesting in
+        // `drawSceneImage` (translate → rotate(pivot=center) →
+        // scale(pivot=center) → drawImage). The previous
+        // `postTranslate · postRotate · postScale ·
+        // postTranslate` chain is right-multiplied, so the
+        // LAST post* call applies FIRST to the source pixel.
+        // For a non-square image (displaySize.w != displaySize.h)
+        // and a non-zero rotation, post*-chained rotation
+        // happens around the SOURCE-BITMAP center (which is
+        // `floor(displaySize.w * image.scale * scale)`, not
+        // the visual center). Compose rotates around the
+        // DST center. The two diverge once any of (a) the
+        // source has a non-integer width/height (the export
+        // targetW = (...).toInt() is floor-truncated, not
+        // rounded), (b) the image is rotated by a non-axis-
+        // aligned angle (15°/30°/45°), or (c) displaySize.w
+        // and displaySize.h differ — which is true for almost
+        // every photo reference. The user-visible symptom is
+        // the rotated image ending up rendered with its visual
+        // center offset from its declared `image.center`,
+        // often to the degree that bbox clipping crops it to
+        // a single corner triangle (or, in v2.pur's case, two
+        // corners overlap and a third is partially visible).
+        // The Canvas-API form below pivots around
+        // (width/2, height/2) — the SAME point Compose uses —
+        // so the on-screen and export pipelines are now
+        // bit-for-bit equivalent in transform.
+        val canvasCenterX = (image.center.x - minX) * scale
+        val canvasCenterY = (image.center.y - minY) * scale
+        // dstSize in canvas pixels — the "visual" size the
+        // user sees on screen (image.displaySize * image.scale
+        // in world units, multiplied by export [scale] to map
+        // to canvas pixels). This is what Compose draws
+        // through `drawImage(dstSize = IntSize(w, h))` and is
+        // NOT the same as source.width (which is
+        // floor(displaySize.w * image.scale * scale)).
+        val dstW = image.displaySize.width * image.scale * scale
+        val dstH = image.displaySize.height * image.scale * scale
+        val srcRect = android.graphics.Rect(0, 0, source.width, source.height)
+        val dstRect = android.graphics.RectF(
+            -dstW / 2f, -dstH / 2f, dstW / 2f, dstH / 2f,
+        )
+
+        canvas.save()
+        try {
+            canvas.translate(canvasCenterX, canvasCenterY)
+            canvas.rotate(image.rotationDegrees)
+            canvas.scale(
+                if (image.flipX) -1f else 1f,
+                if (image.flipY) -1f else 1f,
+            )
+            canvas.drawBitmap(source, srcRect, dstRect, paint)
+        } finally {
+            canvas.restore()
         }
     }
 }

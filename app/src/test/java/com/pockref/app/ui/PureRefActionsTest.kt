@@ -100,7 +100,15 @@ class PockRefActionsTest {
     // is a separate sealed interface and does NOT count
     // toward this number — only the [PockRefAction] subclasses
     // are locked down here.
-    private val expectedVariantCount: Int = 124
+    // V_NOW (2026-06-08 速写练习 commit 2): 124 → 126 —
+    // added the two pre-flight config sheet toggles
+    // (OpenPracticeConfigSheet, DismissPracticeConfigSheet)
+    // for [PracticeConfigSheet]. The pre-flight sheet
+    // is gated by [PockRefUiState.practiceConfigSheetOpen]
+    // which is read by the [PracticeConfigSheet]
+    // [androidx.compose.material3.ModalBottomSheet] and
+    // toggled by these two actions.
+    private val expectedVariantCount: Int = 126
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

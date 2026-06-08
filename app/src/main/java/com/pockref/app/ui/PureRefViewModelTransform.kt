@@ -1783,6 +1783,12 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
 
     internal fun fitImageToScreen(imageId: String) {
         val currentState = mainVm._uiState.value
+        android.util.Log.d(
+            "ExportCanvas",
+            "fitImageToScreen imageId=$imageId " +
+                "currentFittedId=${currentState.fittedImageId} " +
+                "willUnfocus=${currentState.fittedImageId == imageId}",
+        )
         if (currentState.fittedImageId == imageId) {
             mainVm._uiState.update { state ->
                 state.copy(

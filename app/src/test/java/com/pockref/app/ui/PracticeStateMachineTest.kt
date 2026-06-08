@@ -496,7 +496,11 @@ class PracticeStateMachineTest {
         assertEquals(60_000L, defaults.practiceDurationMs)
         assertEquals(30_000L, defaults.restDurationMs)
         assertFalse(defaults.shuffle)
-        assertFalse(defaults.soundEnabled)
+        // V_NOW (2026-06-08 user feedback "去掉倒计时提示音的功能"):
+        // [PracticeConfig.soundEnabled] was removed entirely.
+        // The countdown-sound feature is gone; the practice
+        // mode is silent by design. No assertion needed
+        // for the removed field.
     }
 
     @Test

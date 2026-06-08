@@ -324,8 +324,7 @@ class AppPreferences(context: Context) {
             // [PracticeConfig]'s default ctor.
             if (!prefs.contains(KEY_LAST_PRACTICE_DURATION_MS) ||
                 !prefs.contains(KEY_LAST_REST_DURATION_MS) ||
-                !prefs.contains(KEY_LAST_PRACTICE_SHUFFLE) ||
-                !prefs.contains(KEY_LAST_PRACTICE_SOUND)
+                !prefs.contains(KEY_LAST_PRACTICE_SHUFFLE)
             ) {
                 return null
             }
@@ -353,12 +352,10 @@ class AppPreferences(context: Context) {
                 com.pockref.app.model.PracticeConfig.MAX_REST_MS,
             )
             val shuffle = prefs.getBoolean(KEY_LAST_PRACTICE_SHUFFLE, false)
-            val sound = prefs.getBoolean(KEY_LAST_PRACTICE_SOUND, false)
             return com.pockref.app.model.PracticeConfig(
                 practiceDurationMs = practiceMs,
                 restDurationMs = restMs,
                 shuffle = shuffle,
-                soundEnabled = sound,
             )
         }
         set(value) {
@@ -367,12 +364,18 @@ class AppPreferences(context: Context) {
                 editor.remove(KEY_LAST_PRACTICE_DURATION_MS)
                 editor.remove(KEY_LAST_REST_DURATION_MS)
                 editor.remove(KEY_LAST_PRACTICE_SHUFFLE)
-                editor.remove(KEY_LAST_PRACTICE_SOUND)
+                // V_NOW (2026-06-08 user feedback "去掉倒计时提示音的功能"):
+                // [KEY_LAST_PRACTICE_SOUND] is no longer written
+                // here — the field is gone from [PracticeConfig]
+                // entirely. Existing on-disk entries with this key
+                // are simply ignored on the next read (the getter
+                // doesn't read the key), and the next `set(null)`
+                // or first config save will leave it orphaned but
+                // harmless. No explicit migration needed.
             } else {
                 editor.putLong(KEY_LAST_PRACTICE_DURATION_MS, value.practiceDurationMs)
                 editor.putLong(KEY_LAST_REST_DURATION_MS, value.restDurationMs)
                 editor.putBoolean(KEY_LAST_PRACTICE_SHUFFLE, value.shuffle)
-                editor.putBoolean(KEY_LAST_PRACTICE_SOUND, value.soundEnabled)
             }
             editor.apply()
         }
@@ -453,15 +456,23 @@ class AppPreferences(context: Context) {
         // V_NOW (2026-06-08): see [globalImageLock] field above.
         private const val KEY_GLOBAL_IMAGE_LOCK = "global_image_lock"
         // V_NOW (2026-06-08 速写练习): see [lastPracticeConfig] field
-        // above. Four separate keys — one per PracticeConfig field
+        // above. Three separate keys — one per PracticeConfig field
         // — match the rest of the settings in this file and avoid a
-        // JSON / parcelable serialization layer for a 4-field
-        // record. "All four absent" = "no last config saved yet"
-        // (fresh install) and the getter returns null in that case.
+        // JSON / parcelable serialization layer. "All three absent" =
+        // "no last config saved yet" (fresh install) and the getter
+        // returns null in that case.
+        //
+        // V_NOW (2026-06-08 user feedback "去掉倒计时提示音的功能"):
+        // the previous [KEY_LAST_PRACTICE_SOUND] was removed
+        // (the [soundEnabled] field on [PracticeConfig] is gone).
+        // Any on-disk key of that name is ignored on the next
+        // read and not overwritten by the next write; an explicit
+        // migration is unnecessary because the new read path
+        // doesn't read the key and the new write path doesn't
+        // touch it. The orphaned key is harmless.
         private const val KEY_LAST_PRACTICE_DURATION_MS = "last_practice_duration_ms"
         private const val KEY_LAST_REST_DURATION_MS = "last_rest_duration_ms"
         private const val KEY_LAST_PRACTICE_SHUFFLE = "last_practice_shuffle"
-        private const val KEY_LAST_PRACTICE_SOUND = "last_practice_sound"
     }
 }
 
