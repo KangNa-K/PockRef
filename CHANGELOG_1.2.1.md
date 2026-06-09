@@ -60,3 +60,63 @@ Pass1改成 **统一在 intrinsic坐标系** 做:
 - `ExportCanvasPass1CenterTest.pass1_bboxUsesIntrinsicCoordsAndConvertsCenter`:验证转换数学正确,buggy 版本 bbox left edge 是负数(坍缩到 (0,0)),修复后是正数。
 - `ExportCanvasPass1CenterTest.pass1_twoImagesAtDifferentCenters_ProduceSeparateBboxExtents`: 两个 image 在 displaySize坐标下相隔3000 px,修复后 intrinsic bbox 不重叠(gap=6000),buggy 版本会坍缩到一起。
 - 全套276 tests 全过(原274 + 新增2)。
+
+***
+
+## 1.2.1 polish — chrome unify + import popup + lock-mode parity
+
+post-release commit batch (5 commits),versionCode 4 → 5:
+
+### 1. 顶栏 chrome unify (#1)
+
+5 个常驻 icon (chevron / import / undo / redo / close) 大小完全一致:
+- 全部 40dp 触摸盒 + 20dp icon (原本 chevron/import 是 18dp)
+- 全部 `onSurfaceVariant` tint
+- chevron active 时背景染 `primaryContainer` (跟 Lock 按钮激活态同色),开/关 recent files popup 时切换
+- 顶栏 + 右下角 panel 全部 `tonalElevation = 0.dp`,不再带 8% primary overlay,纯 onSurface
+
+### 2. 顶栏 import 按钮 → 3 选项 popup (#2)
+
+tap 后弹 `DropdownMenu`,3 个选项:
+- **相册** — `PickMultipleVisualMedia` (Android 13+ PhotoPicker,自动 fallback 到 SAF)
+- **剪贴板** — `ClipboardManager.getPrimaryClip()` (读 image URI item;空剪贴板静默 no-op)
+- **文件** — 现有 SAF `OpenMultipleDocuments` (保留作为"我要从 Downloads/SD 卡取特定文件"的 power-user 入口)
+
+新增 state wire:
+- `PockRefUiState.importSourceMenuOpen: Boolean`
+- `PockRefAction.SetImportSourceMenuOpen(open: Boolean)`
+- `PureRefViewModel.setImportSourceMenuOpen()` reducer
+
+空画布 fallback (中央"导入图片"按钮) 保留原 SAF 直开行为 — popup 锚在顶栏,从画布中央 tap 会跳到屏幕角落,jumpy。
+
+### 3. Corner handle 拖完自动 unfocus (#3)
+
+fitted 状态下 (双击图 → canvas zoom-in) 拖 corner handle resize,松手后 canvas 自动 unfocus:
+- 旧行为:corner drag 松手只 reset local var,fittedImageId 不清空,canvasScale 还是 zoomed-in,需要用户再双击才能 unfocus
+- 新行为:corner drag up handler 重新 dispatch `FitImageToScreen(imageId)`,reducer toggle 路径恢复 `preFitCanvasScale`
+
+### 4. Lock-mode 行为对齐 (#4)
+
+3 个 sub-fix:
+- **#4a** per-image `image.locked = true` 上单指拖 = dragCanvas (移画布),跟 `globalImageLock` 行为一致 (旧行为: silent no-op)
+- **#4b** `lockCanvasFrozen = true` 下双指 gesture 在 UI 层 early-skip transform math (保留 hit-test / image select,但跳过 centroid/distance/mode commit/dispatch),reducer 反正拒绝,消除 wasted CPU + 用户感知的 lag
+- **#4c** locked image 双击 → 拒绝 fit 新的 (locked 是 view-only,zoom in 没意义);如果当前有 `fittedImageId`,把它 unfocus;否则 no-op
+
+### 5. 卫生修复 (8d9d74e merge residue)
+
+`PureRefViewModel.kt` reducer 有 3 处 `Duplicate label in when` warning (来自 8d9d74e cherry-pick 残留):
+- `SetCanvasOffsetFromMinimap` 第二个 arm 既重复又 **丢了 lockCanvasFrozen 守卫**(如果执行会破坏 frozen-mode 的 "minimap click-to-jump is blocked" 契约)
+- `SetSelectedImageScale` + `SetSelectedImagesScale` 完全重复
+
+删 dead duplicate。
+
+### 测试
+
+- 291 unit tests 全过(原 276 + #2 加 `expectedVariantCount` 132→133 + #4 没新增 test 因为 fitImageToScreen 在 ViewModel 内需要 Robolectric,留作 follow-up)
+- Build 干净:0 Duplicate label warnings,0 unclosed comment warnings
+- 2 个 cosmetic "Unnecessary safe call" 警告残留 (`PureRefApp.kt:6601/6617`),base HEAD 已有,与本次改动无关
+
+### Build artifacts
+
+- `~/Desktop/pockref-v1.2.1-20260610-0537.apk` (含 #4)
+- 后续 polish APK 见 commit history 的 timestamp 命名
