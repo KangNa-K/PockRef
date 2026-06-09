@@ -5724,19 +5724,17 @@ private fun TopToolbar(
                         canRedo = state.canRedo,
                         onAction = onAction,
                     )
-                    IconButton(
-                        onClick = { onAction(PockRefAction.CloseScene) },
+                    // V_NOW (2026-06-09 chrome unify): close 按钮
+                    // 从 IconButton (36dp + 48dp
+                    // minimumInteractiveComponentSize) 改成
+                    // ToolbarIconButton 模板 (40dp + 20dp),跟
+                    // 其他 4 个按钮视觉一致.
+                    ToolbarIconButton(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "关闭",
                         enabled = state.images.isNotEmpty(),
-                        modifier = Modifier
-                            .size(36.dp)
-                            .minimumInteractiveComponentSize(),
-                    ) {
-                        Icon(
-                            Icons.Rounded.Close,
-                            contentDescription = "关闭",
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
+                        onClick = { onAction(PockRefAction.CloseScene) },
+                    )
                 }
             }
             }
