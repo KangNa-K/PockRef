@@ -1,7 +1,5 @@
 package com.pockref.app.ui
 
-import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
@@ -505,51 +503,21 @@ fun PockRefApp(
     ) { uris ->
         if (uris.isNotEmpty()) onAction(PockRefAction.ImportImages(uris))
     }
-    // V_NOW (2026-06-10 #2 import popup): clipboard reader.
-    // [ClipboardManager] exposes the current primary clip —
-    // Android 13+ makes this a normal read API when the
-    // calling Activity has focus (which is always true in
-    // PockRef since the user just tapped the import
-    // button). We walk [ClipData.itemCount] looking for
-    // any item whose `uri` is set; the system clipboard
-    // typically exposes a `content://` URI for images
-    // copied from the Photos app, Chrome, or the screenshot
-    // tool. Items with text but no URI (e.g. copied from
-    // a chat app) are silently skipped — the gallery /
-    // files option is the right path for those, not the
-    // clipboard. The local context is captured here (not
-    // threaded through PockRefApp's parameter list) because
-    // we only need it for this one-shot read. Named
-    // `clipboardContext` to avoid colliding with the
-    // existing `val context` capture in [onSaveScene]
-    // below (Kotlin's implicit-capture rule re-declares
-    // the lambda-local `val context` against this scope).
-    val clipboardContext = androidx.compose.ui.platform.LocalContext.current
-    fun readClipboardImageUris(): List<Uri> {
-        val clipboard = clipboardContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            ?: return emptyList()
-        val clip = clipboard.primaryClip ?: return emptyList()
-        return buildList {
-            for (i in 0 until clip.itemCount) {
-                clip.getItemAt(i).uri?.let { add(it) }
-            }
-        }
-    }
+// V_NOW (2026-06-10 user hand-modification from 23:31 APK, merged
+    // with #2 chrome unify): the dropdown's "剪贴板" item dispatches
+    // [PockRefAction.ImportFromClipboard]. The ViewModel handles the
+    // heavy lifting in an IO coroutine — reads [ClipboardManager],
+    // decodes the bytes via [ImageOptimizer], creates a [SceneImage],
+    // and surfaces errors via the existing [errorsFlow] snackbar
+    // (see [PureRefViewModelScene.importFromClipboard]). This is
+    // strictly better than the earlier simplified lambda that
+    // dispatched [ImportImages] with raw URIs because the
+    // clipboard may hold URI strings or inline image data that
+    // need byte-level decode + optimize before a [SceneImage]
+    // can be constructed — exactly the case the full
+    // [importFromClipboard] implementation handles.
     val onImportFromClipboard: () -> Unit = {
-        val uris = readClipboardImageUris()
-        if (uris.isNotEmpty()) {
-            onAction(PockRefAction.ImportImages(uris))
-        }
-        // V_NOW: empty-clipboard case is silent on purpose
-        // — the dropdown already closed itself when the
-        // user picked this item, and adding a snackbar
-        // here would race the picker animation for the
-        // gallery / files path. Users who wonder "why
-        // didn't my clipboard image paste" will tap the
-        // option again and notice nothing happens; the
-        // simplest diagnosis is to copy an image first.
-        // A future polish could route empty-clipboard
-        // through the existing [errorsFlow] snackbar.
+        onAction(PockRefAction.ImportFromClipboard)
     }
     // Inline scene-name editor state. Lifted out of [TopToolbar]
     // so the tap-outside-cancel scrim below can read the same

@@ -261,6 +261,89 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         }
     }
 
+    /**
+     * Import an image from the system clipboard. Reads
+     * [ClipboardManager] in an IO coroutine, decodes the
+     * image bytes, and adds a new [SceneImage] to the scene.
+     * Surfaces errors via [PockRefViewModel.reportError].
+     */
+    fun importFromClipboard() {
+        mainVm.viewModelScope.launch {
+            mainVm.setBusy(true)
+            val imported = try {
+                withContext(Dispatchers.IO) {
+                    val existingCount = mainVm._uiState.value.images.size
+                    val app = mainVm.getApplication<Application>()
+                    val clipboard = app.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as? android.content.ClipboardManager
+                        ?: return@withContext emptyList<SceneImage>()
+                    val clip = clipboard.primaryClip ?: return@withContext emptyList<SceneImage>()
+                    if (clip.itemCount == 0) return@withContext emptyList<SceneImage>()
+                    // Check if any MIME type starts with "image/"
+                    val hasImageMime = (0 until clip.description.mimeTypeCount).any {
+                        clip.description.getMimeType(it).startsWith("image/")
+                    }
+                    if (!hasImageMime) return@withContext emptyList<SceneImage>()
+                    val item = clip.getItemAt(0)
+                    val text = item.coerceToText(app)?.toString()?.trim() ?: return@withContext emptyList<SceneImage>()
+                    val uri = try { Uri.parse(text) } catch (_: Exception) { null }
+                    if (uri == null) return@withContext emptyList<SceneImage>()
+                    val scheme = uri.scheme
+                    if (scheme !in listOf("content", "file", "android.resource")) return@withContext emptyList<SceneImage>()
+                    val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: return@withContext emptyList<SceneImage>()
+                    if (rawBytes.isEmpty()) return@withContext emptyList<SceneImage>()
+                    var mime = mainVm.contentResolver.getType(uri)
+                    if (mime == null) {
+                        mime = when {
+                            text.endsWith(".png", ignoreCase = true) -> "image/png"
+                            text.endsWith(".webp", ignoreCase = true) -> "image/webp"
+                            else -> "image/jpeg"
+                        }
+                    }
+                    val result = mainVm.imageOptimizer.optimize(rawBytes, mime)
+                    if (result.width <= 0 || result.height <= 0) return@withContext emptyList<SceneImage>()
+                    val baseWidth = result.width.toFloat().coerceAtMost(720f)
+                    val scale = baseWidth / result.width.toFloat()
+                    val baseHeight = result.height * scale
+                    listOf(
+                        SceneImage(
+                            name = "剪贴板图片_${existingCount + 1}",
+                            mimeType = result.mimeType,
+                            imageBytes = result.bytes,
+                            intrinsicWidth = result.width,
+                            intrinsicHeight = result.height,
+                            center = Offset(120f + existingCount * 72f, 120f + existingCount * 56f),
+                            displaySize = Size2D(baseWidth, baseHeight),
+                            zIndex = existingCount,
+                        )
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (error: Throwable) {
+                mainVm.reportError("从剪贴板导入失败: ${error.message ?: error.javaClass.simpleName}", error)
+                mainVm.setBusy(false)
+                return@launch
+            }
+            if (imported.isEmpty()) {
+                mainVm.reportError("剪贴板中没有可用的图片", null)
+                mainVm.setBusy(false)
+                return@launch
+            }
+            mainVm.recordUndoState()
+            mainVm._uiState.update { state ->
+                val newSelection = imported.mapTo(linkedSetOf()) { it.id }
+                state.copy(
+                    images = state.images + imported,
+                    selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
+                    selectedImageIds = newSelection.ifEmpty { state.selectedImageIds },
+                ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
+            }
+            mainVm.batchController.fitToScreen()
+            mainVm.setBusy(false)
+        }
+    }
     fun loadScene(uri: Uri) {
         mainVm.currentSceneUri = uri
         val fileName = mainVm.queryDisplayNameSync(uri) ?: ""

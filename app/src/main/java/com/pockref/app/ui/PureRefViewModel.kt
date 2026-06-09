@@ -866,6 +866,14 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.RestoreMenuBarsOnFocus -> restoreMenuBarsOnWindowFocus()
             is PockRefAction.SetSettingsSheetOpen -> setSettingsSheetOpen(action.open)
             is PockRefAction.SetImportSourceMenuOpen -> setImportSourceMenuOpen(action.open)
+            // V_NOW (2026-06-10 user hand-modification from 23:31 APK):
+            // clipboard import is a dedicated action because it goes through
+            // a separate IO-coroutine path (read ClipboardManager, decode +
+            // optimize bytes, create SceneImage) rather than the existing
+            // [ImportImages] (which takes pre-resolved content URIs from
+            // the SAF picker). Dispatched from the [+] import button's
+            // "剪贴板" dropdown item.
+            PockRefAction.ImportFromClipboard -> sceneController.importFromClipboard()
             is PockRefAction.SetSettingsTab -> setSettingsTab(action.tab)
             is PockRefAction.SnapJustCommitted -> setSnapHighlight(action.highlight)
             PockRefAction.ClearSnapHighlight -> clearSnapHighlight()

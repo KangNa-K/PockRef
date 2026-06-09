@@ -114,6 +114,20 @@ sealed interface PockRefAction {
  data class ConfirmExportCanvas(val uri: Uri) : PockRefAction
     data class UpdateCanvasViewport(val width: Float, val height: Float) : PockRefAction
     data class ImportImages(val uris: List<Uri>) : PockRefAction
+    /**
+     * Import an image from the system clipboard. The ViewModel
+     * reads [ClipboardManager] in an IO coroutine, decodes the
+     * image bytes, and adds a new [SceneImage] to the scene.
+     * Error cases ("剪贴板中没有可用的图片" /
+     * "从剪贴板导入失败") are surfaced via the existing
+     * [errorsFlow] snackbar. Distinct from [ImportImages]
+     * (which takes pre-resolved content URIs from the SAF
+     * picker) because the clipboard path needs its own
+     * byte-level decode — the clipboard may hold a URI
+     * string or inline image data that must be read and
+     * decoded before a [SceneImage] can be constructed.
+     */
+    data object ImportFromClipboard : PockRefAction
     data class LoadScene(val uri: Uri) : PockRefAction
     data class SaveScene(val uri: Uri) : PockRefAction
     data class OpenRecentScene(val uri: String) : PockRefAction
