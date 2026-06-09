@@ -7069,8 +7069,37 @@ private fun PockRefCanvas(
                             // Only direct drag is blocked.
                             val hitImage = s.images.firstOrNull { it.id == hitId }
                             val moveEnabled = isGestureEnabled(s.gestureToggles, GestureId.MOVE_IMAGE)
-                            if (hitImage?.locked != true && moveEnabled) {
-                                activeDragImageId = hitId
+                            // V_NOW (2026-06-10 #4 lock mode
+                            // parity): when the hit image is
+                            // [per-image locked], the previous
+                            // behavior was a silent no-op
+                            // ([activeDragImageId] stayed null,
+                            // and the surrounding if-else if
+                            // chain had already consumed this
+                            // branch so the trailing `dragCanvas
+                            // = true` line never ran either —
+                            // total dead gesture). Match the
+                            // [globalImageLock] behavior (see
+                            // the gate at L7014 above and the
+                            // 2026-06-08 v3 fix history): a
+                            // locked image is "view-only",
+                            // single-finger drag on it should
+                            // pan the canvas instead. The
+                            // same [MOVE_IMAGE] toggle the
+                            // empty-canvas pan branch at L7120
+                            // uses also gates this fallback —
+                            // the gesture toggle list has no
+                            // separate "pan canvas" entry, so
+                            // the user's existing "单指拖动"
+                            // preference is honored.
+                            val imageLocked = hitImage?.locked == true
+                            when {
+                                !imageLocked && moveEnabled -> {
+                                    activeDragImageId = hitId
+                                }
+                                imageLocked && moveEnabled -> {
+                                    dragCanvas = true
+                                }
                             }
                         }
                     } else if (s.boxSelectMode) {
@@ -7273,6 +7302,47 @@ private fun PockRefCanvas(
                             val centroid = (p0 + p1) / 2f
                             val distance = (p0 - p1).getDistance()
                             val angle = atan2(p1.y - p0.y, p1.x - p0.x)
+
+                            // V_NOW (2026-06-10 #4 frozen
+                            // mode gesture dead-weight): when
+                            // [lockCanvasFrozen] is on, the
+                            // canvas refuses every canvas
+                            // transform (the reducer guards
+                            // on PanCanvas / ZoomCanvas /
+                            // SetCanvasOffsetFromMinimap /
+                            // SetCanvasZoom — see
+                            // [PureRefViewModel] L590-654).
+                            // The two-finger gesture still
+                            // ran the full transform math
+                            // here (centroid / distance /
+                            // distanceDelta / angleDelta /
+                            // mode commit / worldPivot),
+                            // dispatched actions the reducer
+                            // would reject, then looped for
+                            // the next move event. The wasted
+                            // work is small per-frame but
+                            // continuous — on a SM-X810
+                            // (340dpi, 120Hz pointer) the
+                            // user feels the gesture "trying
+                            // to do something" while the
+                            // canvas visibly doesn't move,
+                            // which reads as lag. Early-skip
+                            // the entire transform block
+                            // (including the mode-commit
+                            // flip) when frozen — the
+                            // two-finger hit-test / image
+                            // select above (L7230-7299)
+                            // already ran, so the user can
+                            // still pick images while the
+                            // canvas is frozen; we just
+                            // don't burn CPU on a transform
+                            // the reducer will throw away.
+                            if (currentState.lockCanvasFrozen) {
+                                previousDistance = distance
+                                previousAngle = angle
+                                changes.forEach { it.consume() }
+                                continue
+                            }
 
                             if (!transformStarted) {
                                 previousDistance = distance

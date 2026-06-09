@@ -1853,6 +1853,51 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                 "currentFittedId=${currentState.fittedImageId} " +
                 "willUnfocus=${currentState.fittedImageId == imageId}",
         )
+        // V_NOW (2026-06-10 #4 locked image double-tap):
+        // the user spec is "locked 图片双击 unfocus" — a
+        // locked image is "view-only", so zooming into it
+        // doesn't make sense (you can't edit / move /
+        // resize it once you're focused anyway). Previously
+        // a double-tap on a locked image would happily run
+        // the else-branch below, focus that locked image
+        // (saving the current canvasScale into
+        // preFitCanvasScale), and leave the user stuck in a
+        // "focused on something I can't do anything with"
+        // state. The user could still escape via a second
+        // double-tap on the same locked image (the toggle
+        // path at L1856 below), but that requires a
+        // deliberate gesture match — a tap on a different
+        // image (locked or not) would just re-focus.
+        //
+        // New behavior: refuse to fit a locked image. If
+        // something else is currently focused, treat the
+        // double-tap as "exit focus" — restore
+        // [preFitCanvasScale] / [preFitCanvasOffset] and
+        // clear [fittedImageId]. If nothing is focused,
+        // the gesture is a no-op (the user can still tap
+        // elsewhere to deselect, and the locked image's
+        // own chrome / affordances stay available).
+        if (currentState.isImageLocked(imageId)) {
+            if (currentState.fittedImageId != null &&
+                currentState.fittedImageId != imageId
+            ) {
+                val previouslyFitted = currentState.fittedImageId
+                mainVm._uiState.update { state ->
+                    state.copy(
+                        canvasScale = state.preFitCanvasScale,
+                        canvasOffset = state.preFitCanvasOffset,
+                        fittedImageId = null,
+                    )
+                }
+                android.util.Log.d(
+                    "ExportCanvas",
+                    "fitImageToScreen UNFOCUS_VIA_LOCKED_TAP " +
+                        "requestedId=$imageId " +
+                        "previouslyFitted=$previouslyFitted",
+                )
+            }
+            return
+        }
         if (currentState.fittedImageId == imageId) {
             mainVm._uiState.update { state ->
                 state.copy(
