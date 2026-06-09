@@ -603,20 +603,17 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
  }
  }
  }
- is PockRefAction.SetCanvasOffsetFromMinimap -> {
- // V_NOW (2026-06-09): minimap click-to-jump blocked
- // when canvas is frozen. The minimap remains visible
- // (so the user can see where they are) but clicking
- // on it doesn't move the canvas.
- if (!_uiState.value.lockCanvasFrozen) {
- _uiState.update {
- it.copy(canvasOffset = action.offset, fittedImageId = null)
- }
- }
- }
-            is PockRefAction.SetCanvasOffsetFromMinimap -> _uiState.update {
-                it.copy(canvasOffset = action.offset, fittedImageId = null)
-            }
+is PockRefAction.SetCanvasOffsetFromMinimap -> {
+  // V_NOW (2026-06-09): minimap click-to-jump blocked
+  // when canvas is frozen. The minimap remains visible
+  // (so the user can see where they are) but clicking
+  // on it doesn't move the canvas.
+  if (!_uiState.value.lockCanvasFrozen) {
+  _uiState.update {
+  it.copy(canvasOffset = action.offset, fittedImageId = null)
+  }
+  }
+  }
             is PockRefAction.SetCanvasScaleAndOffset -> {
  // V_NOW: when an image is focused
  // ([fittedImageId] != null), ignore
@@ -653,8 +650,6 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
  }
  }
             is PockRefAction.TransformSelectedImage -> transformController.transformSelectedImage(action.scaleChange, action.rotationChange, action.pan)
-            is PockRefAction.SetSelectedImageScale -> transformController.setSelectedImageScale(action.newScale, action.worldCenter, action.worldPivot)
-            is PockRefAction.SetSelectedImagesScale -> batchController.setSelectedImagesScale(action.newScaleFactor, action.worldCenter)
             is PockRefAction.SetSelectedImageScale -> transformController.setSelectedImageScale(action.newScale, action.worldCenter, action.worldPivot)
             is PockRefAction.SetSelectedImagesScale -> batchController.setSelectedImagesScale(action.newScaleFactor, action.worldCenter)
             is PockRefAction.SetColorAdjust -> transformController.updateColorAdjust(action.brightness, action.contrast, action.saturation)
