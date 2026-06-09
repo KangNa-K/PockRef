@@ -5617,68 +5617,39 @@ private fun TopToolbar(
                             // 40dp (~136px) brings it up to the
                             // standard Material tap-target
                             // minimum.
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clickable(
-                                        interactionSource = remember {
-                                            androidx.compose.foundation.interaction.MutableInteractionSource()
-                                        },
-                                        indication = null,
-                                    ) {
-                                        // V6: state is hoisted to
-                                        // [PockRefApp.menuExpanded];
-                                        // this just requests the
-                                        // open transition. The
-                                        // BackHandler / scrim in
-                                        // PockRefApp own the close
-                                        // path.
-                                        onMenuExpandedChange(true)
-                                    },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.KeyboardArrowDown,
-                                    contentDescription = "最近文件",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp),
-            )
+                            // [Chevron] — recent files menu.
+                            ToolbarIconButton(
+                                imageVector = Icons.Rounded.KeyboardArrowDown,
+                                contentDescription = "最近文件",
+                                onClick = { onMenuExpandedChange(true) },
+                                active = menuExpanded,
+                            )
                             // V_NOW (2026-06-09 user spec "在最近
                             // 列表按钮右边新增导入图像按钮"):
                             // [Import] — new sibling to the
-                            // chevron. Tapping fires the
-                            // [onImport] lambda directly (a
-                            // SAF OpenMultipleDocuments picker
+                            // chevron. Single tap dispatches
+                            // [onImport] (a SAF
+                            // OpenMultipleDocuments picker
                             // for image/* MIME), no in-toolbar
-                            // dropdown. 40dp touch box + 18dp
-                            // icon + onSurfaceVariant tint,
-                            // identical to the chevron's
-                            // chrome. The icon vector is
-                            // [Icons.Rounded.Add] (the M3
-                            // plus-glyph) per the user's
-                            // 2026-06-09 spec — "导入按钮,
-                            // 图标是 material3 里的 '+' 图标".
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clickable(
-                                        interactionSource = remember {
-                                            androidx.compose.foundation.interaction.MutableInteractionSource()
-                                        },
-                                        indication = null,
-                                    ) {
-                                        onImport()
-                                    },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Add,
-                                    contentDescription = "导入图像",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
-        }
+                            // dropdown. Uses the shared
+                            // [ToolbarIconButton] template
+                            // (40dp touch box + 20dp icon +
+                            // onSurfaceVariant tint), identical
+                            // chrome to the chevron / undo /
+                            // redo / close siblings per the
+                            // 2026-06-09 chrome unify spec —
+                            // "5 个按钮大小完全一致". The icon
+                            // vector is [Icons.Rounded.Add]
+                            // (the M3 plus-glyph) per the
+                            // user's 2026-06-09 spec — "导入
+                            // 按钮, 图标是 material3 里的 '+'
+                            // 图标".
+                            ToolbarIconButton(
+                                imageVector = Icons.Rounded.Add,
+                                contentDescription = "导入图像",
+                                onClick = onImport,
+                            )
+
         // V_NOW: settings sheet rendered at [PockRefApp] level
         // (was inside [TopToolbar] before). Reads
         // [PockRefUiState.settingsSheetOpen] so multiple chrome
