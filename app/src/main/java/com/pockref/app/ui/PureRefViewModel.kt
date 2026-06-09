@@ -870,6 +870,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             PockRefAction.SetMenuBarsCollapsed -> collapseMenuBarsOnWindowBlur()
             PockRefAction.RestoreMenuBarsOnFocus -> restoreMenuBarsOnWindowFocus()
             is PockRefAction.SetSettingsSheetOpen -> setSettingsSheetOpen(action.open)
+            is PockRefAction.SetImportSourceMenuOpen -> setImportSourceMenuOpen(action.open)
             is PockRefAction.SetSettingsTab -> setSettingsTab(action.tab)
             is PockRefAction.SnapJustCommitted -> setSnapHighlight(action.highlight)
             PockRefAction.ClearSnapHighlight -> clearSnapHighlight()
@@ -1154,6 +1155,13 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { current ->
             if (current.settingsSheetOpen == open) current
             else current.copy(settingsSheetOpen = open)
+        }
+    }
+
+    internal fun setImportSourceMenuOpen(open: Boolean) {
+        _uiState.update { current ->
+            if (current.importSourceMenuOpen == open) current
+            else current.copy(importSourceMenuOpen = open)
         }
     }
 

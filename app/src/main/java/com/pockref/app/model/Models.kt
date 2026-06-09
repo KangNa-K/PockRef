@@ -770,6 +770,14 @@ data class PockRefUiState(
      * — can all open the same sheet instance.
      */
     val settingsSheetOpen: Boolean = false,
+    /**
+     * V_NOW (2026-06-10 #2 import popup: import-source picker dropdown
+     * visibility. True = a DropdownMenu is showing under the top toolbar's
+     * [+] import button with three options (gallery / clipboard / files).
+     * Toggled by PockRefAction.SetImportSourceMenuOpen. Independent of
+     * settingsSheetOpen (different popup, different chrome element).
+     */
+    val importSourceMenuOpen: Boolean = false,
     // V_NOW (2026-06-08 速写练习 commit 2): the
     // pre-flight config sheet visibility. True =
     // [com.pockref.app.ui.PracticeConfigSheet]

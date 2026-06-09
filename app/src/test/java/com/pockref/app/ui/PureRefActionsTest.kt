@@ -123,7 +123,7 @@ class PockRefActionsTest {
     // the new scale factor from the current group
     // AABB diagonal length divided by the down-time
     // length.
-    private val expectedVariantCount: Int = 132
+    private val expectedVariantCount: Int = 133
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

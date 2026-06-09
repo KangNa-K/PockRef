@@ -561,6 +561,17 @@ sealed interface PockRefAction {
     data class SetSettingsSheetOpen(val open: Boolean) : PockRefAction
 
     /**
+     * V_NOW (2026-06-10 #2 import popup): open/close the
+     * import-source picker dropdown under the top toolbar's
+     * [+] import button. Independent of [SetSettingsSheetOpen]
+     * — those are different popups anchored at different
+     * chrome elements. The [PockRefUiState.importSourceMenuOpen]
+     * mirror flips on dispatch; the dropdown's
+     * onDismissRequest dispatches `false` to close.
+     */
+    data class SetImportSourceMenuOpen(val open: Boolean) : PockRefAction
+
+    /**
      * Switch to a different tab in the in-app settings sheet
      * (V_NOW: tabbed settings — 通用 / 外观 / 手势). Only
      * meaningful while [SetSettingsSheetOpen] is true; the

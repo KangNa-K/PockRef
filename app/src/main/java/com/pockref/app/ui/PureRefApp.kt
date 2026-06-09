@@ -1,5 +1,7 @@
 package com.pockref.app.ui
 
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
@@ -16,6 +18,7 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts.CreateDocument
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments
+import androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -83,6 +86,7 @@ import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Crop
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FileOpen
@@ -484,6 +488,68 @@ fun PockRefApp(
 ) {
     val importLauncher = rememberLauncherForActivityResult(OpenMultipleDocuments()) { uris ->
         onAction(PockRefAction.ImportImages(uris))
+    }
+    // V_NOW (2026-06-10 #2 import popup): gallery picker.
+    // [PickMultipleVisualMedia] is the Android 13+
+    // PhotoPicker API (auto-fallback to SAF on older
+    // Android versions). Bounded at 32 items — matches
+    // the multi-select workflow the existing
+    // [OpenMultipleDocuments] launcher offers, so users
+    // can pull in a whole reference sheet in one tap.
+    // [PickVisualMediaRequest.ImageOnly] restricts the
+    // picker to image MIME so we never receive a stray
+    // video/PDF that the SAF list-mode picker might
+    // surface.
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        PickMultipleVisualMedia(maxItems = 32),
+    ) { uris ->
+        if (uris.isNotEmpty()) onAction(PockRefAction.ImportImages(uris))
+    }
+    // V_NOW (2026-06-10 #2 import popup): clipboard reader.
+    // [ClipboardManager] exposes the current primary clip —
+    // Android 13+ makes this a normal read API when the
+    // calling Activity has focus (which is always true in
+    // PockRef since the user just tapped the import
+    // button). We walk [ClipData.itemCount] looking for
+    // any item whose `uri` is set; the system clipboard
+    // typically exposes a `content://` URI for images
+    // copied from the Photos app, Chrome, or the screenshot
+    // tool. Items with text but no URI (e.g. copied from
+    // a chat app) are silently skipped — the gallery /
+    // files option is the right path for those, not the
+    // clipboard. The local context is captured here (not
+    // threaded through PockRefApp's parameter list) because
+    // we only need it for this one-shot read. Named
+    // `clipboardContext` to avoid colliding with the
+    // existing `val context` capture in [onSaveScene]
+    // below (Kotlin's implicit-capture rule re-declares
+    // the lambda-local `val context` against this scope).
+    val clipboardContext = androidx.compose.ui.platform.LocalContext.current
+    fun readClipboardImageUris(): List<Uri> {
+        val clipboard = clipboardContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            ?: return emptyList()
+        val clip = clipboard.primaryClip ?: return emptyList()
+        return buildList {
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i).uri?.let { add(it) }
+            }
+        }
+    }
+    val onImportFromClipboard: () -> Unit = {
+        val uris = readClipboardImageUris()
+        if (uris.isNotEmpty()) {
+            onAction(PockRefAction.ImportImages(uris))
+        }
+        // V_NOW: empty-clipboard case is silent on purpose
+        // — the dropdown already closed itself when the
+        // user picked this item, and adding a snackbar
+        // here would race the picker animation for the
+        // gallery / files path. Users who wonder "why
+        // didn't my clipboard image paste" will tap the
+        // option again and notice nothing happens; the
+        // simplest diagnosis is to copy an image first.
+        // A future polish could route empty-clipboard
+        // through the existing [errorsFlow] snackbar.
     }
     // Inline scene-name editor state. Lifted out of [TopToolbar]
     // so the tap-outside-cancel scrim below can read the same
@@ -1120,18 +1186,35 @@ fun PockRefApp(
                 // the state.
                 menuExpanded = menuExpanded,
                 onMenuExpandedChange = { menuExpanded = it },
-                // V_NOW (2026-06-09 user spec "默认全部展示
-                // chevron / import / undo / redo / close 5 个
-                // icon 常驻, Import 按钮图标换成 M3 Add"):
-                // the [+] import button on the toolbar
-                // dispatches this lambda, which fires
-                // [importLauncher] in [PockRefApp]. Single
-                // tap = open the SAF image picker directly
-                // (no dropdown panel — the user spec was
-                // initially a dropdown, but the user
-                // reverted that decision in the same
-                // session).
-                onImport = onImport,
+                // V_NOW (2026-06-10 #2 import popup user spec
+                // "顶栏 import 按钮 tap 后弹 3 选项 popup:
+                // 相册 / 剪贴板 / 文件"): the [+] import
+                // button now opens a transient
+                // [androidx.compose.material3.DropdownMenu]
+                // anchored under itself, instead of going
+                // straight to the SAF picker. Three options
+                // — gallery ([photoPickerLauncher] =
+                // Android 13+ PhotoPicker, auto-fallback to
+                // SAF on older), clipboard
+                // ([onImportFromClipboard] = ClipboardManager
+                // read), and files ([onImport] = the existing
+                // SAF [OpenMultipleDocuments] path). Empty-
+                // canvas state still has its own
+                // [EmptyCanvasState] import button that calls
+                // [onImport] directly (intentionally NOT
+                // routed through the dropdown — a popup
+                // anchored to the top toolbar would jump to a
+                // screen corner when the user taps a button
+                // in the canvas center).
+                onPickGallery = {
+                    photoPickerLauncher.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                        ),
+                    )
+                },
+                onPickClipboard = onImportFromClipboard,
+                onPickFiles = onImport,
                 // V_NOW: parent container's max width, captured by
                 // the [BoxWithConstraints] wrapper at the call site
                 // (was [Box] before). The toolbar uses this to cap
@@ -4959,15 +5042,22 @@ private fun TopToolbar(
     // [onMenuExpandedChange].
     menuExpanded: Boolean,
     onMenuExpandedChange: (Boolean) -> Unit,
-    // V_NOW (2026-06-09 user spec "默认全部展示 chevron /
-    // import / undo / redo / close 5 个 icon 常驻, Import
-    // 按钮图标换成 M3 Add"): the [+] import button calls
-    // this lambda directly (single tap = open the SAF
-    // image picker, no in-toolbar dropdown). The launcher
-    // itself lives in [PockRefApp] (it needs the
-    // [rememberLauncherForActivityResult] handle), so
-    // the toolbar just receives the no-arg callback.
-    onImport: () -> Unit = {},
+    // V_NOW (2026-06-10 #2 import popup user spec
+    // "顶栏 import 按钮 tap 后弹 3 选项 popup:
+    // 相册 / 剪贴板 / 文件"): the [+] import button
+    // now opens a transient [DropdownMenu] anchored
+    // under itself with three items — gallery,
+    // clipboard, files. The dropdown lives in
+    // [TopToolbar] (so it anchors to the import
+    // button's exact bounds), but the launchers
+    // themselves live in [PockRefApp] (they need the
+    // [rememberLauncherForActivityResult] handles +
+    // LocalContext for ClipboardManager). The toolbar
+    // just receives three no-arg callbacks wired to
+    // those launchers at the [PockRefApp] call site.
+    onPickGallery: () -> Unit = {},
+    onPickClipboard: () -> Unit = {},
+    onPickFiles: () -> Unit = {},
     // V_NOW: parent container's max width, captured by the
     // [BoxWithConstraints] wrapper at the [PockRefApp] call
     // site. The toolbar uses this to cap its Surface width
@@ -5031,6 +5121,18 @@ private fun TopToolbar(
     // toolbar is always visible, so this happens before
     // the user can open the menu).
     var toolbarRowWidth by remember { mutableStateOf(0) }
+    // V_NOW (2026-06-10 #2 import popup): transient
+    // [DropdownMenu] visibility. Lives in [TopToolbar] (not
+    // hoisted to [PockRefApp] like [menuExpanded], the recent
+    // files popup) because (a) it's UI-only — there's no
+    // scenario where another chrome element needs to know
+    // whether the import dropdown is open, and (b) closing it
+    // is fully handled by [DropdownMenu]'s built-in
+    // onDismissRequest (tap-outside, back press, item tap)
+    // — no parent scrim needed. The [remember] slot is
+    // keyed to the TopToolbar's lifecycle; when the toolbar
+    // disappears (practice mode) the state resets cleanly.
+    var importSourceMenuExpanded by remember { mutableStateOf(false) }
 
     // V_NOW: SoftwareKeyboardController for explicit IM show
     // when entering the title's rename mode. Compose's TextField
@@ -5647,8 +5749,136 @@ private fun TopToolbar(
                             ToolbarIconButton(
                                 imageVector = Icons.Rounded.Add,
                                 contentDescription = "导入图像",
-                                onClick = onImport,
+                                // V_NOW (2026-06-10 #2 import
+                                // popup): tap opens the
+                                // import-source dropdown
+                                // below, not the SAF picker
+                                // directly. The dropdown's
+                                // onDismissRequest (tap-
+                                // outside, back press)
+                                // closes itself. Three
+                                // items then dispatch one
+                                // of the three launchers
+                                // ([onPickGallery] /
+                                // [onPickClipboard] /
+                                // [onPickFiles]) received
+                                // from [PockRefApp].
+                                onClick = { importSourceMenuExpanded = true },
                             )
+                            // V_NOW (2026-06-10 #2 import
+                            // popup): the [+] button's
+                            // sibling DropdownMenu. Wrapped
+                            // in a no-size Box so the menu
+                            // anchors to the import
+                            // button's bounds — [DropdownMenu]
+                            // is itself a [Popup] that floats
+                            // over all content, so the Box
+                            // takes 0dp of layout space and
+                            // the surrounding Row isn't
+                            // affected. The menu opens BELOW
+                            // the button by default (no
+                            // offset tweak) — the chevron /
+                            // [+] / undo / redo / close row
+                            // sits at the top of the toolbar,
+                            // so there's vertical room for a
+                            // 3-item list (~120dp) before it
+                            // hits the canvas surface. The
+                            // menu's right edge aligns with
+                            // the button's right edge via
+                            // [offset] = (-4dp) so a short
+                            // label like "相册" doesn't
+                            // visually snap to the button's
+                            // left edge and look orphaned.
+                            androidx.compose.foundation.layout.Box {
+                                androidx.compose.material3.DropdownMenu(
+                                    expanded = importSourceMenuExpanded,
+                                    onDismissRequest = {
+                                        importSourceMenuExpanded = false
+                                    },
+                                    offset = androidx.compose.ui.unit.DpOffset(
+                                        x = (-4).dp,
+                                        y = 0.dp,
+                                    ),
+                                ) {
+                                    // V_NOW: gallery option.
+                                    // [Icons.Rounded.PhotoLibrary]
+                                    // is the "stack of photos"
+                                    // glyph (Material 3 standard).
+                                    // Label is plain "相册" (no
+                                    // qualifier) — the dropdown
+                                    // itself is already scoped to
+                                    // "import images", so adding
+                                    // "图片" would be redundant.
+                                    // Active state is moot here —
+                                    // all three options are
+                                    // single-shot launchers, none
+                                    // toggle.
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { androidx.compose.material3.Text("相册") },
+                                        leadingIcon = {
+                                            androidx.compose.material3.Icon(
+                                                androidx.compose.material.icons.Icons.Rounded.PhotoLibrary,
+                                                contentDescription = null,
+                                            )
+                                        },
+                                        onClick = {
+                                            importSourceMenuExpanded = false
+                                            onPickGallery()
+                                        },
+                                    )
+                                    // V_NOW: clipboard option.
+                                    // [Icons.Rounded.ContentPaste]
+                                    // is the standard "paste from
+                                    // clipboard" glyph. Empty
+                                    // clipboard is handled
+                                    // silently inside
+                                    // [onPickClipboard] — the
+                                    // dropdown already closed
+                                    // itself, and showing a
+                                    // snackbar here would race
+                                    // the picker animation for
+                                    // the other two paths.
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { androidx.compose.material3.Text("剪贴板") },
+                                        leadingIcon = {
+                                            androidx.compose.material3.Icon(
+                                                androidx.compose.material.icons.Icons.Rounded.ContentPaste,
+                                                contentDescription = null,
+                                            )
+                                        },
+                                        onClick = {
+                                            importSourceMenuExpanded = false
+                                            onPickClipboard()
+                                        },
+                                    )
+                                    // V_NOW: files option. The
+                                    // existing SAF
+                                    // [OpenMultipleDocuments]
+                                    // path — kept as the "I want
+                                    // a specific file from my
+                                    // Downloads" option for power
+                                    // users. Some users store
+                                    // reference images outside
+                                    // the Photo roll (e.g. SD
+                                    // card, downloaded .zip
+                                    // extracts), and the system
+                                    // PhotoPicker doesn't reach
+                                    // those locations — SAF does.
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { androidx.compose.material3.Text("文件") },
+                                        leadingIcon = {
+                                            androidx.compose.material3.Icon(
+                                                androidx.compose.material.icons.Icons.Rounded.FileOpen,
+                                                contentDescription = null,
+                                            )
+                                        },
+                                        onClick = {
+                                            importSourceMenuExpanded = false
+                                            onPickFiles()
+                                        },
+                                    )
+                                }
+                            }
 
         // V_NOW: settings sheet rendered at [PockRefApp] level
         // (was inside [TopToolbar] before). Reads
