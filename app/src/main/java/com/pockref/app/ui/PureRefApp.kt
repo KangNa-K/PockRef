@@ -5239,7 +5239,12 @@ private fun TopToolbar(
             // shared Surface.
             ,
         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-        tonalElevation = Dimens.ToolbarElevation,
+        // V_NOW (2026-06-09 chrome unify): tonalElevation 从
+        // ToolbarElevation (3.dp) 改成 0.dp. 之前 Surface 在
+        // 3dp elevation 下会自动叠 ~8% primary tint overlay
+        // (M3 surfaceTint),light theme 下渲染色偏浅青,跟用户
+        // 期望的"纯白 frosted"不符.
+        tonalElevation = 0.dp,
         color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
         // V_NOW (2026-06-08): 1dp outlineVariant@40% border
         // matching [BottomSheetPanel]'s chrome so the toolbar
@@ -9787,7 +9792,14 @@ private fun BoxScope.BottomRightActionPanel(
             },
         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
         color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-        tonalElevation = Dimens.ToolbarElevation,
+        // V_NOW (2026-06-09 chrome unify): tonalElevation 从
+        // ToolbarElevation (3.dp) 改成 0.dp,跟顶栏统一 — 三个
+        // chrome 容器(顶栏 / FAB / 全局锁定)统一纯 surface @0.92,
+        // 没有 M3 surfaceTint overlay (light theme 下叠 8% primary
+        // tint 让容器偏浅青). FAB 嵌在这个 Surface 内,统一 0.dp
+        // 后 FAB 自身的 surface@0.92 直接渲染色 = canvas 透出色,
+        // 跟 Lock 按钮 (Box 直接在主 Box 上画) 同色.
+        tonalElevation = 0.dp,
         // V_NOW (2026-06-08): 1dp outlineVariant@40% border
         // matching the bottom-sheet chrome so the bottom-right
         // expanded panel reads as the same "outlined chrome
