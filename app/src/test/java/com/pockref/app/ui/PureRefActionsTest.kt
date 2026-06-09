@@ -112,7 +112,18 @@ class PockRefActionsTest {
     // [BeginBoxSelectAt] for the screen-space drag-start
     // capture that drives the WINDOW/CROSSING direction
     // detection in [PockRefAction.UpdateBoxSelectRect].
-    private val expectedVariantCount: Int = 127
+    // V_NOW (4-corner scale handles, MULTI/BOX path):
+    // 131 → 132 — added [SetSelectedImagesScale] for
+    // the group-AABB absolute-scale dispatch. The
+    // [SetSelectedImageScale] for the SINGLE path
+    // was already added in the prior commit (so the
+    // count was already 131). The pointer handler
+    // dispatches the group form on every move event
+    // during a multi-select corner drag, deriving
+    // the new scale factor from the current group
+    // AABB diagonal length divided by the down-time
+    // length.
+    private val expectedVariantCount: Int = 132
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

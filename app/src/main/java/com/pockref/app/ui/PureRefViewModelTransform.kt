@@ -713,6 +713,70 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         }
     }
 
+    /**
+     * V_NOW (4-corner scale handles, SINGLE path):
+     * apply an ABSOLUTE scale to the SINGLE
+     * selected image, pinning [worldPivot] (the
+     * drag's anchor corner) in world space and
+     * translating the image so the new center is
+     * at [worldCenter]. Distinct from the
+     * existing [transformSelectedImage] (which
+     * multiplies a RELATIVE [scaleChange] onto
+     * the current image's scale each frame)
+     * because the corner drag wants a fixed
+     * reference frame: the down-time diagonal
+     * length. The scale baseline ([initialScale]
+     * + the down-time diagonal length) is
+     * captured at the down event by the pointer
+     * handler.
+     *
+     * Lock guard: applies to the SINGLE selected
+     * image only. If that image is locked
+     * (per-image OR via the app-wide
+     * [PockRefUiState.globalImageLock]), the
+     * call is a no-op. The corner hit-test in
+     * [PockRefCanvas] also gates on this BEFORE
+     * starting the drag, so a normal user never
+     * reaches this reducer with a locked image.
+     *
+     * The scale is clamped to the [0.1, 8.0]
+     * range that the relative path uses, so the
+     * absolute and relative code paths are
+     * behaviorally consistent at the boundary.
+     * [worldCenter] is supplied by the pointer
+     * handler (already a world-space point from
+     * its screen → world conversion).
+     */
+    internal fun setSelectedImageScale(newScale: Float, worldCenter: Offset, worldPivot: Offset) {
+        val stateBefore = mainVm._uiState.value
+        val targetId = stateBefore.selectedImageId
+            ?: stateBefore.selectedImageIds.firstOrNull()
+            ?: return
+        if (stateBefore.isImageLocked(targetId)) return
+        val target = stateBefore.images.firstOrNull { it.id == targetId } ?: return
+        val clamped = newScale.coerceIn(0.1f, 8.0f)
+        if (clamped == target.scale && worldCenter == target.center) return
+        // [worldPivot] is captured for shape
+        // parity with [transformSelectedImage]
+        // and is unused here — the absolute form
+        // takes [worldCenter] as the new center
+        // directly. The argument stays in the
+        // signature so a future maintainer who
+        // wants to derive worldCenter from
+        // worldPivot (e.g. when the pointer
+        // handler doesn't supply it) can wire
+        // that up without changing the public
+        // action shape.
+        @Suppress("UNUSED_VARIABLE")
+        val _pivot = worldPivot
+        mainVm.updateSceneForGesture {
+            copy(images = images.map { image ->
+                if (image.id != targetId) image
+                else image.copy(scale = clamped, center = worldCenter)
+            })
+        }
+    }
+
     internal fun moveImage(imageId: String, delta: Offset) {
         // V_NOW: lock guard. `selectedIdsFor(imageId)` returns the
         // full multi-selection which may include locked images. A

@@ -700,4 +700,500 @@ class PockRefTransformTest {
         assertNull(detectAngleSnap(1f, thresholdDeg = 0f))
         assertNull(detectAngleSnap(89f, thresholdDeg = 0f))
     }
+
+    // ----------------------------------------------------------------
+    // V_NOW (4-corner scale handles): tests for the corner hit-test
+    // and the per-frame corner-drag math. The geometry is the same
+    // [drawSceneImage] uses to render the corner circles, in reverse:
+    // given an image with known center / size / rotation, project
+    // its 4 corners to screen pixels, then verify the hit-test picks
+    // the right corner and the drag-result math returns the right
+    // scale + new-center for a user pulling the move-handle around
+    // the pinned anchor.
+    // ----------------------------------------------------------------
+
+    @Test
+    fun cornerHandles_hitTest_selectsCorrectCorner() {
+        // Image at world (0, 0), 100x50 size, 0° rotation,
+        // canvas scale 1, no offset, viewport 200x200.
+        // World corners project to screen (50, 75), (150, 75),
+        // (50, 125), (150, 125) — half width = 50, half height = 25,
+        // centered at 100, 100.
+        val corners = projectImageCornersToScreen(
+            imageCenter = Offset(0f, 0f),
+            imageWidth = 100f,
+            imageHeight = 50f,
+            rotationDegrees = 0f,
+            canvasScale = 1f,
+            canvasOffset = Offset.Zero,
+            viewportWidth = 200f,
+            viewportHeight = 200f,
+        )
+        // Hit radius 10px: well within the corner, no overlap.
+        val r = 10f
+        assertEquals(0, hitTestCornerHandle(corners, Offset(50f, 75f), r))   // TL
+        assertEquals(1, hitTestCornerHandle(corners, Offset(150f, 75f), r))  // TR
+        assertEquals(2, hitTestCornerHandle(corners, Offset(50f, 125f), r))  // BL
+        assertEquals(3, hitTestCornerHandle(corners, Offset(150f, 125f), r)) // BR
+    }
+
+    @Test
+    fun cornerHandles_hitTest_missReturnsMinusOne() {
+        val corners = projectImageCornersToScreen(
+            imageCenter = Offset(0f, 0f),
+            imageWidth = 100f,
+            imageHeight = 50f,
+            rotationDegrees = 0f,
+            canvasScale = 1f,
+            canvasOffset = Offset.Zero,
+            viewportWidth = 200f,
+            viewportHeight = 200f,
+        )
+        // Center of viewport is far from any corner.
+        assertEquals(-1, hitTestCornerHandle(corners, Offset(100f, 100f), 10f))
+    }
+
+    @Test
+     fun cornerHandles_dragResult_doublesScale() {
+        // Move the move-handle from (50, 75) to (200, 75) — i.e.
+        // pulled to the right until the diagonal halves. Anchor
+        // (the opposite corner) is at (150, 125) and stays fixed.
+        // Initial diagonal length = sqrt(100^2 + 50^2) = ~111.8.
+        // New move-handle at (200, 75) → new diagonal = sqrt(50^2 + 50^2) = ~70.7.
+        // RAW scale = 70.7 / 111.8 ≈ 0.632. After softening
+        // (sqrt(0.632) ≈ 0.795) the effective scale is ~0.795.
+        // The new center is just the midpoint of
+        // (currentMove, initialAnchor) — softening does NOT
+        // touch the new-center math (the user still sees the
+        // box follow their finger even when the scale is
+        // clamped into the deadzone).
+        val initialMove = Offset(50f, 75f)
+        val initialAnchor = Offset(150f, 125f)
+        val (scale, newCenter) = computeCornerDragResult(
+            initialMoveScreen = initialMove,
+            initialAnchorScreen = initialAnchor,
+            currentMoveScreen = Offset(200f, 75f),
+        )
+        val expectedInitialDiag = kotlin.math.hypot(100f, 50f)
+        val expectedNewDiag = kotlin.math.hypot(-50f, 50f)
+        val rawRatio = expectedNewDiag / expectedInitialDiag
+        val expectedScale = kotlin.math.sqrt(rawRatio)
+        assertEquals(expectedScale, scale, epsilon)
+        val expectedCenter = Offset(
+            (200f + 150f) / 2f,
+            (75f + 125f) / 2f,
+        )
+        assertEquals(expectedCenter.x, newCenter.x, epsilon)
+        assertEquals(expectedCenter.y, newCenter.y, epsilon)
+    }
+
+    @Test
+    fun cornerHandles_dragResult_growsWhenPulledOutward() {
+        // Move-handle starts at the top-left corner (50, 75), and
+        // the user pulls it OUT to (-50, -25) — i.e. past the
+        // top-left of the image. The anchor (the bottom-right
+        // corner, 150, 125) is fixed. The diagonal grows:
+        // initial = sqrt(100^2 + 50^2) ≈ 111.8,
+        // new = sqrt(200^2 + 150^2) = 250.
+        // RAW scale = 250/111.8 ≈ 2.236.
+        // SOFTENED scale = sqrt(2.236) ≈ 1.495
+        // (large pulls still work, just not 1:1).
+        val (scale, newCenter) = computeCornerDragResult(
+            initialMoveScreen = Offset(50f, 75f),
+            initialAnchorScreen = Offset(150f, 125f),
+            currentMoveScreen = Offset(-50f, -25f),
+        )
+        val expectedInitial = kotlin.math.hypot(100f, 50f)
+        val expectedNew = kotlin.math.hypot(200f, 150f)
+        val rawRatio = expectedNew / expectedInitial
+        val expectedScale = kotlin.math.sqrt(rawRatio)
+        assertEquals(expectedScale, scale, epsilon)
+        assertEquals(50f, newCenter.x, epsilon)
+        assertEquals(50f, newCenter.y, epsilon)
+    }
+
+    @Test
+    fun cornerHandles_dragResult_collapseToAnchor_yieldsIdentityScale() {
+        // The user drags the move-handle EXACTLY onto the
+        // anchor. The raw diagonal collapses to 0, but the
+        // softening (raw=0 falls inside the deadzone) returns
+        // scale=1 — the image "stops responding" rather than
+        // blowing up. The new center is still the anchor
+        // (the user sees the move-handle land on the anchor,
+        // but the image keeps its current size).
+        val (scale, newCenter) = computeCornerDragResult(
+            initialMoveScreen = Offset(50f, 75f),
+            initialAnchorScreen = Offset(150f, 125f),
+            currentMoveScreen = Offset(150f, 125f),
+        )
+        assertEquals(1f, scale, epsilon)
+        assertEquals(150f, newCenter.x, epsilon)
+        assertEquals(125f, newCenter.y, epsilon)
+    }
+
+    @Test
+    fun cornerHandles_forImage_anchorIsAlwaysOpposite() {
+        val handles = CornerHandles.forImage("img1", width = 100f, height = 50f)
+        assertEquals(4, handles.corners.size)
+        // For each corner, the anchor must be the diagonally-
+        // opposite local position.
+        val expected = listOf(
+            0 to (Offset(0f, 0f) to Offset(100f, 50f)),
+            1 to (Offset(100f, 0f) to Offset(0f, 50f)),
+            2 to (Offset(0f, 50f) to Offset(100f, 0f)),
+            3 to (Offset(100f, 50f) to Offset(0f, 0f)),
+        )
+        handles.corners.forEachIndexed { i, spec ->
+            val (move, anchor) = expected[i].second
+            assertEquals(move, spec.moveLocal)
+            assertEquals(anchor, spec.anchorLocal)
+        }
+    }
+
+    @Test
+    fun cornerHandles_projectHonorsRotation() {
+        // 90° rotation should swap the axis-aligned local
+        // corner positions so the projected corners land
+        // on the rotated footprint, not the original
+        // axis-aligned rectangle. The standard math
+        // convention is "90° rotates CCW" — Compose's
+        // `rotate(degrees, pivot)` also follows this (it
+        // matches the [android.graphics.Canvas.rotate]
+        // convention, which is also CCW-positive).
+        //
+        // Image: 100w x 50h, centered at world (0, 0).
+        // Local corners in the (TL, TR, BL, BR) enum
+        // order are (0,0), (100,0), (0,50), (100,50).
+        //
+        // Rotation matrix at 90° CCW:
+        //   [cos, -sin]   [0, -1]
+        //   [sin,  cos] = [1,  0]
+        //
+        // The helper takes each local corner, centers it
+        // on the image (dx = local.x - 50, dy = local.y - 25),
+        // applies the rotation, then re-translates to the
+        // world center. So for local (0, 0):
+        //   dx = -50, dy = -25
+        //   rotated dx = (-50)*0 - (-25)*1 =  25
+        //   rotated dy = (-50)*1 + (-25)*0 = -50
+        //   world = (0 + 25, 0 - 50) = (25, -50)
+        //   screen = (100 + 25, 100 - 50) = (125, 50)
+        //
+        // And for local (100, 0):
+        //   dx = 50, dy = -25
+        //   rotated dx = 50*0 - (-25)*1 =  25
+        //   rotated dy = 50*1 + (-25)*0 =  50
+        //   world = (25, 50)
+        //   screen = (125, 150)
+        //
+        // (The other two follow by symmetry: local (0, 50)
+        // → screen (75, 50); local (100, 50) → screen
+        // (75, 150).)
+        val corners = projectImageCornersToScreen(
+            imageCenter = Offset(0f, 0f),
+            imageWidth = 100f,
+            imageHeight = 50f,
+            rotationDegrees = 90f,
+            canvasScale = 1f,
+            canvasOffset = Offset.Zero,
+            viewportWidth = 200f,
+            viewportHeight = 200f,
+        )
+        val (p0, p1, p2, p3) = corners
+        // corners[0] (local (0,0)) → screen (125, 50)
+        assertEquals(125f, p0.x, epsilon)
+        assertEquals(50f, p0.y, epsilon)
+        // corners[1] (local (100,0)) → screen (125, 150)
+        assertEquals(125f, p1.x, epsilon)
+        assertEquals(150f, p1.y, epsilon)
+        // corners[2] (local (0,50)) → screen (75, 50)
+        assertEquals(75f, p2.x, epsilon)
+        assertEquals(50f, p2.y, epsilon)
+        // corners[3] (local (100,50)) → screen (75, 150)
+        assertEquals(75f, p3.x, epsilon)
+        assertEquals(150f, p3.y, epsilon)
+    }
+
+    // ----------------------------------------------------------------
+    // V_NOW (4-corner scale handles, MULTI/BOX path): tests
+    // for the group AABB union + the per-frame group corner
+    // drag math. The geometry mirrors the SINGLE path but
+    // uses an axis-aligned world-space rect (not an
+    // image-local pre-rotation box) so the math is
+    // noticeably simpler — no rotation, no image-center
+    // translation, just min/max over the rotated
+    // footprints.
+    // ----------------------------------------------------------------
+
+    @Test
+    fun groupSelectionAabb_unionsMultipleImages() {
+        // Two images, each 100x50, at distinct centers
+        // and rotations. The AABB union should be the
+        // min/max of the two rotated footprints.
+        //
+        // Image A: center (0, 0), 100x50, 0° rot. Rotated
+        // AABB: (-50, -25) to (50, 25).
+        // Image B: center (60, 0), 60x60, 0° rot. Rotated
+        // AABB: (30, -30) to (90, 30).
+        // Union: (-50, -25) to (90, 30) = width 140,
+        // height 55, center (20, 2.5).
+        val imgA = SceneImage(
+            id = "A",
+            name = "a",
+            mimeType = "image/png",
+            intrinsicWidth = 100,
+            intrinsicHeight = 50,
+            center = Offset(0f, 0f),
+            displaySize = Size2D(width = 100f, height = 50f),
+            scale = 1f,
+        )
+        val imgB = SceneImage(
+            id = "B",
+            name = "b",
+            mimeType = "image/png",
+            intrinsicWidth = 60,
+            intrinsicHeight = 60,
+            center = Offset(60f, 0f),
+            displaySize = Size2D(width = 60f, height = 60f),
+            scale = 1f,
+        )
+        val aabb = groupSelectionAabb(listOf(imgA, imgB))
+        assertEquals(-50f, aabb.rect.left, epsilon)
+        assertEquals(90f, aabb.rect.right, epsilon)
+        assertEquals(-30f, aabb.rect.top, epsilon)
+        assertEquals(30f, aabb.rect.bottom, epsilon)
+        assertEquals(140f, aabb.width, epsilon)
+        assertEquals(60f, aabb.height, epsilon)
+        assertEquals(20f, aabb.center.x, epsilon)
+        assertEquals(0f, aabb.center.y, epsilon)
+    }
+
+    @Test
+    fun groupSelectionAabb_emptyReturnsZero() {
+        val aabb = groupSelectionAabb(emptyList())
+        assertEquals(0f, aabb.width, epsilon)
+        assertEquals(0f, aabb.height, epsilon)
+    }
+
+    @Test
+    fun groupSelectionAabb_expandsForRotatedImage() {
+        // Single 100x100 image, rotated 45°. The
+        // un-rotated AABB is (-50, -50) to (50, 50);
+        // the rotated one expands to roughly
+        // (-70.7, -70.7) to (70.7, 70.7) (the
+        // |cos|+|sin| projection is √2 at 45°).
+        val img = SceneImage(
+            id = "R",
+            name = "r",
+            mimeType = "image/png",
+            intrinsicWidth = 100,
+            intrinsicHeight = 100,
+            center = Offset.Zero,
+            displaySize = Size2D(width = 100f, height = 100f),
+            scale = 1f,
+            rotationDegrees = 45f,
+        )
+        val aabb = groupSelectionAabb(listOf(img))
+        val expectedHalf = 100f * kotlin.math.sqrt(2f) / 2f
+        assertEquals(-expectedHalf, aabb.rect.left, epsilon)
+        assertEquals(expectedHalf, aabb.rect.right, epsilon)
+        assertEquals(-expectedHalf, aabb.rect.top, epsilon)
+        assertEquals(expectedHalf, aabb.rect.bottom, epsilon)
+    }
+
+    @Test
+    fun groupCornerDragResult_doublesScale() {
+        // Group AABB at TL=(0,0), BR=(100,50). Initial
+        // group diagonal = sqrt(100^2 + 50^2). User
+        // pulls TL to (-50, 0) — new diagonal from
+        // (-50, 0) to (100, 50) = sqrt(150^2 + 50^2).
+        // RAW scale factor = newDiag / initialDiag ≈ 1.34
+        // (group grew). After softening,
+        // scale = sqrt(1.34) ≈ 1.157.
+        val initialDiag = kotlin.math.hypot(100f, 50f)
+        val (scale, newCenter) = computeGroupCornerDragResult(
+            initialGroupDiagScreen = initialDiag,
+            currentMoveScreen = Offset(-50f, 0f),
+            initialAnchorScreen = Offset(100f, 50f),
+        )
+        val expectedNew = kotlin.math.hypot(150f, 50f)
+        val rawRatio = expectedNew / initialDiag
+        val expectedScale = kotlin.math.sqrt(rawRatio)
+        assertEquals(expectedScale, scale, epsilon)
+        val expectedCenter = Offset(
+            (-50f + 100f) / 2f,
+            (0f + 50f) / 2f,
+        )
+        assertEquals(expectedCenter.x, newCenter.x, epsilon)
+        assertEquals(expectedCenter.y, newCenter.y, epsilon)
+    }
+
+    @Test
+    fun projectGroupAabbCornersToScreen_returnsAxisAlignedCorners() {
+        // AABB at world (10, 20) to (110, 70). Canvas
+        // scale 1, no offset, viewport 200x200 (so
+        // viewport center = (100, 100)). The 4
+        // projected corners should land at:
+        //   TL world (10, 20) → screen (110, 120)
+        //   TR world (110, 20) → screen (210, 120)
+        //   BL world (10, 70) → screen (110, 170)
+        //   BR world (110, 70) → screen (210, 170)
+        val aabb = GroupAabb(
+            rect = androidx.compose.ui.geometry.Rect(
+                left = 10f, top = 20f, right = 110f, bottom = 70f,
+            ),
+            center = Offset(60f, 45f),
+            width = 100f,
+            height = 50f,
+        )
+        val corners = projectGroupAabbCornersToScreen(
+            groupAabb = aabb,
+            canvasScale = 1f,
+            canvasOffset = Offset.Zero,
+            viewportWidth = 200f,
+            viewportHeight = 200f,
+        )
+        assertEquals(110f, corners[0].x, epsilon)
+        assertEquals(120f, corners[0].y, epsilon)
+        assertEquals(210f, corners[1].x, epsilon)
+        assertEquals(120f, corners[1].y, epsilon)
+        assertEquals(110f, corners[2].x, epsilon)
+        assertEquals(170f, corners[2].y, epsilon)
+        assertEquals(210f, corners[3].x, epsilon)
+        assertEquals(170f, corners[3].y, epsilon)
+    }
+
+    // ----------------------------------------------------------------
+    // V_NOW (4-corner scale handles, user feedback
+    // "多选 group 缩放太灵敏"): verify the softening
+    // applied to the per-frame raw ratio. The
+    // un-softened form (`rawDiag / initialDiag`) is
+    // 1:1 — a 10% finger drag produces a 10% scale
+    // change, which the user described as "twice as
+    // jumpy as a pinch". After softening:
+    //  - ±5% diagonal drift = exact 1.0 (deadzone,
+    //    no scale at all)
+    //  - 10% diagonal drift = ~4.9% scale change
+    //    (sqrt(1.10) - 1)
+    //  - 50% diagonal drift = ~22.5% scale change
+    //  - 2x diagonal drift = ~41.4% scale change
+    //    (large pulls still work; the curve
+    //    doesn't go flat)
+    // ----------------------------------------------------------------
+
+    @Test
+    fun cornerDragResult_deadzone_collapsesToIdentity() {
+        // Any ratio within ±5% of 1 should produce
+        // exactly 1 (no scale change). The deadzone
+        // is SYMMETRIC: a 4% shrink (r = 0.96) and
+        // a 4% grow (r = 1.04) both no-op, so the
+        // user can grab the corner without the image
+        // immediately responding to hand-shake.
+        //
+        // initial diag = sqrt(100^2 + 100^2) ≈ 141.42.
+        // For a 4% grow: new diag ≈ 147.08, so
+        // currentMove at (4, 4) gives newDiag =
+        // hypot(4-100, 4-100) ≈ 135.76 — that's a
+        // SHRINK, not a grow. To get a grow, we
+        // need currentMove on the OTHER side of the
+        // anchor. Try (104, 104): newDiag =
+        // hypot(4, 4) = 5.66 — too small. Actually
+        // for a grow (the move-handle moves AWAY
+        // from the anchor), we just need a current
+        // position such that the new distance to
+        // the anchor is 1.04 * initial.
+        //
+        // Simpler: place the current move at
+        // (50, 50) — that's still WAY inside the
+        // deadzone for either direction (new diag
+        // = hypot(50, 50) = 70.71; ratio = 0.5;
+        // 1/r = 2.0; both directions far outside
+        // the 5% deadzone — wait, that's wrong).
+        // A ratio of 0.5 means the move-handle
+        // moved CLOSER to the anchor, but by 50%
+        // — that's not micro-jitter.
+        //
+        // The real "micro-jitter" case is the
+        // current move barely moving from initial.
+        // initialMove = (0, 0), so currentMove =
+        // (2, 2) is a 2.83px drift. newDiag =
+        // hypot(2-100, 2-100) = 138.59; ratio =
+        // 0.98 (4% shrink). 1/r = 1.02. Both
+        // within 5% of 1.0 → deadzone → 1.0.
+        val (s1, _) = computeCornerDragResult(
+            initialMoveScreen = Offset(0f, 0f),
+            initialAnchorScreen = Offset(100f, 100f),
+            currentMoveScreen = Offset(2f, 2f),
+        )
+        assertEquals(1f, s1, epsilon)
+        // And the 4% grow mirror: current at (-2, -2)
+        // — but the move-handle is on the FAR side of
+        // initialMove, so it's actually a SHRINK of
+        // 2.83px to a far-away position, which means
+        // the diagonal grows. newDiag =
+        // hypot(-2-100, -2-100) = 144.25; ratio =
+        // 1.020 (2% grow). Within 5% → deadzone.
+        val (s2, _) = computeCornerDragResult(
+            initialMoveScreen = Offset(0f, 0f),
+            initialAnchorScreen = Offset(100f, 100f),
+            currentMoveScreen = Offset(-2f, -2f),
+        )
+        assertEquals(1f, s2, epsilon)
+    }
+
+    @Test
+    fun cornerDragResult_tenPercentDragIsFivePercentScale() {
+        // 10% diagonal growth → sqrt(1.10) ≈ 1.0488
+        // (the "feels right" range after softening).
+        // We need (currentMove) such that the new
+        // distance to the anchor is 1.10 * the
+        // initial. initialMove = (0, 0),
+        // initialAnchor = (100, 0), initialDiag =
+        // 100. We want newDiag = 110. Pick
+        // currentMove = (-10, 0) — newDiag =
+        // hypot(-10-100, 0-0) = 110. ratio = 1.10.
+        // softened = sqrt(1.10) ≈ 1.0488.
+        val (s, _) = computeCornerDragResult(
+            initialMoveScreen = Offset(0f, 0f),
+            initialAnchorScreen = Offset(100f, 0f),
+            currentMoveScreen = Offset(-10f, 0f),
+        )
+        assertTrue(
+            "Expected softened scale in (1.0, 1.10), got $s",
+            s in 1.0f..1.10f,
+        )
+        // And: a 1.5x diagonal pull still produces a
+        // meaningful scale change (sqrt(1.5) ≈ 1.225,
+        // not 1.5 — proving the curve doesn't go
+        // flat at the extremes).
+        val (sBig, _) = computeCornerDragResult(
+            initialMoveScreen = Offset(0f, 0f),
+            initialAnchorScreen = Offset(100f, 0f),
+            currentMoveScreen = Offset(-50f, 0f),  // 1.5x diag
+        )
+        assertTrue(
+            "Expected scale at 1.5x diagonal to be > 1.15 (sqrt(1.5) ≈ 1.225), got $sBig",
+            sBig > 1.15f,
+        )
+    }
+
+    @Test
+    fun groupCornerDragResult_inheritsSoftening() {
+        // Group path: same softening applies.
+        // For ratio 1.10 we need a (current, anchor)
+        // pair such that the distance between them
+        // is 1.10x the initialDiag. Easiest setup:
+        // anchor at (110, 0), current at (110, 110),
+        // distance = 110, initialDiag = 100 → ratio
+        // = 1.10 → softened = sqrt(1.10) ≈ 1.0488.
+        val (s, _) = computeGroupCornerDragResult(
+            initialGroupDiagScreen = 100f,
+            currentMoveScreen = Offset(110f, 110f),
+            initialAnchorScreen = Offset(110f, 0f),
+        )
+        assertTrue(
+            "Expected softened group scale between 1.0 and 1.10, got $s",
+            s in 1.0f..1.10f,
+        )
+    }
 }

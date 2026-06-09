@@ -276,10 +276,25 @@ class AppPreferences(context: Context) {
      * launch.
      */
     var globalImageLock: Boolean
-        get() = prefs.getBoolean(KEY_GLOBAL_IMAGE_LOCK, false)
-        set(value) {
-            prefs.edit().putBoolean(KEY_GLOBAL_IMAGE_LOCK, value).apply()
-        }
+ get() = prefs.getBoolean(KEY_GLOBAL_IMAGE_LOCK, false)
+ set(value) {
+ prefs.edit().putBoolean(KEY_GLOBAL_IMAGE_LOCK, value).apply()
+ }
+
+ /**
+ * V_NOW (2026-06-09 user spec "长按全局锁定时画布不可移动
+ * 和旋转,同时按钮会变红"): the user's "hard lock" mode
+ * — independent of [globalImageLock] — that freezes
+ * the canvas itself (pan / zoom / minimap interactions
+ * all blocked). Persisted so a user in hard mode can
+ * restart the app and find the canvas still frozen.
+ * Default `false`.
+ */
+ var lockCanvasFrozen: Boolean
+ get() = prefs.getBoolean(KEY_LOCK_CANVAS_FROZEN, false)
+ set(value) {
+ prefs.edit().putBoolean(KEY_LOCK_CANVAS_FROZEN, value).apply()
+ }
 
     /**
      * V_NOW (2026-06-08 速写练习): the user's last-used
@@ -455,6 +470,7 @@ class AppPreferences(context: Context) {
         private const val KEY_MINIMAP_SLIDER_ORIENTATION = "minimap_slider_orientation"
         // V_NOW (2026-06-08): see [globalImageLock] field above.
         private const val KEY_GLOBAL_IMAGE_LOCK = "global_image_lock"
+ private const val KEY_LOCK_CANVAS_FROZEN = "lock_canvas_frozen"
         // V_NOW (2026-06-08 速写练习): see [lastPracticeConfig] field
         // above. Three separate keys — one per PracticeConfig field
         // — match the rest of the settings in this file and avoid a

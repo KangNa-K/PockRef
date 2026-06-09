@@ -48,6 +48,18 @@ sealed interface PockRefAction {
     // image-tap event, be filtered out by
     // [PockRefUiState.isImageLocked]).
     data object ToggleGlobalImageLock : PockRefAction
+ // V_NOW (2026-06-09 user spec "长按全局锁定时画布不可移动
+ // 和旋转,同时按钮会变红"): long-press handler for the
+ // global-lock toggle button. Toggles
+ // [com.pockref.app.model.PockRefUiState.lockCanvasFrozen]
+ // (the "hard mode" / canvas-frozen flag). Independent
+ // of [ToggleGlobalImageLock] (which is the soft mode
+ // toggle for the same button's onClick) — the user can
+ // be in soft mode (images locked, canvas movable) or
+ // hard mode (both, button red), and the actions are
+ // independent toggles for the two flags. Persisted via
+ // [com.pockref.app.data.AppPreferences.lockCanvasFrozen].
+ data object ToggleLockCanvasFrozen : PockRefAction
     data object BeginRenameScene : PockRefAction
     data class ConfirmRenameScene(val newName: String) : PockRefAction
     data object CancelRenameScene : PockRefAction
@@ -69,7 +81,37 @@ sealed interface PockRefAction {
     ) : PockRefAction
     data object CancelExport : PockRefAction
     data object ExportCanvas : PockRefAction
-    data class ConfirmExportCanvas(val uri: Uri) : PockRefAction
+ /**
+ * V_NOW (2026-06-09 user spec "导出画布选项 — 无尺寸上限"):
+ * persist the user's chosen longest-edge cap for the
+ * **export-canvas** path. Dispatched by the
+ * [com.pockref.app.ui.ExportCanvasDialogHost] when the
+ * user picks one of the two options ("标准 (最长8192px)"
+ * or "原始画质 (无上限)"). The reducer stores the value
+ * on [com.pockref.app.model.PockRefUiState.exportCanvasMaxDim]
+ * AND dismisses the canvas-export dialog so the
+ * follow-up [PockRefAction.ConfirmExportCanvas] can
+ * observe the new value in state when [com.pockref.app.ui.PureRefViewModelScene.exportCanvas]
+ * reads it.
+ *
+ * [maxDim] is the cap in pixels; `null` means "no cap"
+ * (canvas sizes to actual bbox regardless of size). The
+ * reducer clamps to >=1 defensively so a malformed
+ * dispatch can't produce a0-pixel canvas.
+ */
+ data class SetExportCanvasMaxDim(val maxDim: Int?) : PockRefAction
+ /**
+ * V_NOW (2026-06-09): dismiss the canvas-export options
+ * dialog without changing the cap. Dispatched by the
+ * dialog's [androidx.compose.material3.AlertDialog]
+ * `onDismissRequest` (system back, scrim tap). Idempotent —
+ * setting the flag to false when it's already false is a
+ * no-op. Does NOT alter [PockRefUiState.exportCanvasMaxDim]
+ * — the next [PockRefAction.SetExportCanvasMaxDim] or the
+ * default8192 fallback will be used.
+ */
+ data object CancelExportCanvas : PockRefAction
+ data class ConfirmExportCanvas(val uri: Uri) : PockRefAction
     data class UpdateCanvasViewport(val width: Float, val height: Float) : PockRefAction
     data class ImportImages(val uris: List<Uri>) : PockRefAction
     data class LoadScene(val uri: Uri) : PockRefAction
@@ -186,6 +228,95 @@ sealed interface PockRefAction {
     data object ScaleUp : PockRefAction
     data object ScaleDown : PockRefAction
     data object ResetTransform : PockRefAction
+    /**
+     * V_NOW (4-corner scale handles): ABSOLUTE scale setter
+     * for the selected image. The reducer applies
+     * [newScale] as the new value of
+     * [com.pockref.app.model.SceneImage.scale] (clamped to
+     * the same [0.1, 8.0] safety range the per-frame
+     * `TransformSelectedImage` path uses) and moves the
+     * image so the drag's anchor corner stays fixed in
+     * world space. The pointer handler dispatches this
+     * on every move event during a corner drag, deriving
+     * [newScale] from the current screen-space diagonal
+     * length divided by the down-time diagonal length,
+     * multiplied by the image's scale at the down event.
+     *
+     * Distinct from `TransformSelectedImage` (which is a
+     * RELATIVE multiplier that the existing two-finger
+     * pinch path stacks frame-over-frame) because the
+     * corner drag has a single fixed reference frame: the
+     * down-time diagonal length. Using the relative form
+     * here would let numerical drift accumulate over a
+     * long drag; the absolute form is always a one-line
+     * recompute against the down-time baseline.
+     *
+     * [worldPivot] is the drag's anchor corner in WORLD
+     * (scene) coordinates. The reducer pins it in place
+     * when applying the new scale, so the image "grows
+     * away from" the anchor as the user pulls the move-
+     * handle. [worldCenter] is the new image center in
+     * world coordinates (also computed by the pointer
+     * handler from the new screen-space midpoint of
+     * (move-handle, anchor) and converted back to world).
+     *
+     * Affects the SINGLE selected image only (the corner
+     * drag is a single-image gesture; multi-select
+     * batch-scale lives behind the existing
+     * [BatchScale] action, which is NOT dispatched from
+     * the corner-drag path).
+     */
+    data class SetSelectedImageScale(
+        val newScale: Float,
+        val worldCenter: Offset,
+        val worldPivot: Offset,
+    ) : PockRefAction
+    /**
+     * V_NOW (4-corner scale handles, MULTI/BOX path):
+     * ABSOLUTE scale setter for the GROUP AABB
+     * enclosing every selected image. Distinct from
+     * [SetSelectedImageScale] (which targets the
+     * SINGLE selected image) and from
+     * [BatchScale] (which is a RELATIVE per-frame
+     * multiplier that stacks frame-over-frame and
+     * would let numerical drift accumulate over a
+     * long group drag).
+     *
+     * The reducer applies the per-image scale as
+     * `imageScale = (initialImageScale *
+     * newScaleFactor).coerceIn(0.1, 8.0)` and
+     * re-centers each image around
+     * [worldCenter]. The pre-drag
+     * `initialImageScale` is captured in the
+     * pointer handler at the down event (one
+     * per-image snapshot of `image.scale` at that
+     * frame), so the absolute-form recompute is
+     * always a one-line ratio against a fixed
+     * baseline. Members keep their RELATIVE
+     * scale-to-each-other, only the group as a
+     * whole grows / shrinks.
+     *
+     * [worldCenter] is the new group AABB center
+     * in world (scene) coordinates, pre-computed
+     * by the pointer handler from the new screen
+     * midpoint of (move-handle, anchor) and
+     * converted to world via the canvas
+     * transform's inverse. The reducer pins the
+     * group around this point so the group AABB
+     * tracks the user's finger.
+     *
+     * Affects every member of
+     * [PockRefUiState.selectedImageIds] (or the
+     * fallback single [PockRefUiState.selectedImageId]
+     * for the SELECTED-ONE mode). Locked members
+     * are filtered out by the reducer using the
+     * same [PockRefUiState.isImageLocked] guard
+     * the per-image path uses.
+     */
+    data class SetSelectedImagesScale(
+        val newScaleFactor: Float,
+        val worldCenter: Offset,
+    ) : PockRefAction
     data class BatchAlign(val mode: AlignMode) : PockRefAction
     data class BatchScale(val scaleFactor: Float) : PockRefAction
     data object BatchFlipHorizontal : PockRefAction

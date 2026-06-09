@@ -134,6 +134,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             // change) or be confused by. Same pref → state
             // mirror pattern as [autoSaveEnabled] above.
             globalImageLock = appPrefs.globalImageLock,
+ lockCanvasFrozen = appPrefs.lockCanvasFrozen,
             // V_NOW (follow-up after auto-save-switch task):
             // mirror the persisted auto-save interval into
             // [uiState] at startup so the SettingsAutoSaveSection
@@ -583,41 +584,79 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             PockRefAction.EndSceneGesture -> endSceneGesture()
             is PockRefAction.BeginImageDrag -> transformController.beginImageDrag(action.imageId)
             is PockRefAction.UpdateImageDrag -> transformController.updateImageDrag(action.delta)
-            PockRefAction.CommitImageDrag -> transformController.commitImageDrag()
-            PockRefAction.CancelImageDrag -> transformController.cancelImageDrag()
-            is PockRefAction.MoveImage -> transformController.moveImage(action.imageId, action.delta)
-            is PockRefAction.PanCanvas -> _uiState.update {
-                val maxStep = 200f
-                val dx = action.delta.x.coerceIn(-maxStep, maxStep)
-                val dy = action.delta.y.coerceIn(-maxStep, maxStep)
-                it.copy(canvasOffset = it.canvasOffset + Offset(dx, dy), fittedImageId = null)
-            }
+ PockRefAction.CommitImageDrag -> transformController.commitImageDrag()
+ PockRefAction.CancelImageDrag -> transformController.cancelImageDrag()
+ is PockRefAction.MoveImage -> transformController.moveImage(action.imageId, action.delta)
+ is PockRefAction.PanCanvas -> {
+ // V_NOW (2026-06-09 user spec "长按全局锁定时画布不可移动"):
+ // hard mode (canvas frozen) blocks canvas pan. The
+ // minimap drag-to-pan (which dispatches this same
+ // [PanCanvas] action) is also blocked. Soft mode
+ // ([globalImageLock] on but [lockCanvasFrozen] off)
+ // still allows canvas pan — the existing behavior.
+ if (!_uiState.value.lockCanvasFrozen) {
+ _uiState.update {
+ val maxStep =200f
+ val dx = action.delta.x.coerceIn(-maxStep, maxStep)
+ val dy = action.delta.y.coerceIn(-maxStep, maxStep)
+ it.copy(canvasOffset = it.canvasOffset + Offset(dx, dy), fittedImageId = null)
+ }
+ }
+ }
+ is PockRefAction.SetCanvasOffsetFromMinimap -> {
+ // V_NOW (2026-06-09): minimap click-to-jump blocked
+ // when canvas is frozen. The minimap remains visible
+ // (so the user can see where they are) but clicking
+ // on it doesn't move the canvas.
+ if (!_uiState.value.lockCanvasFrozen) {
+ _uiState.update {
+ it.copy(canvasOffset = action.offset, fittedImageId = null)
+ }
+ }
+ }
             is PockRefAction.SetCanvasOffsetFromMinimap -> _uiState.update {
                 it.copy(canvasOffset = action.offset, fittedImageId = null)
             }
             is PockRefAction.SetCanvasScaleAndOffset -> {
-                // V_NOW: when an image is focused
-                // ([fittedImageId] != null), ignore
-                // canvas adjustments from the
-                // auto-adjust / restore animations.
-                // Without this guard, the animation
-                // overwrites [FitImageToScreen]'s
-                // canvas state and clears
-                // [fittedImageId], causing the focus
-                // to be immediately cancelled.
-                val current = _uiState.value
-                if (current.fittedImageId != null) {
-                    // focused — don't touch the canvas
-                } else {
-                    _uiState.update {
-                        val newScale = action.scale.coerceIn(0.1f, 10f)
-                        it.copy(canvasScale = newScale, canvasOffset = action.offset, fittedImageId = null)
-                    }
-                }
-            }
-            is PockRefAction.ZoomCanvas -> transformController.zoomCanvas(action.scaleChange, action.focus)
-            is PockRefAction.SetCanvasZoom -> transformController.setCanvasZoom(action.scale)
+ // V_NOW: when an image is focused
+ // ([fittedImageId] != null), ignore
+ // canvas adjustments from the
+ // auto-adjust / restore animations.
+ // Without this guard, the animation
+ // overwrites [FitImageToScreen]'s
+ // canvas state and clears
+ // [fittedImageId], causing the focus
+ // to be immediately cancelled.
+ val current = _uiState.value
+ if (current.fittedImageId != null) {
+ // focused — don't touch the canvas
+ } else {
+ _uiState.update {
+ val newScale = action.scale.coerceIn(0.1f,10f)
+ it.copy(canvasScale = newScale, canvasOffset = action.offset, fittedImageId = null)
+ }
+ }
+ }
+ is PockRefAction.ZoomCanvas -> {
+ // V_NOW (2026-06-09): hard mode blocks canvas
+ // zoom (pinch + the auto-adjust's external zoom
+ // triggers). Soft mode still allows zoom.
+ if (!_uiState.value.lockCanvasFrozen) {
+ transformController.zoomCanvas(action.scaleChange, action.focus)
+ }
+ }
+ is PockRefAction.SetCanvasZoom -> {
+ // V_NOW (2026-06-09): hard mode blocks the
+ // minimap's long-press zoom slider too.
+ if (!_uiState.value.lockCanvasFrozen) {
+ transformController.setCanvasZoom(action.scale)
+ }
+ }
             is PockRefAction.TransformSelectedImage -> transformController.transformSelectedImage(action.scaleChange, action.rotationChange, action.pan)
+            is PockRefAction.SetSelectedImageScale -> transformController.setSelectedImageScale(action.newScale, action.worldCenter, action.worldPivot)
+            is PockRefAction.SetSelectedImagesScale -> batchController.setSelectedImagesScale(action.newScaleFactor, action.worldCenter)
+            is PockRefAction.SetSelectedImageScale -> transformController.setSelectedImageScale(action.newScale, action.worldCenter, action.worldPivot)
+            is PockRefAction.SetSelectedImagesScale -> batchController.setSelectedImagesScale(action.newScaleFactor, action.worldCenter)
             is PockRefAction.SetColorAdjust -> transformController.updateColorAdjust(action.brightness, action.contrast, action.saturation)
             PockRefAction.RotateLeft -> transformController.rotateSelected(-90f)
             PockRefAction.RotateRight -> transformController.rotateSelected(90f)
@@ -666,6 +705,55 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 }
                 _uiState.update { it.copy(globalImageLock = newValue) }
             }
+            // V_NOW (working-tree stub): canvas-freeze toggle
+            // is referenced from the settings panel but no
+            // scene state currently depends on it. The action
+            // exists as a hook for a future "freeze canvas
+            // (disable all gestures)" feature; the onAction
+            // dispatch is a no-op until then. Without this
+            // branch, [onAction]'s `when` expression would
+            // fail exhaustive checking on the new action
+            // variant.
+            PockRefAction.ToggleLockCanvasFrozen -> Unit
+ // V_NOW (2026-06-09 user spec "长按全局锁定时画布不可移动
+ // 和旋转,同时按钮会变红"): the global-lock button's
+ // onLongClick handler. Toggles
+ // [PockRefUiState.lockCanvasFrozen] — independent
+ // of [ToggleGlobalImageLock] which is the soft
+ // (click) toggle for the same button.
+ //
+ // Coupling: turning the frozen flag ON also
+ // engages [globalImageLock] (a "hard lock" implies
+ // images are also locked — soft lock on a frozen
+ // canvas would be a half-state nobody wants).
+ // Turning the frozen flag OFF leaves
+ // [globalImageLock] alone — the user might want
+ // soft lock (images locked, canvas movable) after
+ // stepping out of hard mode, and resetting that
+ // silently is a hostile UX.
+ //
+ // The deselect-on-enable pattern from
+ // [ToggleGlobalImageLock] is repeated here so
+ // the [SelectionBottomSheet] doesn't show actions
+ // for selected-but-frozen images.
+ PockRefAction.ToggleLockCanvasFrozen -> {
+ val nowFrozen = _uiState.value.lockCanvasFrozen
+ val newFrozen = !nowFrozen
+ if (newFrozen) {
+ // turning ON frozen: also engage globalImageLock.
+ // Deselect so the SelectionBottomSheet doesn't
+ // linger on a no-op action set.
+ transformController.deselect()
+ }
+ appPrefs.lockCanvasFrozen = newFrozen
+ appPrefs.globalImageLock = if (newFrozen) true else _uiState.value.globalImageLock
+ _uiState.update {
+ it.copy(
+ lockCanvasFrozen = newFrozen,
+ globalImageLock = if (newFrozen) true else it.globalImageLock,
+ )
+ }
+ }
             PockRefAction.BeginRenameScene -> _uiState.update {
                 it.copy(renameDialogValue = SceneNaming.sanitizeForStorage(it.sceneName))
             }
@@ -685,9 +773,42 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 sceneController.exportBatchToTree(action.treeUri, action.format)
             }
             PockRefAction.ExportCanvas -> {
-                _uiState.update { it.copy(showExportCanvasDialog = true) }
-            }
-            is PockRefAction.ConfirmExportCanvas -> {
+ _uiState.update { it.copy(showExportCanvasDialog = true) }
+ }
+ /**
+ * V_NOW (2026-06-09 "导出画布选项 — 无尺寸上限"): the
+ * canvas-export dialog's "标准 (最长8192px)" / "原始画质
+ * (无上限)" buttons dispatch this. The reducer:
+ *1) stores the chosen cap on
+ * [PockRefUiState.exportCanvasMaxDim] (null = no cap), and
+ *2) dismisses [PockRefUiState.showExportCanvasDialog]
+ * so the dialog composable stops rendering.
+ *
+ * The dialog composable then watches the dismiss + SAF
+ * picker flow — it doesn't launch the picker itself. We
+ * launch from the dialog composable (which has the
+ * ActivityResultLauncher in scope) on the same button
+ * click that dispatches this action, so by the time the
+ * SAF picker returns the URI, the state has already
+ * updated.
+ *
+ * Defensive clamp: maxDim is coerced to >=1 when
+ * non-null. A zero / negative value would degenerate
+ * the export into a1×N or N×1 canvas with no
+ * meaningful drawable area.
+ */
+ is PockRefAction.SetExportCanvasMaxDim -> {
+ _uiState.update {
+ it.copy(
+ exportCanvasMaxDim = action.maxDim?.coerceAtLeast(1),
+ showExportCanvasDialog = false,
+ )
+ }
+ }
+ PockRefAction.CancelExportCanvas -> {
+ _uiState.update { it.copy(showExportCanvasDialog = false) }
+ }
+ is PockRefAction.ConfirmExportCanvas -> {
                 _uiState.update { it.copy(showExportCanvasDialog = false) }
                 sceneController.exportCanvas(action.uri)
             }

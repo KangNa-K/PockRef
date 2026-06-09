@@ -667,10 +667,35 @@ data class PockRefUiState(
     // Persisted via [com.pockref.app.data.AppPreferences.globalImageLock]
     // so a user who locks the canvas can restart the
     // app and find it still locked. Default `false`
-    // — a fresh install must NOT come up with all
-    // images locked, that would be hostile to anyone
-    // who imported a few pictures.
-    val globalImageLock: Boolean = false,
+     // — a fresh install must NOT come up with all
+ // images locked, that would be hostile to anyone
+ // who imported a few pictures.
+ val globalImageLock: Boolean = false,
+ /**
+ * V_NOW (2026-06-09 user spec "长按全局锁定时画布不可移动
+ * 和旋转,同时按钮会变红"): when `true`, ALL canvas
+ * transforms (pan / zoom / minimap zoom / minimap click-
+ * to-jump) are blocked in addition to the per-image
+ * lock behavior of [globalImageLock]. Independent
+ * flag so the user can be in soft mode
+ * ([globalImageLock] = true, [lockCanvasFrozen] = false
+ * — images locked, canvas still movable) or hard
+ * mode (both `true` — images AND canvas frozen).
+ *
+ * Toggled via [com.pockref.app.ui.PockRefAction.ToggleLockCanvasFrozen]
+ * (dispatched by the global-lock button's onLongClick).
+ * Persisted via
+ * [com.pockref.app.data.AppPreferences.lockCanvasFrozen]
+ * so a user in hard mode can restart and find the
+ * canvas still frozen. Default `false`.
+ *
+ * Visual: when `true`, the global-lock button uses
+ * [colorScheme.error] tint (instead of the soft-mode
+ * [colorScheme.primary]) as a "danger / freeze"
+ * affordance — same color family the app already uses
+ * for irreversible-action affordances.
+ */
+ val lockCanvasFrozen: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     val recentScenes: List<RecentSceneEntry> = emptyList(),
@@ -712,6 +737,29 @@ data class PockRefUiState(
      */
     val showExportDialog: Boolean = false,
     val showExportCanvasDialog: Boolean = false,
+    /**
+    * V_NOW (2026-06-09 user spec "导出画布选项 — 无尺寸上限"):
+    * the longest-edge cap (in pixels) for the **export-canvas**
+    * path ([com.pockref.app.ui.PureRefViewModelScene.exportCanvas]).
+    * Default8192 = current safe cap (256MB ARGB_8888 canvas at the
+    * edge of a256MB Android heap, fits in practice with the
+    * two-pass stream-decode design). `null` = no cap — the canvas
+    * is sized to the actual intrinsic-pixel bbox of the laid-out
+    * images, regardless of size. This can produce very large PNGs
+    * (e.g.20000×15000 ≈1.2GB canvas) and WILL OOM on devices
+    * with a small heap; the export dialog warns the user before
+    * letting them pick this.
+    *
+    * Only affects export-canvas. The per-image
+    * [com.pockref.app.ui.PureRefViewModelScene.exportSelected] /
+    * [com.pockref.app.ui.PureRefViewModelScene.exportBatchToTree]
+    * paths are unaffected — those write one image per file at
+    * intrinsic resolution and don't aggregate into a large canvas.
+    *
+    * Set by [com.pockref.app.ui.PockRefAction.SetExportCanvasMaxDim]
+    * via the export dialog (or by direct state copy in tests).
+    */
+    val exportCanvasMaxDim: Int? =8192,
     val showUnsavedChangesDialog: Boolean = false,
     /**
      * Settings sheet visibility. True = the [com.pockref.app.ui.SettingsPanel]

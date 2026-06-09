@@ -3,6 +3,7 @@ package com.pockref.app.ui
 import androidx.compose.ui.geometry.Offset
 import com.pockref.app.model.AlignMode
 import com.pockref.app.model.SceneImage
+import com.pockref.app.model.isImageLocked
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -373,6 +374,89 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
                             groupCenter.y + dy * (newScale / img.scale),
                         )
                         img.copy(scale = newScale, center = newCenter)
+                    }
+                },
+            )
+        }
+    }
+
+    /**
+     * V_NOW (4-corner scale handles, MULTI/BOX path):
+     * apply an ABSOLUTE scale FACTOR to every
+     * selected image, pivoting the group around
+     * [worldCenter]. Each member keeps its RELATIVE
+     * size ratio (its scale is multiplied by the
+     * same factor), only the group as a whole grows
+     * or shrinks. The world center is the new group
+     * AABB center; the group AABB tracks the user's
+     * finger.
+     *
+     * Distinct from the existing
+     * [PockRefViewModelBatch.batchScale] (which is a
+     * RELATIVE per-frame multiplier that stacks
+     * frame-over-frame and would let numerical drift
+     * accumulate over a long group drag). The corner
+     * drag wants a fixed reference frame: the
+     * down-time group AABB diagonal. The
+     * [newScaleFactor] is always a one-line ratio
+     * against that baseline
+     * (`newDiag / initialDiag`), so the absolute form
+     * has no drift.
+     *
+     * Lock guard: per-image + global lock filter, same
+     * as [PockRefViewModelBatch.batchScale] and the
+     * per-image [PockRefViewModelTransform.setSelectedImageScale]
+     * path. Locked members are excluded from the
+     * scale application; the group as a whole still
+     * re-centers around [worldCenter], but a locked
+     * member's pose is preserved.
+     *
+     * The [worldCenter] is supplied by the pointer
+     * handler as a pre-converted world-space point
+     * (the screen-space midpoint of
+     * (move-handle, anchor), inverse-transformed via
+     * the canvas matrix). The reducer just writes
+     * the field — it does NOT recompute it from the
+     * group AABB because the user may have moved
+     * the move-handle past the group AABB and the
+     * "where the group ends up" position is whatever
+     * the user's fingers say, not a fit-to-AABB
+     * centroid.
+     *
+     * Scale clamp matches the per-image path
+     * (`[0.1, 8.0]`) so a multi-select group and a
+     * single-image select feel identical at the
+     * boundary — the user can pull a group all the
+     * way to 10% of original, same as a single image.
+     */
+    internal fun setSelectedImagesScale(newScaleFactor: Float, worldCenter: Offset) {
+        val stateBefore = mainVm._uiState.value
+        val targetIds = stateBefore.selectedImageIds.ifEmpty {
+            stateBefore.selectedImageId?.let(::setOf).orEmpty()
+        }
+        if (targetIds.isEmpty()) return
+        val transformableIds = targetIds.filterTo(linkedSetOf()) { id ->
+            !stateBefore.isImageLocked(id)
+        }
+        if (transformableIds.isEmpty()) return
+        val target = stateBefore.images.filter { it.id in transformableIds }
+        if (target.isEmpty()) return
+        mainVm.mutateScene {
+            copy(
+                images = images.map { img ->
+                    if (img.id !in transformableIds) img else {
+                        val newScale = (img.scale * newScaleFactor)
+                            .coerceIn(0.1f, 8.0f)
+                        val effective = newScale / img.scale
+                        val dx = img.center.x - worldCenter.x
+                        val dy = img.center.y - worldCenter.y
+                        img.copy(
+                            scale = newScale,
+                            center = Offset(
+                                worldCenter.x + dx * effective,
+                                worldCenter.y + dy * effective,
+                            ),
+                        )
                     }
                 },
             )

@@ -1586,31 +1586,62 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         )
 
                         // V_NOW (2026-06-09 user spec "导出画布时一
-                        // 张张图必须是原始画质尺寸拼接成一张大画布"):
-                        // use the image's INTRINSIC pixel dimensions
-                        // (decoded from the .pur's image bytes), NOT
-                        // [SceneImage.displaySize]. [displaySize] is
-                        // derived from the legacy .pur matrix as
-                        // `hypot(m00, m10) * intrinsicW` and reflects
-                        // whatever the .pur writer chose to encode —
-                        // it's the "transformed" size, not the
-                        // source photo's actual pixel size. For a
-                        // 4000×3000 photo that the .pur writer scaled
-                        // down to 0.3x, displaySize = 1200×900 while
-                        // the source photo is still 4000×3000.
-                        //
-                        // The user wants the export to assemble every
-                        // image at its source pixel quality, with the
-                        // user-arranged layout (center, rotation, flip,
-                        // pinch-zoom) preserved. So Pass 1's bbox and
-                        // Pass 2's dstRect both size the image by
-                        // `intrinsic * image.scale` (image.scale
-                        // captures the user's pinch-zoom; default 1.0
-                        // from .pur load).
+ // 张张图必须是原始画质尺寸拼接成一张大画布"):
+ // Pass1's bbox math runs in **INTRINSIC pixel
+ // coordinates** (= source photo pixels), NOT
+ // displaySize coords. The user's two promises
+ // (1) "原始画质" and (2) "无尺寸上限 = 大画布" both
+ // require it: every image is drawn at its real
+ // intrinsic pixel size in Pass2 ([dstW]/[dstH]
+ // use [image.intrinsicWidth] × image.scale ×
+ // scale), and the bitmap is sized to the
+ // intrinsic-pixel bbox (= potentially very
+ // large). To make Pass1's (cx, cy) anchors
+ // agree with the intrinsic-pixel (w, h) extents
+ // we have to convert (cx, cy) from displaySize
+ // coords to intrinsic coords.
+ //
+ // Conversion: `cx_intrinsic = cx_display /
+ // displayScaleX`, where `displayScaleX =
+ // displaySize.width / intrinsicWidth` is the
+ // per-image .pur-derived transform (= the
+ // hypot(m00, m10) factor that
+ // [com.pockref.app.data.PurFileParser] encodes
+ // as displaySize). Same on Y. For an isotropic
+ // .pur (the desktop-PockRef default), displayScaleX
+ // = displayScaleY = one scalar per image. For an
+ // anisotropic .pur the per-axis conversion keeps
+ // the layout position correct on each axis even
+ // though the (w, h) extents are isotropic —
+ // acceptable trade-off (anisotropic .purs are
+ // rare and the position fidelity is what matters
+ // visually).
+ //
+ // V_NOW (2026-06-09 bug fix "原始画质导出图挤一起"):
+ // a PREVIOUS attempt used `cx = image.center.x`
+ // (displaySize coord) here, on the theory that
+ // "Pass1 should mirror the on-screen
+ // [drawSceneImage] math, which also uses
+ // displaySize coords". That MIXED two coordinate
+ // systems in one bbox pass — anchors in
+ // displaySize but extents in intrinsic-pixel.
+ // Every image's dstRect was offset toward (0,0)
+ // by the (displaySize-minX → intrinsic-minX)
+ // delta and the export collapsed into a heap in
+ // the upper-left, exactly the bug the user
+ // reported. The fix is to keep BOTH (cx, cy)
+ // AND (w, h) in intrinsic coords, with the
+ // conversion above — anchors and extents now
+ // share one coordinate system, positions
+ // match the on-screen layout, and each image
+ // fits at its intrinsic footprint without
+ // overlap.
+                        val displayScaleX = image.displaySize.width / image.intrinsicWidth.toFloat()
+                        val displayScaleY = image.displaySize.height / image.intrinsicHeight.toFloat()
                         val w = image.intrinsicWidth * image.scale
                         val h = image.intrinsicHeight * image.scale
-                        val cx = image.center.x
-                        val cy = image.center.y
+                        val cx = image.center.x / displayScaleX
+                        val cy = image.center.y / displayScaleY
                         val corners = floatArrayOf(
                             -w / 2f, -h / 2f,
                              w / 2f, -h / 2f,
@@ -1673,10 +1704,22 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // 256MB Android heap. The cap only kicks in
                     // when the scene's actual bbox exceeds 8192,
                     // in which case we scale down uniformly.
-                    val maxDim = 8192
-                    val scale = if (canvasWidth > maxDim || canvasHeight > maxDim) {
+                    // V_NOW (2026-06-09 user spec "导出画布选项 —
+                    // 无尺寸上限"): the cap is now user-toggleable
+                    // via the canvas-export dialog. `null` =
+                    // unlimited — canvas sizes to actual bbox
+                    // regardless of size (can OOM on small-heap
+                    // devices; the dialog warns before letting
+                    // the user pick this). Default8192 preserves
+                    // the pre-feature behaviour for callers that
+                    // don't set [PockRefUiState.exportCanvasMaxDim].
+                    val maxDim = state.exportCanvasMaxDim
+                    val scale = when {
+                        maxDim == null -> 1f // unlimited: never shrink the canvas.
+                        canvasWidth > maxDim || canvasHeight > maxDim ->
                         maxDim.toFloat() / maxOf(canvasWidth, canvasHeight)
-                    } else 1f
+                        else -> 1f
+                    }
 
                     // V_NOW (2026-06-08 user feedback "导出图不清
                     // 晰 / 没有原图画质"): the previous cap
@@ -1689,7 +1732,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // keeps the per-image source bitmap at ≤64MB
                     // so we stay safely under the heap (canvas
                     // 64MB + source 64MB = 128MB peak).
-                    val maxImageDim = 4096
+                    val maxImageDim = if (maxDim == null) Int.MAX_VALUE else 4096
 
                     val bitmap = Bitmap.createBitmap(
                         (canvasWidth * scale).toInt().coerceAtLeast(1),
