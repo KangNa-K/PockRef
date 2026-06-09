@@ -7624,6 +7624,48 @@ private fun PockRefCanvas(
                         initialRotation = 0f
                     }
 
+                    // V_NOW (2026-06-10 #3 corner-handle
+                    // anchor pinning user spec "单指拖 corner
+                    // handle 后 pin 释放, canvas zoom 没回正"):
+                    // when the user is in [fittedImageId]
+                    // state (entered by double-tap → canvas is
+                    // zoomed-in to fill the viewport with this
+                    // single image) and then drags a corner
+                    // handle to resize, the corner drag mutates
+                    // the image's natural extent but leaves the
+                    // canvas in the zoomed-in state. The user
+                    // expects the canvas to unfocus (restore
+                    // [preFitCanvasScale]) as soon as the corner
+                    // drag releases — "pin 释放, canvas zoom
+                    // 回正" — instead of requiring a second
+                    // double-tap to manually unfocus.
+                    //
+                    // We re-dispatch
+                    // [PockRefAction.FitImageToScreen] for the
+                    // same [imageId] the corner drag was
+                    // operating on. The reducer at
+                    // [com.pockref.app.ui.PureRefViewModelTransform.fitImageToScreen]
+                    // detects the matching [fittedImageId] and
+                    // restores [preFitCanvasScale] /
+                    // [preFitCanvasOffset] instead of zooming
+                    // in again — see L1856-1864 there for the
+                    // toggle path.
+                    //
+                    // Only the SINGLE corner-drag path is
+                    // unwrapped here. The MULTI/BOX
+                    // [groupCornerDrag] path can't reach this
+                    // state — [FitImageToScreen] is per-image,
+                    // and the reducer refuses to enter
+                    // fittedImageId when there's more than one
+                    // selected image (the focus gesture in
+                    // [PockRefApp] L7692-7707 short-circuits on
+                    // [multiSelectMode] / [boxSelectMode]).
+                    val cornerDragImageId = cornerDrag?.imageId
+                    val fittedId = currentState.fittedImageId
+                    if (cornerDragImageId != null && fittedId == cornerDragImageId) {
+                        currentOnAction(PockRefAction.FitImageToScreen(cornerDragImageId))
+                    }
+
                     val upTime = System.currentTimeMillis()
                     val isTap = !dragStarted && !transformStarted && (upTime - downTime) < 300L && totalDrag.getDistance() < tapMaxDragPx
 
