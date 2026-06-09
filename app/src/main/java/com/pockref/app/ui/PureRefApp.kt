@@ -214,6 +214,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.stringResource
@@ -5899,12 +5900,62 @@ private fun TopToolbar(
 }
 
 /**
+ * V_NOW (2026-06-09 chrome unify): 顶栏按钮的统一模板 — 替换
+ * 之前混合的两套写法(40dp Box / 36dp IconButton),5 个按钮
+ * 大小完全一致,符合 M3 "视觉一致触达" 的 chrome 规范.
+ *
+ *   - 40dp 触摸 Box (不走 IconButton 的 minimumInteractiveComponentSize,
+ *     M3 默认会撑到 48dp — 跟 ToolbarIconButton 不一致).
+ *   - 20dp icon (之前 chevron/import 是 18dp,统一成 20dp 跟
+ *     撤销 / 重做 / 关闭对齐).
+ *   - onSurfaceVariant tint,disabled 时 alpha=0.38 (M3 标准).
+ *   - [active] 参数:popup 打开时按钮背景 tint 为
+ *     [primaryContainer.copy(alpha = ChromeSurfaceAlpha)],
+ *     跟 Lock 按钮激活态视觉一致. 禁用时 active 不生效.
+ *
+ * 5 个按钮 (chevron / 导入 / 撤销 / 重做 / 关闭) 全部走这个
+ * 模板,顶栏内间距统一 8dp,见 [TopToolbar] 调用处.
+ */
+@Composable
+private fun ToolbarIconButton(
+    imageVector: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    active: Boolean = false,
+) {
+    val activeBg = MaterialTheme.colorScheme.primaryContainer
+        .copy(alpha = Dimens.ChromeSurfaceAlpha)
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
+            .background(
+                color = if (active && enabled) activeBg else Color.Transparent,
+            )
+            .clickable(
+                enabled = enabled,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+            tint = if (enabled) tint else tint.copy(alpha = 0.38f),
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
+/**
  * High-frequency actions: Undo, Redo.
- * V_NOW: Save 按钮下线(顶栏简化)。函数仍然套着,因为
- * 两个 IconButton 配 [canUndo]/[canRedo] enabled 逻辑
- * 后续还可能扩展(例如加上 复制 / 粘贴)。
- * Always left-most after the leading title block so they get
- * the thumb-friendly start of the toolbar.
+ * V_NOW (2026-06-09): 函数简化成透传 canUndo / canRedo 到
+ * [ToolbarIconButton] 模板,统一 40dp + 20dp 视觉.
+ * 之前是 36dp IconButton + minimumInteractiveComponentSize
+ * (M3 默认撑到 48dp) — 跟 chevron/import 40dp Box 视觉不一致.
  */
 @Composable
 private fun HighFreqActions(
