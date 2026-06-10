@@ -1835,37 +1835,36 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
 
     internal fun fitImageToScreen(imageId: String) {
         val currentState = mainVm._uiState.value
+        val image = currentState.images.find { it.id == imageId } ?: return
         android.util.Log.d(
             "ExportCanvas",
             "fitImageToScreen imageId=$imageId " +
                 "currentFittedId=${currentState.fittedImageId} " +
                 "willUnfocus=${currentState.fittedImageId == imageId}",
         )
-        // V_NOW (2026-06-10 #4 locked image double-tap):
-        // the user spec is "locked 图片双击 unfocus" — a
-        // locked image is "view-only", so zooming into it
-        // doesn't make sense (you can't edit / move /
-        // resize it once you're focused anyway). Previously
-        // a double-tap on a locked image would happily run
-        // the else-branch below, focus that locked image
-        // (saving the current canvasScale into
-        // preFitCanvasScale), and leave the user stuck in a
-        // "focused on something I can't do anything with"
-        // state. The user could still escape via a second
-        // double-tap on the same locked image (the toggle
-        // path at L1856 below), but that requires a
-        // deliberate gesture match — a tap on a different
-        // image (locked or not) would just re-focus.
-        //
-        // New behavior: refuse to fit a locked image. If
-        // something else is currently focused, treat the
-        // double-tap as "exit focus" — restore
-        // [preFitCanvasScale] / [preFitCanvasOffset] and
-        // clear [fittedImageId]. If nothing is focused,
-        // the gesture is a no-op (the user can still tap
-        // elsewhere to deselect, and the locked image's
-        // own chrome / affordances stay available).
-        if (currentState.isImageLocked(imageId)) {
+        // V_NOW (2026-06-10 "全局锁定/冻结模式
+        // 双击图片聚焦" fix): reject fit-to-screen
+        // ONLY for per-image locked images, NOT for
+        // the app-wide [globalImageLock] view-mode.
+        // Rationale: fit-to-screen is a pure
+        // viewport transform (mutates
+        // [canvasScale] / [canvasOffset] /
+        // [fittedImageId]; never touches the
+        // image's own [SceneImage.locked] / scale
+        // / rotation / center). The previous
+        // [isImageLocked] gate (which OR's in
+        // [globalImageLock]) made double-tap
+        // focus silently no-op in global lock
+        // mode — the user could see images
+        // already fitted in the viewport but
+        // couldn't unfocus, and couldn't focus a
+        // new image. Per-image lock stays in
+        // effect: a doubly-tapped locked image
+        // still gets the "exit focus" path below
+        // (clear fittedImageId if something else
+        // is fitted), then return without
+        // focusing it.
+        if (image.locked) {
             if (currentState.fittedImageId != null &&
                 currentState.fittedImageId != imageId
             ) {
@@ -1896,7 +1895,6 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
             }
             return
         }
-        val image = currentState.images.find { it.id == imageId } ?: return
         val viewport = currentState.canvasViewportSize
         if (viewport.width <= 0f || viewport.height <= 0f) return
         // V_NOW: use rotated AABB footprint instead of simple
