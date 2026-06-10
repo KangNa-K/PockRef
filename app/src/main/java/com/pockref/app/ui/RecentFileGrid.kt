@@ -11,7 +11,6 @@ package com.pockref.app.ui
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,10 +36,14 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.VerticalAlignTop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import com.pockref.app.ui.theme.Dimens
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
@@ -223,84 +226,117 @@ private fun RecentFileTile(
                     }
                 }
             }
-            // V_NOW (L2 polish v5 2026-06-10): replace the
-            // DropdownMenu with an icon-only overlay that
-            // sits directly on the thumbnail. The scrim +
-            // 2 circular icon buttons (置顶 left, 删除 right)
-            // fade in via animateFloatAsState when
-            // [showMenu] is true. Tapping the thumbnail
-            // body dismisses the overlay; tapping an icon
-            // fires its action and also dismisses. No text
-            // labels per the user spec.
+            // V_NOW (L2 polish v7 2026-06-10): M3 contextual
+            // floating toolbar replaces the v5/v6 bottom-
+            // corner dual circles. The previous build used
+            // two 48dp saturated (primary/tertiary/error)
+            // circles anchored at bottom-left and bottom-
+            // right with Arrangement.SpaceBetween, which
+            // had two M3-debt problems:
+            //   1. Raw primary/tertiary/error solid colors
+            //      clash with M3's container-role system.
+            //      M3 reserves those for Filled/FAB primary
+            //      surfaces and uses secondaryContainer /
+            //      tertiaryContainer / errorContainer for
+            //      tonal icon buttons. Bold saturated colors
+            //      on a 48dp circle is the MD2 pattern.
+            //   2. SpaceBetween corner anchoring on a
+            //      5-column tablet grid squeezed both 48dp
+            //      buttons into a ~110dp tile, and the
+            //      right-hand button clipped to a pill on
+            //      the narrowest thumbnails (visible in the
+            //      v6 device screenshot on the 5-col SM-X810
+            //      landscape).
+            //
+            // New layout: a single M3 floating toolbar at
+            // the bottom-centre of the tile, sized to
+            // content. The toolbar is a Surface with
+            // surfaceContainerHigh + tonalElevation 3dp (M3
+            // standard for elevated floating controls;
+            // matches Dimens.ToolbarElevation used by the
+            // top toolbar / auto-layout panel), shaped as
+            // a 20dp pill. Two 40dp FilledTonalIconButton
+            // entries (M3's standard icon-only action
+            // component):
+            //   - Pin: secondaryContainer by default, swaps
+            //     to tertiaryContainer when entry.pinned is
+            //     true (preserves v6's "pinned vs unpinned"
+            //     visual feedback AND matches the
+            //     persistent top-start pinned badge)
+            //   - Delete: errorContainer / onErrorContainer
+            //     (M3 canonical destructive-action color
+            //     pair — pale red surface with dark red
+            //     icon, not the bold solid red that v5/v6
+            //     used)
+            // The scrim is reduced from 35% to 28% because
+            // the floating toolbar's surface provides its
+            // own contrast boundary and the image should
+            // still be visible enough for the user to
+            // identify the file.
             val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
                 targetValue = if (showMenu) 1f else 0f,
                 label = "recent-tile-overlay",
             )
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .matchParentSize()
                     .background(
-                        MaterialTheme.colorScheme.scrim.copy(alpha = 0.35f * overlayAlpha),
+                        MaterialTheme.colorScheme.scrim.copy(alpha = 0.28f * overlayAlpha),
                     ),
             )
-            Row(
+            Surface(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 6.dp)
+                    .alpha(overlayAlpha),
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = Dimens.ToolbarElevation,
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .alpha(overlayAlpha)
-                        .clip(CircleShape)
-                        .background(
-                            // V_NOW (L2 polish v6 2026-06-10):
-                            // swap primary <-> tertiary container
-                            // based on the current pinned state
-                            // so the user sees the difference
-                            // between "已置顶" and "未置顶" at
-                            // a glance (the previous build
-                            // looked the same regardless of
-                            // state, which made the toggle
-                            // feedback invisible).
-                            if (entry.pinned) MaterialTheme.colorScheme.tertiary
-                            else MaterialTheme.colorScheme.primary
-                        )
-                        .clickable {
+                Row(
+                    modifier = Modifier.padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    FilledTonalIconButton(
+                        onClick = {
                             onTogglePin()
                             showMenu = false
                         },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector =
-                            if (entry.pinned) Icons.Filled.PushPin
-                            else Icons.Outlined.PushPin,
-                        contentDescription = if (entry.pinned) "取消置顶" else "置顶",
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .alpha(overlayAlpha)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.error)
-                        .clickable {
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = if (entry.pinned)
+                                MaterialTheme.colorScheme.tertiaryContainer
+                            else
+                                MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = if (entry.pinned)
+                                MaterialTheme.colorScheme.onTertiaryContainer
+                            else
+                                MaterialTheme.colorScheme.onSecondaryContainer,
+                        ),
+                    ) {
+                        Icon(
+                            imageVector =
+                                if (entry.pinned) Icons.Filled.PushPin
+                                else Icons.Outlined.PushPin,
+                            contentDescription = if (entry.pinned) "取消置顶" else "置顶",
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    FilledTonalIconButton(
+                        onClick = {
                             onRemove()
                             showMenu = false
                         },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Delete,
-                        contentDescription = "删除",
-                        tint = MaterialTheme.colorScheme.onError,
-                        modifier = Modifier.size(24.dp),
-                    )
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        ),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Delete,
+                            contentDescription = "删除",
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
             }
         }
