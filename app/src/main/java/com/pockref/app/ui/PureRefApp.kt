@@ -10619,12 +10619,13 @@ private fun BoxScope.BottomRightActionPanel(
 
 /**
  * Single icon-only cell for [BottomRightActionPanel], sized
- * [Dimens.TopToolbarHeight] × [Dimens.TopToolbarHeight] so the
- * column reads as 5 identical squares stacked vertically (4
- * list items + 1 FAB). Plain Box with [Modifier.clickable]
- * (NOT M3 [ListItem] which reserves horizontal space for the
- * headlineContent slot even when empty, breaking the "5
- * identical squares" look).
+ * [Dimens.BottomPanelChromeSize] × [Dimens.BottomPanelChromeSize]
+ * (V_NOW 2026-06-10: was incorrectly documented as
+ * [Dimens.TopToolbarHeight] — that token is for the top toolbar
+ * itself; the bottom-right cells use a different token. With
+ * TopToolbarHeight bumped to 48dp to match BottomPanelChromeSize
+ * the two values now happen to be equal, but they remain
+ * distinct semantic tokens).
  */
 @Composable
 private fun BottomPanelListItem(

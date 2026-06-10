@@ -42,16 +42,20 @@ object Dimens {
 
     /**
      * The vertical (and square) size of the top toolbar's chrome
-     * Surface. Distinct from [BottomPanelChromeSize] (which is 48dp)
-     * because the top toolbar is a "view + interact" row with
-     * multiple items, while the bottom-right panel is a stack of
-     * single-purpose cells. Per the user's bottom-right FAB spec:
-     * "主按钮尺寸：右下角折叠状态的主按钮，其宽度和高度均等于
-     * 顶部导航栏（顶栏）的实际渲染高度" — the top toolbar keeps
-     * its 44dp height for visual density; the bottom-right panel
-     * is bumped to 48dp to satisfy the M3 minimum touch target.
+     * Surface. V_NOW (2026-06-10 user spec "顶栏和全局锁定按钮
+     * 高度不统一，修复一下，让顶栏的高度和全局锁定按钮高度一致"):
+     * bumped from 44dp to 48dp to match
+     * [BottomPanelChromeSize] (which is what the
+     * [com.pockref.app.ui.PureRefApp.GlobalLockButton] uses).
+     * The 4dp gap was a "visual density" optimization that
+     * pre-dated the global-lock button being extracted to its
+     * own chrome element; now that both elements are corner-
+     * anchored top-end (lock at TopEnd, toolbar at TopStart)
+     * and read as a single "top chrome row" at a glance, the
+     * heights should match. 48dp = M3 minimum touch target
+     * ([MinTouchTarget]).
      */
-    val TopToolbarHeight = 44.dp
+    val TopToolbarHeight = 48.dp
 
     /**
      * Square size of every bottom-right panel cell — the auto-
