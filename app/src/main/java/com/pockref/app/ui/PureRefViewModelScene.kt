@@ -1668,63 +1668,56 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             intrinsicH = bounds.outHeight,
                         )
 
-                        // V_NOW (2026-06-09 user spec "导出画布时一
- // 张张图必须是原始画质尺寸拼接成一张大画布"):
- // Pass1's bbox math runs in **INTRINSIC pixel
- // coordinates** (= source photo pixels), NOT
- // displaySize coords. The user's two promises
- // (1) "原始画质" and (2) "无尺寸上限 = 大画布" both
- // require it: every image is drawn at its real
- // intrinsic pixel size in Pass2 ([dstW]/[dstH]
- // use [image.intrinsicWidth] × image.scale ×
- // scale), and the bitmap is sized to the
- // intrinsic-pixel bbox (= potentially very
- // large). To make Pass1's (cx, cy) anchors
- // agree with the intrinsic-pixel (w, h) extents
- // we have to convert (cx, cy) from displaySize
- // coords to intrinsic coords.
- //
- // Conversion: `cx_intrinsic = cx_display /
- // displayScaleX`, where `displayScaleX =
- // displaySize.width / intrinsicWidth` is the
- // per-image .pur-derived transform (= the
- // hypot(m00, m10) factor that
- // [com.pockref.app.data.PurFileParser] encodes
- // as displaySize). Same on Y. For an isotropic
- // .pur (the desktop-PockRef default), displayScaleX
- // = displayScaleY = one scalar per image. For an
- // anisotropic .pur the per-axis conversion keeps
- // the layout position correct on each axis even
- // though the (w, h) extents are isotropic —
- // acceptable trade-off (anisotropic .purs are
- // rare and the position fidelity is what matters
- // visually).
- //
- // V_NOW (2026-06-09 bug fix "原始画质导出图挤一起"):
- // a PREVIOUS attempt used `cx = image.center.x`
- // (displaySize coord) here, on the theory that
- // "Pass1 should mirror the on-screen
- // [drawSceneImage] math, which also uses
- // displaySize coords". That MIXED two coordinate
- // systems in one bbox pass — anchors in
- // displaySize but extents in intrinsic-pixel.
- // Every image's dstRect was offset toward (0,0)
- // by the (displaySize-minX → intrinsic-minX)
- // delta and the export collapsed into a heap in
- // the upper-left, exactly the bug the user
- // reported. The fix is to keep BOTH (cx, cy)
- // AND (w, h) in intrinsic coords, with the
- // conversion above — anchors and extents now
- // share one coordinate system, positions
- // match the on-screen layout, and each image
- // fits at its intrinsic footprint without
- // overlap.
-                        val displayScaleX = image.displaySize.width / image.intrinsicWidth.toFloat()
-                        val displayScaleY = image.displaySize.height / image.intrinsicHeight.toFloat()
-                        val w = image.intrinsicWidth * image.scale
-                        val h = image.intrinsicHeight * image.scale
-                        val cx = image.center.x / displayScaleX
-                        val cy = image.center.y / displayScaleY
+                        // V_NOW (2026-06-09 bug fix "导出画布图片
+                        // 尺寸不对 + 不是原始分辨率"):
+                        // Pass 1's bbox math runs in **DISPLAY
+                        // coordinates** (= on-screen layout
+                        // positions and sizes). A uniform
+                        // exportDensity factor (computed after
+                        // this loop) scales the entire canvas
+                        // up to accommodate intrinsic resolution
+                        // rendering. This ensures layout
+                        // positions match the screen exactly
+                        // (no per-image coordinate conversion)
+                        // while each image is rendered at its
+                        // original photo resolution.
+                        //
+                        // Previous approaches and why they failed:
+                        // 1. Display coords only: canvas =
+                        //    screen layout size, but images
+                        //    rendered at displaySize resolution
+                        //    → "分辨率被压缩"
+                        // 2. Intrinsic coords: images at
+                        //    original resolution, but
+                        //    center.x / displayScaleX uses a
+                        //    PER-IMAGE scale factor for position
+                        //    conversion. When images have
+                        //    different displayScales, relative
+                        //    positions are distorted →
+                        //    "图片尺寸不对 / 布局错乱"
+                        //
+                        // The correct approach: display coords
+                        // for ALL positions (center, bbox) +
+                        // uniform exportDensity that scales the
+                        // ENTIRE canvas up. This is like
+                        // rendering a webpage at 2×/3× for a
+                        // Retina display — the LOGICAL layout
+                        // is identical to the screen, but the
+                        // PIXEL dimensions are larger.
+                        //
+                        // exportDensity = max(intrinsicWidth_i
+                        //   / displaySize.width_i) across all
+                        // images. This ensures the most-
+                        // scaled-down image gets its full
+                        // intrinsic resolution. Other images
+                        // are rendered at
+                        //   displaySize × exportDensity
+                        // which is ≥ their intrinsicWidth,
+                        // so they also get full resolution.
+                        val w = image.displaySize.width * image.scale
+                        val h = image.displaySize.height * image.scale
+                        val cx = image.center.x
+                        val cy = image.center.y
                         val corners = floatArrayOf(
                             -w / 2f, -h / 2f,
                              w / 2f, -h / 2f,
@@ -1776,6 +1769,28 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     val canvasWidth = (maxX - minX).roundToInt().coerceAtLeast(1)
                     val canvasHeight = (maxY - minY).roundToInt().coerceAtLeast(1)
 
+                    // V_NOW (2026-06-09 bug fix "导出画布图片
+                    // 尺寸不对 + 不是原始分辨率"):
+                    // Compute a UNIFORM exportDensity that scales
+                    // the display-coordinate canvas up so each
+                    // image can be rendered at its original photo
+                    // resolution. exportDensity = max ratio of
+                    // intrinsic-to-display across all images.
+                    // This is like a Retina/HiDPI scale factor —
+                    // the LOGICAL layout (in points) matches the
+                    // screen exactly, but the PIXEL dimensions
+                    // are larger to accommodate full-resolution
+                    // rendering.
+                    var exportDensity = 1f
+                    for (probe in probes) {
+                        val img = probe.image
+                        if (img.displaySize.width > 0f && img.displaySize.height > 0f) {
+                            val ratioX = img.intrinsicWidth.toFloat() / img.displaySize.width
+                            val ratioY = img.intrinsicHeight.toFloat() / img.displaySize.height
+                            exportDensity = maxOf(exportDensity, ratioX, ratioY)
+                        }
+                    }
+
                     // V_NOW (2026-06-08 user feedback "导出图片
                     // 清晰度不足"): raise the canvas cap from 4096
                     // to 8192 so the export keeps close to the
@@ -1797,10 +1812,17 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // the pre-feature behaviour for callers that
                     // don't set [PockRefUiState.exportCanvasMaxDim].
                     val maxDim = state.exportCanvasMaxDim
+                    // V_NOW (2026-06-09): scale accounts for
+                    // exportDensity. The canvas pixel dimensions
+                    // = displayBbox × exportDensity × scale.
+                    // exportDensity scales the canvas up from
+                    // display coords to accommodate intrinsic
+                    // resolution; scale optionally shrinks it
+                    // back down if maxDim is exceeded.
                     val scale = when {
-                        maxDim == null -> 1f // unlimited: never shrink the canvas.
-                        canvasWidth > maxDim || canvasHeight > maxDim ->
-                        maxDim.toFloat() / maxOf(canvasWidth, canvasHeight)
+                        maxDim == null -> 1f
+                        canvasWidth * exportDensity > maxDim || canvasHeight * exportDensity > maxDim ->
+                        maxDim.toFloat() / maxOf(canvasWidth * exportDensity, canvasHeight * exportDensity)
                         else -> 1f
                     }
 
@@ -1817,9 +1839,15 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // 64MB + source 64MB = 128MB peak).
                     val maxImageDim = if (maxDim == null) Int.MAX_VALUE else 4096
 
+                    // V_NOW (2026-06-09): canvas pixel size =
+                    // display bbox × exportDensity × scale.
+                    // exportDensity scales the canvas up from
+                    // display coords to accommodate intrinsic
+                    // resolution; scale optionally shrinks it
+                    // back down if maxDim is exceeded.
                     val bitmap = Bitmap.createBitmap(
-                        (canvasWidth * scale).toInt().coerceAtLeast(1),
-                        (canvasHeight * scale).toInt().coerceAtLeast(1),
+                        (canvasWidth * exportDensity * scale).toInt().coerceAtLeast(1),
+                        (canvasHeight * exportDensity * scale).toInt().coerceAtLeast(1),
                         Bitmap.Config.ARGB_8888,
                     )
                     val canvas = android.graphics.Canvas(bitmap)
@@ -1829,30 +1857,22 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // -----------------------------------------------------------------
                     for (probe in probes) {
                         val image = probe.image
-                        // V_NOW (2026-06-08 user feedback "导出图
-                        // 不如原图清晰"): the previous targetW
-                        // used `image.displaySize.width` which is
-                        // baseScale × intrinsicWidth — i.e. the
-                        // size the user laid out the image at in
-                        // PureRef, not the original photo size.
-                        // If a user shrunk a 4000×3000 photo to
-                        // 30% in the board (baseScale=0.3),
-                        // displaySize.width = 1200 and the
-                        // export was a 1200×900 PNG — visibly
-                        // less detailed than the 4000×3000 source.
-                        // We now target `intrinsicWidth` so the
-                        // export preserves the original photo
-                        // resolution. The visual placement on
-                        // the canvas is still controlled by
-                        // `displaySize` (used in Pass 1 bbox and
-                        // renderImageToCanvas's dstRect), so the
-                        // layout doesn't change — we just feed
-                        // the scaler a higher-resolution source
-                        // to draw from.
-                        val targetW = (probe.intrinsicW * scale)
-                            .toInt().coerceAtMost(maxImageDim).coerceAtLeast(1)
-                        val targetH = (probe.intrinsicH * scale)
-                            .toInt().coerceAtMost(maxImageDim).coerceAtLeast(1)
+                        // V_NOW (2026-06-09 bug fix "导出画布图片
+                        // 不是原始分辨率"): decode at intrinsic
+                        // resolution so the export preserves
+                        // original photo quality. The canvas
+                        // is in display coords × exportDensity,
+                        // so each image's render size is
+                        // [displaySize.width * image.scale
+                        //   * exportDensity * scale].
+                        // Decoding at intrinsic resolution
+                        // ensures the source has enough pixels
+                        // for the bilinear drawBitmap to
+                        // produce a sharp result.
+                        val targetW = probe.intrinsicW
+                            .coerceAtMost(maxImageDim).coerceAtLeast(1)
+                        val targetH = probe.intrinsicH
+                            .coerceAtMost(maxImageDim).coerceAtLeast(1)
                         val sampleSize = calculateSampleSize(
                             probe.intrinsicW, probe.intrinsicH, targetW, targetH,
                         )
@@ -1936,6 +1956,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                 minX = minX,
                                 minY = minY,
                                 scale = scale,
+                                exportDensity = exportDensity,
                             )
                         } catch (t: Throwable) {
                             if (t is kotlinx.coroutines.CancellationException) throw t
@@ -1993,6 +2014,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         minX: Float,
         minY: Float,
         scale: Float,
+        exportDensity: Float,
     ) {
         val paint = android.graphics.Paint().apply {
             isAntiAlias = true
@@ -2008,21 +2030,30 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             }
         }
 
-        // V_NOW (2026-06-09 user spec "导出画布时一张张图必须
-        // 是原始画质尺寸拼接成一张大画布"): [dstW]/[dstH] are
-        // the image's INTRINSIC pixel dimensions (× user
-        // pinch-zoom × export cap-scale), NOT [image.displaySize].
-        // See the matching V_NOW in [exportCanvas] Pass 1 for the
-        // full rationale. Compose's on-screen `drawImage` and
-        // this export path use the SAME center/rotation/flip,
-        // so the on-screen and export pipelines agree on
-        // position; only the per-image SIZE differs (canvas
-        // = intrinsic, screen = displaySize), which is the
-        // whole point of the user's "原始画质" spec.
-        val canvasCenterX = (image.center.x - minX) * scale
-        val canvasCenterY = (image.center.y - minY) * scale
-        val dstW = image.intrinsicWidth * image.scale * scale
-        val dstH = image.intrinsicHeight * image.scale * scale
+        // V_NOW (2026-06-09 bug fix "导出画布图片尺寸不对 +
+        // 不是原始分辨率"):
+        // The export pipeline uses display coordinates for layout
+        // positions and a uniform exportDensity to scale the canvas
+        // up to accommodate intrinsic resolution rendering.
+        //
+        // [minX/minY] are in display coordinates (Pass 1 uses
+        // image.center.x directly, no per-image displayScaleX
+        // conversion). [exportDensity] is a UNIFORM factor
+        // (= max intrinsicWidth/displaySize.width across all
+        // images) that scales the entire canvas up from display
+        // coords to pixel coords, like a Retina/HiDPI factor.
+        //
+        // [dstW/dstH] = displaySize × image.scale × exportDensity.
+        // For the image with the highest intrinsic/display ratio,
+        // dstW = intrinsicWidth × image.scale — full original
+        // resolution. For other images, dstW ≥ intrinsicWidth
+        // (the source is at intrinsic resolution, so any extra
+        // upscale beyond intrinsicWidth just bilinearly expands
+        // without adding detail, but doesn't lose any either).
+        val canvasCenterX = (image.center.x - minX) * exportDensity * scale
+        val canvasCenterY = (image.center.y - minY) * exportDensity * scale
+        val dstW = image.displaySize.width * image.scale * exportDensity * scale
+        val dstH = image.displaySize.height * image.scale * exportDensity * scale
         val srcRect = android.graphics.Rect(0, 0, source.width, source.height)
         val dstRect = android.graphics.RectF(
             -dstW / 2f, -dstH / 2f, dstW / 2f, dstH / 2f,

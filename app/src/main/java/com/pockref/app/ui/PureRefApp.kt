@@ -10592,7 +10592,6 @@ private fun BottomPanelListItem(
 // hoisted to the function declaration so it covers
 // [combinedClickable] inside the [Modifier] chain
 // without needing per-call suppression.
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BoxScope.GlobalLockButton(
     state: PockRefUiState,
@@ -10615,13 +10614,6 @@ private fun BoxScope.GlobalLockButton(
                 end = Dimens.CornerInset,
             )
             .size(Dimens.BottomPanelChromeSize)
-            // 1dp outlineVariant@40% border matching
-            // the bottom-sheet chrome — same outlined
-            // family as the rest of the corner-chrome.
-            // HARD state flips to error@40% so the
-            // button's outline matches its fill — a
-            // fully red pill, not a red-fill-on-grey-
-            // outline.
             .border(
                 width = 1.dp,
                 color = if (state.lockCanvasFrozen) {
@@ -10637,14 +10629,6 @@ private fun BoxScope.GlobalLockButton(
                     .copy(alpha = Dimens.ChromeSurfaceAlpha),
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
             )
-            // Active-tint background — three-state
-            // branch. SOFT → primaryContainer (cyan);
-            // HARD → errorContainer (red); OFF →
-            // transparent (frosted shows through). The
-            // two `background` modifiers stack — this
-            // one paints on top of the frosted base
-            // above, so the active tint wins when both
-            // apply.
             .background(
                 color = when {
                     state.lockCanvasFrozen ->
@@ -10659,57 +10643,44 @@ private fun BoxScope.GlobalLockButton(
                 color = lockStateLayer,
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
             )
-            // combinedClickable wires click + long-press
-            // to the same target without losing
-            // accessibility actions (generates correct
-            // a11y "click" + "long-click" semantics).
-            // [combinedClickable] handles the 500ms
-            // threshold + ripple + haptics.
-            //
-            // V_NOW (2026-06-10 hotfix): pass our
-            // [lockInteractionSource] directly via the
-            // [interactionSource] parameter so the
-            // combinedClickable itself collects hover /
-            // press state and emits the ripple. This
-            // REMOVES the previously-attached standalone
-            // [Modifier.hoverable(...)] — having both
-            // [hoverable] and [combinedClickable] in the
-            // same modifier chain consumed DOWN events in
-            // the hoverable pass, so onLongClick never
-            // fired even though onClick still did. The
-            // hover/press state layer logic stays
-            // unchanged (same interactionSource, same
-            // alpha values).
-            .combinedClickable(
+            // V_NOW: replaced combinedClickable with
+            // clickable + pointerInput(detectTapGestures).
+            // combinedClickable's onLongClick was not
+            // firing reliably on device — the 500ms
+            // threshold was being consumed by the
+            // parent BoxWithConstraints' gesture system
+            // or by the underlying PockRefCanvas
+            // pointerInput. detectTapGestures runs
+            // directly in the pointer event stream and
+            // is more reliable for long-press detection.
+            .clickable(
                 interactionSource = lockInteractionSource,
-                indication = androidx.compose.material.ripple.rememberRipple(),
-                onClick = {
-                    if (state.lockCanvasFrozen) {
-                        // From HARD: drop to SOFT
-                        // (preserve [globalImageLock]).
-                        onAction(PockRefAction.ToggleLockCanvasFrozen)
-                    } else {
-                        // From SOFT or OFF: standard
-                        // toggle on the soft flag.
-                        onAction(PockRefAction.ToggleGlobalImageLock)
-                    }
-                },
-                onLongClick = {
-                    if (state.lockCanvasFrozen) {
-                        // Long-press from HARD: full
-                        // unlock — drop frozen AND drop
-                        // soft lock in one gesture.
-                        onAction(PockRefAction.ToggleLockCanvasFrozen)
-                        onAction(PockRefAction.ToggleGlobalImageLock)
-                    } else {
-                        // Long-press from SOFT or OFF:
-                        // engage HARD (reducer also
-                        // engages SOFT internally, so
-                        // button ends in HARD state).
-                        onAction(PockRefAction.ToggleLockCanvasFrozen)
-                    }
-                },
-            ),
+                indication = null,
+            ) {
+                // no-op: tap is handled by detectTapGestures
+                // below. This clickable exists only to
+                // provide hover/press interaction state
+                // and accessibility semantics.
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onLongPress = {
+                        if (state.lockCanvasFrozen) {
+                            onAction(PockRefAction.ToggleLockCanvasFrozen)
+                            onAction(PockRefAction.ToggleGlobalImageLock)
+                        } else {
+                            onAction(PockRefAction.ToggleLockCanvasFrozen)
+                        }
+                    },
+                    onTap = {
+                        if (state.lockCanvasFrozen) {
+                            onAction(PockRefAction.ToggleLockCanvasFrozen)
+                        } else {
+                            onAction(PockRefAction.ToggleGlobalImageLock)
+                        }
+                    },
+                )
+            },
         contentAlignment = Alignment.Center,
     ) {
         Icon(

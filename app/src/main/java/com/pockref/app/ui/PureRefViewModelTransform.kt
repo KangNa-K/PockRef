@@ -1911,17 +1911,16 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         val image = currentState.images.find { it.id == imageId } ?: return
         val viewport = currentState.canvasViewportSize
         if (viewport.width <= 0f || viewport.height <= 0f) return
-        val imgW = image.displaySize.width * image.scale
-        val imgH = image.displaySize.height * image.scale
-        val effectiveW: Float
-        val effectiveH: Float
-        if (image.rotationDegrees % 180f != 0f) {
-            effectiveW = imgH
-            effectiveH = imgW
-        } else {
-            effectiveW = imgW
-            effectiveH = imgH
-        }
+        // V_NOW: use rotated AABB footprint instead of simple
+        // width/height swap. The old logic only handled 90°
+        // multiples (`rotationDegrees % 180f != 0f`), which
+        // broke for arbitrary angles (e.g. 45°) where the
+        // rotated image's AABB is larger than the simple swap.
+        // imageRotatedFootprint computes the correct axis-
+        // aligned bounding box for any rotation angle.
+        val footprint = imageRotatedFootprint(image)
+        val effectiveW = footprint.width
+        val effectiveH = footprint.height
         val targetScale = minOf(
             viewport.width / effectiveW,
             viewport.height / effectiveH,

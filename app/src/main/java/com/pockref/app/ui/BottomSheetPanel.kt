@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -176,6 +177,14 @@ fun BottomSheetPanel(
     // and queue a second exit animation on an already-
     // dismissing sheet.
     var handleDragInProgress by remember { mutableStateOf(false) }
+
+    // V_NOW: reset drag state when the sheet becomes visible again
+    // so the swipe-to-dismiss gesture works on subsequent pop-ups.
+    // Without this, handleDragInProgress stays true after the first
+    // dismiss, blocking all future swipe dismissals.
+    LaunchedEffect(visible) {
+        if (visible) handleDragInProgress = false
+    }
 
     AnimatedVisibility(
         visible = visible,

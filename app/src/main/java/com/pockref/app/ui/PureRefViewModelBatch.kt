@@ -429,7 +429,7 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
      * boundary — the user can pull a group all the
      * way to 10% of original, same as a single image.
      */
-    internal fun setSelectedImagesScale(newScaleFactor: Float, worldCenter: Offset) {
+    internal fun setSelectedImagesScale(absoluteScales: Map<String, Float>, worldCenter: Offset) {
         val stateBefore = mainVm._uiState.value
         val targetIds = stateBefore.selectedImageIds.ifEmpty {
             stateBefore.selectedImageId?.let(::setOf).orEmpty()
@@ -439,13 +439,11 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
             !stateBefore.isImageLocked(id)
         }
         if (transformableIds.isEmpty()) return
-        val target = stateBefore.images.filter { it.id in transformableIds }
-        if (target.isEmpty()) return
         mainVm.mutateScene {
             copy(
                 images = images.map { img ->
                     if (img.id !in transformableIds) img else {
-                        val newScale = (img.scale * newScaleFactor)
+                        val newScale = (absoluteScales[img.id] ?: img.scale)
                             .coerceIn(0.1f, 8.0f)
                         val effective = newScale / img.scale
                         val dx = img.center.x - worldCenter.x

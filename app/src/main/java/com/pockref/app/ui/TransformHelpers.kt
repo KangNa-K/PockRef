@@ -1017,14 +1017,22 @@ internal fun computeGroupCornerDragResult(
  *     gesture feels like a tiny tweak, not
  *     a 5% jump).
  */
-private const val CORNER_DRAG_DEADZONE = 0.05f
+private const val CORNER_DRAG_DEADZONE = 0.03f
 
+/**
+ * V_NOW (corner drag scaling sensitivity): applies a
+ * softening curve to the raw diagonal ratio so the
+ * scaling feels proportional to finger travel distance.
+ *
+ * The raw ratio is `newDiagonal / initialDiagonal`.
+ * Power curve `rawRatio ^ 0.7` compresses the ratio
+ * so that large finger motions produce moderate scale
+ * changes while keeping the scaling smooth and
+ * proportional. Deadzone of 3% eliminates micro-jitter.
+ */
 private fun softenScaleRatio(rawRatio: Float): Float {
     if (rawRatio <= 0f) return 1f
-    // Symmetric: use the larger of r and 1/r so the
-    // deadzone works in BOTH directions. A 5% shrink
-    // and a 5% grow should both no-op.
     val symmetricRatio = maxOf(rawRatio, 1f / rawRatio)
     if (symmetricRatio <= 1f + CORNER_DRAG_DEADZONE) return 1f
-    return kotlin.math.sqrt(rawRatio)
+    return Math.pow(rawRatio.toDouble(), 0.7).toFloat()
 }

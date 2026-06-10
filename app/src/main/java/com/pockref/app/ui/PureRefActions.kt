@@ -328,7 +328,7 @@ sealed interface PockRefAction {
      * the per-image path uses.
      */
     data class SetSelectedImagesScale(
-        val newScaleFactor: Float,
+        val absoluteScales: Map<String, Float>,
         val worldCenter: Offset,
     ) : PockRefAction
     data class BatchAlign(val mode: AlignMode) : PockRefAction

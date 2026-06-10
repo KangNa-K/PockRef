@@ -651,7 +651,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  }
             is PockRefAction.TransformSelectedImage -> transformController.transformSelectedImage(action.scaleChange, action.rotationChange, action.pan)
             is PockRefAction.SetSelectedImageScale -> transformController.setSelectedImageScale(action.newScale, action.worldCenter, action.worldPivot)
-            is PockRefAction.SetSelectedImagesScale -> batchController.setSelectedImagesScale(action.newScaleFactor, action.worldCenter)
+            is PockRefAction.SetSelectedImagesScale -> batchController.setSelectedImagesScale(action.absoluteScales, action.worldCenter)
             is PockRefAction.SetColorAdjust -> transformController.updateColorAdjust(action.brightness, action.contrast, action.saturation)
             PockRefAction.RotateLeft -> transformController.rotateSelected(-90f)
             PockRefAction.RotateRight -> transformController.rotateSelected(90f)
@@ -698,7 +698,15 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 if (newValue) {
                     transformController.deselect()
                 }
-                _uiState.update { it.copy(globalImageLock = newValue) }
+                _uiState.update {
+                    it.copy(
+                        globalImageLock = newValue,
+                        // V_NOW: auto-close box-select when locking
+                        boxSelectMode = if (newValue) false else it.boxSelectMode,
+                        boxSelectRect = if (newValue) null else it.boxSelectRect,
+                        boxSelectPreviewIds = if (newValue) emptySet() else it.boxSelectPreviewIds,
+                    )
+                }
             }
             // V_NOW (working-tree stub): canvas-freeze toggle
             // is referenced from the settings panel but no
@@ -746,6 +754,10 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  it.copy(
  lockCanvasFrozen = newFrozen,
  globalImageLock = if (newFrozen) true else it.globalImageLock,
+ // V_NOW: auto-close box-select when freezing
+ boxSelectMode = if (newFrozen) false else it.boxSelectMode,
+ boxSelectRect = if (newFrozen) null else it.boxSelectRect,
+ boxSelectPreviewIds = if (newFrozen) emptySet() else it.boxSelectPreviewIds,
  )
  }
  }

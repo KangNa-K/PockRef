@@ -24,6 +24,13 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
      */
     internal fun setSelectionMode(mode: SelectionMode) {
         mainVm._uiState.update { state ->
+            // V_NOW: block selection mode changes when globally locked
+            // or canvas frozen. Box-select and multi-select are
+            // interaction modes that make no sense when the user
+            // can't interact with images.
+            if (state.globalImageLock || state.lockCanvasFrozen) {
+                return@update state
+            }
             val wantBox = mode == SelectionMode.BOX
             val wantMulti = mode == SelectionMode.MULTI || mode == SelectionMode.BOX
             if (state.boxSelectMode == wantBox && state.multiSelectMode == wantMulti) {
@@ -72,6 +79,8 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
 
     internal fun toggleMultiSelectMode() {
         mainVm._uiState.update { state ->
+            // V_NOW: block toggle when globally locked or frozen
+            if (state.globalImageLock || state.lockCanvasFrozen) return@update state
             val enabled = !state.multiSelectMode
             val retainedPrimary = state.selectedImageId ?: state.selectedImageIds.lastOrNull()
             state.copy(
@@ -89,6 +98,8 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
 
     internal fun toggleBoxSelectMode() {
         mainVm._uiState.update { state ->
+            // V_NOW: block toggle when globally locked or frozen
+            if (state.globalImageLock || state.lockCanvasFrozen) return@update state
             val enabling = !state.boxSelectMode
             if (enabling) {
                 state.copy(
