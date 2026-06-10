@@ -7029,7 +7029,7 @@ private fun PockRefCanvas(
                         }
                     }
 
-                    if (stylusButtonDown) {
+                    if (stylusButtonDown && cornerDrag == null && groupCornerDrag == null) {
                         // Force BOX mode for this gesture. The down
                         // might have hit an image — we ignore the hit
                         // because the S Pen button is for selection,
@@ -7069,7 +7069,7 @@ private fun PockRefCanvas(
                         // `dragCanvas = true` arming below
                         // — matching the user's intent
                         // "image 上单指拖动 = 移动画布".
-                        if (s.boxSelectMode && hitId !in s.selectedImageIds) {
+                        if (s.boxSelectMode && hitId !in s.selectedImageIds && cornerDrag == null && groupCornerDrag == null) {
                             currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                             boxSelectStart = downPos
                             boxSelectDragging = true
@@ -7131,7 +7131,14 @@ private fun PockRefCanvas(
                                 }
                             }
                         }
-                    } else if (s.boxSelectMode) {
+                    } else if (s.boxSelectMode && cornerDrag == null && groupCornerDrag == null) {
+                        // V_NOW: skip starting a new box-select
+                        // when a corner drag is already active
+                        // (the user grabbed a group corner handle
+                        // which is on empty space). Without this
+                        // guard, BeginBoxSelectAt clears
+                        // selectedImageIds, destroying the group
+                        // that the corner drag is operating on.
                         currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                         boxSelectStart = downPos
                         boxSelectDragging = true
@@ -7593,9 +7600,18 @@ private fun PockRefCanvas(
                                     (newCenterScreen.x - cs2Center.x) / cs2.canvasScale,
                                     (newCenterScreen.y - cs2Center.y) / cs2.canvasScale,
                                 )
+                                // V_NOW: compute absolute scales from
+                                // initial scales + the softened ratio.
+                                // Previously newFactor was multiplied by
+                                // the CURRENT scale each frame, causing
+                                // compounding (too-fast, jerky scaling).
+                                // Now: absoluteScale = initialScale * newFactor
+                                val absoluteScales = gcorner.initialScales.mapValues { (_, initScale) ->
+                                    (initScale * newFactor).coerceIn(0.1f, 8.0f)
+                                }
                                 currentOnAction(
                                     PockRefAction.SetSelectedImagesScale(
-                                        newScaleFactor = newFactor,
+                                        absoluteScales = absoluteScales,
                                         worldCenter = worldCenter,
                                     ),
                                 )
@@ -10643,14 +10659,30 @@ private fun BoxScope.GlobalLockButton(
                 color = lockStateLayer,
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
             )
-            .hoverable(interactionSource = lockInteractionSource)
             // combinedClickable wires click + long-press
             // to the same target without losing
             // accessibility actions (generates correct
             // a11y "click" + "long-click" semantics).
             // [combinedClickable] handles the 500ms
             // threshold + ripple + haptics.
+            //
+            // V_NOW (2026-06-10 hotfix): pass our
+            // [lockInteractionSource] directly via the
+            // [interactionSource] parameter so the
+            // combinedClickable itself collects hover /
+            // press state and emits the ripple. This
+            // REMOVES the previously-attached standalone
+            // [Modifier.hoverable(...)] — having both
+            // [hoverable] and [combinedClickable] in the
+            // same modifier chain consumed DOWN events in
+            // the hoverable pass, so onLongClick never
+            // fired even though onClick still did. The
+            // hover/press state layer logic stays
+            // unchanged (same interactionSource, same
+            // alpha values).
             .combinedClickable(
+                interactionSource = lockInteractionSource,
+                indication = androidx.compose.material.ripple.rememberRipple(),
                 onClick = {
                     if (state.lockCanvasFrozen) {
                         // From HARD: drop to SOFT
