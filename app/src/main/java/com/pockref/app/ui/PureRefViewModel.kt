@@ -1884,35 +1884,216 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     // auto-closed in the same update (matches the
     // user's mental model: "I confirmed, the dialog
     // went away, the files are gone").
+    // V_NOW (2026-06-10, user spec "启动页删除 = 真删本地文件"):
+    // the bulk-delete handler now ACTUALLY deletes
+    // the files from disk via [DocumentsContract.deleteDocument]
+    // (the canonical SAF API), not just removes them
+    // from the recent-scenes prefs list. The
+    // previous behaviour (list-only) silently
+    // diverged from the user's mental model — they
+    // tapped "删除" in a confirmation dialog that
+    // said "此操作不可撤销" and the file stayed on
+    // disk.
+    //
+    // Flow:
+    //   1. Synchronously close the confirm dialog
+    //      (snappy UX — the user has confirmed,
+    //      the dialog should not block).
+    //   2. Launch a [viewModelScope] coroutine on
+    //      [Dispatchers.IO] for the actual disk
+    //      deletes. Each delete is a per-URI
+    //      [DocumentsContract.deleteDocument] call,
+    //      wrapped in [try-catch] so a single
+    //      failure (e.g. [SecurityException] for a
+    //      lost URI permission, [FileNotFoundException]
+    //      for an already-deleted file) doesn't
+    //      abort the rest of the batch.
+    //   3. After the batch completes, filter the
+    //      recent-scenes list to remove ONLY the
+    //      URIs that successfully deleted (a file
+    //      that failed to delete stays in the
+    //      recents so the user can retry, and the
+    //      [RecentSceneEntry] row lets them see
+    //      what's there).
+    //   4. Surface a result snackbar via
+    //      [errorsFlow] / [reportError] so the user
+    //      gets feedback even when not in
+    //      start-page mode (e.g. the deletion
+    //      finishes after they navigated away).
+    //
+    // Permission: each recent-scene URI has a
+    // [FLAG_GRANT_PERSISTABLE_URI_PERMISSION]
+    // (granted by the SAF picker when the user
+    // originally picked the file — see
+    // [com.pockref.app.ui.PureRefApp] near the
+    // SAF import launchers, and
+    // [takePersistableUriPermission] further
+    // down in this file). The delete API
+    // requires WRITE permission, which the
+    // persistable grant covers for files the
+    // user picked. [SecurityException] is
+    // expected only for stale prefs entries whose
+    // URI is no longer valid (e.g. the user
+    // revoked the permission in Settings) — those
+    // entries are also failed-deletes that stay
+    // in the recents and show a snackbar hint.
     internal fun bulkDeleteRecentScenes(uris: List<String>) {
         val state = _uiState.value
         val targets = uris
             .intersect(state.recentScenes.map { it.uri }.toSet())
         if (targets.isEmpty()) return
-        val updated = state.recentScenes.filterNot { it.uri in targets }
-        val survivingSelection = state.recentSelection.intersect(
-            updated.map { it.uri }.toSet(),
-        )
-        val newMultiSelectMode = state.recentMultiSelectMode && updated.isNotEmpty()
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-            ).joinToString("|")
-        }).apply()
-        _uiState.update {
-            it.copy(
-                recentScenes = updated,
-                recentSelection = survivingSelection,
-                recentMultiSelectMode = newMultiSelectMode,
-                bulkDeleteConfirmOpen = false,
-            )
+        // Step 1: close the dialog immediately. The
+        // user has confirmed; the dialog should
+        // not linger while the disk deletes run.
+        _uiState.update { it.copy(bulkDeleteConfirmOpen = false) }
+        // Step 2: launch the disk-delete batch on
+        // a coroutine. The handler returns
+        // synchronously so the dispatched
+        // action's call site (the AlertDialog's
+        // onClick) completes immediately; the
+        // actual deletes happen in the
+        // background.
+        viewModelScope.launch(Dispatchers.IO) {
+            val (deletedUris, failedUris) = deleteFilesInBatch(targets)
+            // Step 3: re-fetch the latest state. The
+            // user may have entered / exited
+            // multi-select, started a practice
+            // session, etc. between the dialog
+            // dismiss and the batch completion.
+            val current = _uiState.value
+            val survivors = current.recentScenes.map { it.uri }.toSet()
+            val toRemoveFromList = deletedUris.intersect(survivors)
+            if (toRemoveFromList.isNotEmpty()) {
+                val updated = current.recentScenes.filterNot { it.uri in toRemoveFromList }
+                val survivingSelection = current.recentSelection.intersect(
+                    updated.map { it.uri }.toSet(),
+                )
+                val newMultiSelectMode = current.recentMultiSelectMode && updated.isNotEmpty()
+                prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                    listOf(
+                        it.uri,
+                        it.label.replace("|", "/"),
+                        it.source,
+                        it.timestamp.toString(),
+                        it.filePath.replace("|", "/"),
+                        it.fileSize.toString(),
+                        if (it.pinned) "1" else "0",
+                    ).joinToString("|")
+                }).apply()
+                _uiState.update {
+                    it.copy(
+                        recentScenes = updated,
+                        recentSelection = survivingSelection,
+                        recentMultiSelectMode = newMultiSelectMode,
+                    )
+                }
+            }
+            // Step 4: surface the result. The
+            // message is intentionally concise —
+            // a verbose "deleted N out of M files"
+            // would be noisy if the user just
+            // selected 1 file and it succeeded.
+            // The three cases map to three
+            // distinct messages.
+            when {
+                failedUris.isEmpty() && deletedUris.isNotEmpty() ->
+                    reportError("已删除 ${deletedUris.size} 个文件")
+                deletedUris.isEmpty() && failedUris.isNotEmpty() ->
+                    // All failed — the most common
+                    // case is the user revoked
+                    // SAF permissions, or the file
+                    // is on a provider that doesn't
+                    // support delete (some cloud
+                    // providers return
+                    // UnsupportedOperationException).
+                    reportError("删除失败：${failedUris.size} 个文件无法删除")
+                else ->
+                    // Mixed result — surface the
+                    // successful count and note the
+                    // failure count so the user
+                    // knows some files are still
+                    // there.
+                    reportError(
+                        "已删除 ${deletedUris.size} 个文件,${failedUris.size} 个失败",
+                    )
+            }
         }
+    }
+
+    /**
+     * V_NOW (2026-06-10, "启动页删除 = 真删本地文件" backing
+     * helper): performs the actual disk deletion of a
+     * batch of [android.net.Uri]s via
+     * [DocumentsContract.deleteDocument]. Returns a
+     * `(deleted, failed)` pair partitioned by success.
+     *
+     * The helper is called from
+     * [bulkDeleteRecentScenes] inside a
+     * [viewModelScope] coroutine on [Dispatchers.IO],
+     * so the per-URI blocking IO does not stall the
+     * main thread. Each delete is independent — a
+     * failure on one URI does NOT abort the rest of
+     * the batch (the SAF delete API can fail for
+     * unrelated reasons per URI, e.g. one file's
+     * provider has stricter ACLs than another's).
+     *
+     * Expected exception classes:
+     *   - [SecurityException]: URI permission lost
+     *     (user revoked the persistable grant in
+     *     Settings, or the URI was never persistable
+     *     in the first place — e.g. picked before
+     *     the user added the SAF picker flow)
+     *   - [FileNotFoundException]: file already gone
+     *     (deleted out-of-band, moved, etc.)
+     *   - [UnsupportedOperationException]: the
+     *     provider for this URI doesn't implement
+     *     delete (some read-only cloud providers)
+     *   - [IllegalArgumentException]: the URI is
+     *     not a document URI
+     *
+     * All of these are caught and logged; the
+     * failed set is returned to the caller for
+     * state-update branching + snackbar message.
+     */
+    private fun deleteFilesInBatch(
+        uris: Set<String>,
+    ): Pair<Set<String>, Set<String>> {
+        val deleted = mutableSetOf<String>()
+        val failed = mutableSetOf<String>()
+        uris.forEach { uriString ->
+            val uri = Uri.parse(uriString)
+            try {
+                DocumentsContract.deleteDocument(contentResolver, uri)
+                deleted.add(uriString)
+            } catch (e: SecurityException) {
+                // Lost URI permission — log and
+                // treat as a failed delete. The
+                // recent-scenes entry stays in
+                // recents so the user can see
+                // what's there and retry (the
+                // retry will also fail; the
+                // snackbar nudges them to clear
+                // the entry instead).
+                failed.add(uriString)
+                android.util.Log.w(
+                    "PockRefRecent",
+                    "bulkDelete: SecurityException for $uriString: ${e.message}",
+                )
+            } catch (e: Throwable) {
+                // FileNotFoundException,
+                // UnsupportedOperationException,
+                // IllegalArgumentException, etc.
+                // All map to "failed" from the
+                // user's perspective — the file
+                // is still on disk / in recents.
+                failed.add(uriString)
+                android.util.Log.w(
+                    "PockRefRecent",
+                    "bulkDelete: ${e.javaClass.simpleName} for $uriString: ${e.message}",
+                )
+            }
+        }
+        return deleted to failed
     }
 
     // V_NOW (L2 empty-canvas revamp 2026-06-10): the new

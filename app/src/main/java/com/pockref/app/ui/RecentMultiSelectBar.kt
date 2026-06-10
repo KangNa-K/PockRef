@@ -346,7 +346,8 @@ fun BulkDeleteConfirmDialog(
                 text = if (count <= 0) {
                     "没有选中任何文件。"
                 } else {
-                    "确定要从最近列表中删除这 $count 个文件吗?此操作不可撤销。"
+                    "确定要删除这 $count 个文件吗?\n\n" +
+                        "这些文件将从最近列表移除,并永久删除本地文件,无法恢复。"
                 },
             )
         },
