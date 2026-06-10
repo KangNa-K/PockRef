@@ -3,6 +3,7 @@ package com.pockref.app.ui
 import android.graphics.RectF
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import com.pockref.app.model.AlignMode
 import com.pockref.app.model.BackgroundPreset
@@ -280,56 +281,49 @@ sealed interface PockRefAction {
      * [BatchScale] action, which is NOT dispatched from
      * the corner-drag path).
      */
-    data class SetSelectedImageScale(
-        val newScale: Float,
-        val worldCenter: Offset,
-        val worldPivot: Offset,
-    ) : PockRefAction
     /**
-     * V_NOW (4-corner scale handles, MULTI/BOX path):
-     * ABSOLUTE scale setter for the GROUP AABB
-     * enclosing every selected image. Distinct from
-     * [SetSelectedImageScale] (which targets the
-     * SINGLE selected image) and from
-     * [BatchScale] (which is a RELATIVE per-frame
-     * multiplier that stacks frame-over-frame and
-     * would let numerical drift accumulate over a
-     * long group drag).
-     *
-     * The reducer applies the per-image scale as
-     * `imageScale = (initialImageScale *
-     * newScaleFactor).coerceIn(0.1, 8.0)` and
-     * re-centers each image around
-     * [worldCenter]. The pre-drag
-     * `initialImageScale` is captured in the
-     * pointer handler at the down event (one
-     * per-image snapshot of `image.scale` at that
-     * frame), so the absolute-form recompute is
-     * always a one-line ratio against a fixed
-     * baseline. Members keep their RELATIVE
-     * scale-to-each-other, only the group as a
-     * whole grows / shrinks.
-     *
-     * [worldCenter] is the new group AABB center
-     * in world (scene) coordinates, pre-computed
-     * by the pointer handler from the new screen
-     * midpoint of (move-handle, anchor) and
-     * converted to world via the canvas
-     * transform's inverse. The reducer pins the
-     * group around this point so the group AABB
-     * tracks the user's finger.
-     *
-     * Affects every member of
-     * [PockRefUiState.selectedImageIds] (or the
-     * fallback single [PockRefUiState.selectedImageId]
-     * for the SELECTED-ONE mode). Locked members
-     * are filtered out by the reducer using the
-     * same [PockRefUiState.isImageLocked] guard
-     * the per-image path uses.
+     * V_NOW (4-corner scale handles, SINGLE+GROUP
+     * unified path): per-AABB scale dispatch for
+     * the union of every selected image. The
+     * SINGLE case is a 1-element "group" — the
+     * SINGLE down handler builds a [Rect] from
+     * the image's rotated footprint AABB and
+     * passes it as `initialImageAabbs[id]`. The
+     * reducer applies
+     *   newImageAabb = pivot + (initialAabb - pivot) * factor
+     * for each member, so the rendered group AABB
+     * (the union of per-image new AABBs) is
+     * automatically pinned at [pivotX], [pivotY]
+     * — which is the opposite (anchor) corner
+     * from the one the user grabbed. This is the
+     * same code path the multi-select uses, so
+     * SINGLE and GROUP behave identically.
      */
     data class SetSelectedImagesScale(
-        val absoluteScales: Map<String, Float>,
-        val worldCenter: Offset,
+        // V_NOW (2026-06-10 group corner-handle
+        // anchor fix v2): replaced
+        // `absoluteScales + worldCenter +
+        //  initialGroupCenter` with a per-AABB
+        // geometry payload. The reducer now
+        // applies
+        //   newImageAabb = pivot
+        //     + (initialImageAabb - pivot) * factor
+        //   newImageCenter = center(newImageAabb)
+        //   newImageScale = initialScale * factor
+        // for each member, so the union (group
+        // AABB chrome) is automatically pinned at
+        // [pivotX, pivotY] with the rest scaled by
+        // [factor]. This works correctly for
+        // rotated members (the old geometry was
+        // only correct for axis-aligned members
+        // whose center matched the group AABB
+        // center).
+        val factor: Float,
+        val initialGroupAabb: Rect,
+        val initialImageAabbs: Map<String, Rect>,
+        val initialScales: Map<String, Float>,
+        val pivotX: Float,
+        val pivotY: Float,
     ) : PockRefAction
     data class BatchAlign(val mode: AlignMode) : PockRefAction
     data class BatchScale(val scaleFactor: Float) : PockRefAction

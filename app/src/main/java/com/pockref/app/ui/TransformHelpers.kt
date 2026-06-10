@@ -746,28 +746,106 @@ internal fun hitTestCornerHandle(
  * happening.
  */
 internal fun computeCornerDragResult(
-    initialMoveScreen: Offset,
-    initialAnchorScreen: Offset,
-    currentMoveScreen: Offset,
+    // V_NOW (2026-06-10 user feedback "对角锚点放大时会动"):
+    // The corner-drag algorithm now operates ENTIRELY in
+    // world coordinates. The previous version returned a
+    // screen-space center `(currentMove + initialAnchor) / 2`
+    // combined with a `newDiag/initialDiag` scale, then
+    // expected the pointer handler to convert that center
+    // back to world. That geometry only pins the anchor
+    // corner when the image is axis-aligned AND the user's
+    // finger moves exactly along the (initialMove -
+    // initialAnchor) diagonal. The moment the image is
+    // rotated (so its 4 corners are no longer on the
+    // axis-aligned diagonals) OR the user drags off-axis,
+    // the rendered TL lands at
+    //   newCenter + R(rot) * (-displaySize*scale/2)
+    //   ≠ initialAnchorWorld
+    // and the opposite handle visibly drifts. The drift
+    // grows linearly with `displaySize * scale`, which is
+    // exactly the "drift gets worse when zooming in" the
+    // user reported.
+    //
+    // The new geometry inverts the image-transform equation
+    // `corner_world = image.center + R(rot) * (corner_local * scale)`
+    // so the anchor corner is GUARANTEED to land at
+    // [initialAnchorWorld] for ANY rotation and ANY drag
+    // direction:
+    //   image.center = initialAnchorWorld
+    //                + R(rot) * (displaySize * scale / 2)
+    // The move corner then lands at
+    //   move_rendered = initialAnchorWorld
+    //                + R(rot) * (displaySize * scale)
+    // which is the AABB diagonal extended by the
+    // diagonal scale. Along the original (M - A) direction
+    // the move corner tracks the finger; off-axis
+    // components project onto the diagonal. This is the
+    // same anchor-pinned behavior Figma / Sketch use for
+    // bounding-box corner handles.
+    initialMoveWorld: Offset,
+    initialAnchorWorld: Offset,
+    currentMoveWorld: Offset,
+    worldWidth: Float,
+    worldHeight: Float,
+    rotationDegrees: Float,
 ): Pair<Float, Offset> {
     val initialDiag = hypot(
-        initialMoveScreen.x - initialAnchorScreen.x,
-        initialMoveScreen.y - initialAnchorScreen.y,
+        initialMoveWorld.x - initialAnchorWorld.x,
+        initialMoveWorld.y - initialAnchorWorld.y,
     )
     if (initialDiag <= 0.0001f) {
-        return Pair(1f, initialAnchorScreen)
+        return Pair(1f, initialAnchorWorld)
     }
     val newDiag = hypot(
-        currentMoveScreen.x - initialAnchorScreen.x,
-        currentMoveScreen.y - initialAnchorScreen.y,
+        currentMoveWorld.x - initialAnchorWorld.x,
+        currentMoveWorld.y - initialAnchorWorld.y,
     )
     val rawRatio = newDiag / initialDiag
-    val scaleFactor = softenScaleRatio(rawRatio)
-    val newCenterScreen = Offset(
-        (currentMoveScreen.x + initialAnchorScreen.x) / 2f,
-        (currentMoveScreen.y + initialAnchorScreen.y) / 2f,
+    val scaleFactor = if (kotlin.math.abs(rawRatio - 1f) <= CORNER_DRAG_DEADZONE) {
+        1f
+    } else {
+        rawRatio
+    }
+    val rad = Math.toRadians(rotationDegrees.toDouble())
+    val cosR = cos(rad).toFloat()
+    val sinR = sin(rad).toFloat()
+    val halfNewW = worldWidth * scaleFactor / 2f
+    val halfNewH = worldHeight * scaleFactor / 2f
+    // V_NOW (2026-06-10 sign-fix follow-up): the
+    // previous version of this formula was
+    //   newCenter = anchor + R(rot) * (dW*s/2, dH*s/2)
+    // which produced image.center = anchor + half-diagonal
+    // — so the rendered anchor corner landed at
+    // `center + R(rot) * (dW*s/2, dH*s/2) = anchor + R(rot)
+    // * (dW*s, dH*s)`, which is the MOVE corner's diagonal
+    // mirror, NOT the pinned anchor. The result was that
+    // every corner drag pinned the BR corner regardless of
+    // which handle the user actually grabbed.
+    //
+    // The image transform is
+    //   corner_world = image.center
+    //                + R(rot) * ((local - (dW/2, dH/2)) * scale)
+    // so for the local corner at (dW, dH) (the BR corner
+    // when scale > 0, which is the anchor for the TL-move
+    // case):
+    //   anchor_world = image.center
+    //                + R(rot) * ((dW, dH) - (dW/2, dH/2)) * scale
+    //                = image.center + R(rot) * (dW*s/2, dH*s/2)
+    // Solving for image.center:
+    //   image.center = anchor_world - R(rot) * (dW*s/2, dH*s/2)
+    // The move corner is at the diagonal mirror, so its
+    // rendered position is:
+    //   move_world = anchor - R(rot) * (dW*s/2, dH*s/2)
+    //              + R(rot) * (-dW*s/2, -dH*s/2)
+    //              = anchor - R(rot) * (dW*s, dH*s)
+    // i.e. it tracks the finger along the original
+    // diagonal direction (and the off-axis component
+    // projects onto that diagonal).
+    val newCenterWorld = Offset(
+        initialAnchorWorld.x - (halfNewW * cosR - halfNewH * sinR),
+        initialAnchorWorld.y - (halfNewW * sinR + halfNewH * cosR),
     )
-    return Pair(scaleFactor, newCenterScreen)
+    return Pair(scaleFactor, newCenterWorld)
 }
 
 /**
@@ -835,6 +913,48 @@ internal fun groupSelectionAabb(selected: List<SceneImage>): GroupAabb {
         center = Offset((left + right) / 2f, (top + bottom) / 2f),
         width = (right - left).coerceAtLeast(0f),
         height = (bottom - top).coerceAtLeast(0f),
+    )
+}
+
+/**
+ * V_NOW (4-corner scale handles, MULTI/BOX path): the
+ * rotated footprint AABB of a SINGLE image in world
+ * coords — i.e. the smallest axis-aligned rectangle
+ * that contains the image's 4 corners after applying
+ * `displaySize × scale × R(rot)` around [center].
+ *
+ * Used by the group corner-drag down handler to
+ * capture each member's pre-drag AABB so the reducer
+ * can apply
+ *   newImageAabb = pivot + (initialImageAabb - pivot) * factor
+ * on every move frame, producing a union (= group
+ * AABB chrome) that's automatically pinned at the
+ * anchor corner A. See the
+ * [PockRefViewModelBatch.setSelectedImagesScale]
+ * comment for the geometry.
+ *
+ * Pure function: no I/O, no allocation beyond the
+ * result rect.
+ */
+internal fun rotatedFootprintAabb(
+    center: Offset,
+    displayW: Float,
+    displayH: Float,
+    scale: Float,
+    rotationDegrees: Float,
+): Rect {
+    val halfW = displayW * scale / 2f
+    val halfH = displayH * scale / 2f
+    val theta = Math.toRadians(rotationDegrees.toDouble())
+    val absCos = kotlin.math.abs(kotlin.math.cos(theta)).toFloat()
+    val absSin = kotlin.math.abs(kotlin.math.sin(theta)).toFloat()
+    val aabbHalfW = absCos * halfW + absSin * halfH
+    val aabbHalfH = absSin * halfW + absCos * halfH
+    return Rect(
+        left = center.x - aabbHalfW,
+        top = center.y - aabbHalfH,
+        right = center.x + aabbHalfW,
+        bottom = center.y + aabbHalfH,
     )
 }
 
@@ -940,8 +1060,23 @@ internal fun computeGroupCornerDragResult(
         currentMoveScreen.x - initialAnchorScreen.x,
         currentMoveScreen.y - initialAnchorScreen.y,
     )
+    // V_NOW (2026-06-10 user feedback "对角圆点还是会移动"):
+    // Same reasoning as [computeCornerDragResult] — the
+    // per-frame scale and the new group AABB center must be
+    // derived from the SAME raw ratio. A softened curve here
+    // would shrink the rendered box relative to the actual
+    // finger position, so the opposite corner handle appears
+    // to drift toward the move-handle instead of staying
+    // pinned. We apply the symmetric deadzone (the only
+    // smoothing that doesn't break the pinned-anchor
+    // invariant) and use raw `newDiag/initialDiag` as the
+    // per-image scale factor.
     val rawRatio = newDiag / initialGroupDiagScreen
-    val scaleFactor = softenScaleRatio(rawRatio)
+    val scaleFactor = if (kotlin.math.abs(rawRatio - 1f) <= CORNER_DRAG_DEADZONE) {
+        1f
+    } else {
+        rawRatio
+    }
     val newCenterScreen = Offset(
         (currentMoveScreen.x + initialAnchorScreen.x) / 2f,
         (currentMoveScreen.y + initialAnchorScreen.y) / 2f,
@@ -1018,21 +1153,3 @@ internal fun computeGroupCornerDragResult(
  *     a 5% jump).
  */
 private const val CORNER_DRAG_DEADZONE = 0.03f
-
-/**
- * V_NOW (corner drag scaling sensitivity): applies a
- * softening curve to the raw diagonal ratio so the
- * scaling feels proportional to finger travel distance.
- *
- * The raw ratio is `newDiagonal / initialDiagonal`.
- * Power curve `rawRatio ^ 0.7` compresses the ratio
- * so that large finger motions produce moderate scale
- * changes while keeping the scaling smooth and
- * proportional. Deadzone of 3% eliminates micro-jitter.
- */
-private fun softenScaleRatio(rawRatio: Float): Float {
-    if (rawRatio <= 0f) return 1f
-    val symmetricRatio = maxOf(rawRatio, 1f / rawRatio)
-    if (symmetricRatio <= 1f + CORNER_DRAG_DEADZONE) return 1f
-    return Math.pow(rawRatio.toDouble(), 0.7).toFloat()
-}

@@ -650,8 +650,13 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  }
  }
             is PockRefAction.TransformSelectedImage -> transformController.transformSelectedImage(action.scaleChange, action.rotationChange, action.pan)
-            is PockRefAction.SetSelectedImageScale -> transformController.setSelectedImageScale(action.newScale, action.worldCenter, action.worldPivot)
-            is PockRefAction.SetSelectedImagesScale -> batchController.setSelectedImagesScale(action.absoluteScales, action.worldCenter)
+            is PockRefAction.SetSelectedImagesScale -> batchController.setSelectedImagesScale(
+                action.factor,
+                action.initialImageAabbs,
+                action.initialScales,
+                action.pivotX,
+                action.pivotY,
+            )
             is PockRefAction.SetColorAdjust -> transformController.updateColorAdjust(action.brightness, action.contrast, action.saturation)
             PockRefAction.RotateLeft -> transformController.rotateSelected(-90f)
             PockRefAction.RotateRight -> transformController.rotateSelected(90f)
@@ -708,16 +713,17 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     )
                 }
             }
-            // V_NOW (working-tree stub): canvas-freeze toggle
-            // is referenced from the settings panel but no
-            // scene state currently depends on it. The action
-            // exists as a hook for a future "freeze canvas
-            // (disable all gestures)" feature; the onAction
-            // dispatch is a no-op until then. Without this
-            // branch, [onAction]'s `when` expression would
-            // fail exhaustive checking on the new action
-            // variant.
-            PockRefAction.ToggleLockCanvasFrozen -> Unit
+            // V_NOW (2026-06-10 bugfix): the previous
+            // `ToggleLockCanvasFrozen -> Unit` stub
+            // above was shadowing the real implementation
+            // directly below it; Kotlin's `when` matches
+            // in source order so the stub fired first and
+            // the real branch was unreachable, which is
+            // why long-pressing the global-lock button
+            // never engaged freeze mode. The stub is
+            // removed; the real `ToggleLockCanvasFrozen`
+            // branch further below is now the only
+            // branch for this action.
  // V_NOW (2026-06-09 user spec "长按全局锁定时画布不可移动
  // 和旋转,同时按钮会变红"): the global-lock button's
  // onLongClick handler. Toggles

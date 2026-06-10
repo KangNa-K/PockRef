@@ -748,33 +748,21 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
      * its screen → world conversion).
      */
     internal fun setSelectedImageScale(newScale: Float, worldCenter: Offset, worldPivot: Offset) {
-        val stateBefore = mainVm._uiState.value
-        val targetId = stateBefore.selectedImageId
-            ?: stateBefore.selectedImageIds.firstOrNull()
-            ?: return
-        if (stateBefore.isImageLocked(targetId)) return
-        val target = stateBefore.images.firstOrNull { it.id == targetId } ?: return
-        val clamped = newScale.coerceIn(0.1f, 8.0f)
-        if (clamped == target.scale && worldCenter == target.center) return
-        // [worldPivot] is captured for shape
-        // parity with [transformSelectedImage]
-        // and is unused here — the absolute form
-        // takes [worldCenter] as the new center
-        // directly. The argument stays in the
-        // signature so a future maintainer who
-        // wants to derive worldCenter from
-        // worldPivot (e.g. when the pointer
-        // handler doesn't supply it) can wire
-        // that up without changing the public
-        // action shape.
-        @Suppress("UNUSED_VARIABLE")
-        val _pivot = worldPivot
-        mainVm.updateSceneForGesture {
-            copy(images = images.map { image ->
-                if (image.id != targetId) image
-                else image.copy(scale = clamped, center = worldCenter)
-            })
-        }
+        // V_NOW (2026-06-10 single-image corner-handle
+        // v3): the legacy SINGLE-path absolute
+        // `(newScale, worldCenter, worldPivot)`
+        // reducer is now UNREACHABLE — SINGLE and
+        // GROUP corner drags both dispatch
+        // [PockRefAction.SetSelectedImagesScale]
+        // (see the pointer handler in
+        // [PockRefApp.PockRefCanvas]). The
+        // function body is kept here (with a
+        // no-op early return) so any stale call
+        // site that still has a reference to it
+        // compiles. It will be deleted in a
+        // follow-up commit. The new reducer lives
+        // in
+        // [com.pockref.app.ui.PureRefViewModelBatch.setSelectedImagesScale].
     }
 
     internal fun moveImage(imageId: String, delta: Offset) {

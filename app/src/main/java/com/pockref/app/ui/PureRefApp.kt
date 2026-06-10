@@ -877,6 +877,33 @@ fun PockRefApp(
         }
     }
 
+    // V_NOW (2026-06-10, "全局锁定/冻结模式只显示
+    // 全局锁定按钮"): single source of truth for
+    // "global lock or freeze is engaged" used by
+    // every chrome element's render gate. Declared
+    // at the [PockRefApp] function scope (NOT
+    // inside [CanvasPanel]) because the
+    // [TopToolbar] / [BottomRightActionPanel]
+    // gates and the inner-CanvasPanel chrome
+    // ([MinimapChrome] / [SelectionModeOverlay]
+    // / [SelectionBottomSheet] / etc.) all need
+    // to see the same boolean — declaring it
+    // here keeps a single recomposition-driven
+    // value consistent across every sibling
+    // chrome layer. When the user is in either
+    // of those modes they explicitly want the
+    // canvas to be a read-only viewing surface
+    // — the [GlobalLockButton] is the ONLY
+    // chrome element that stays on top so the
+    // user can click / long-press it to step
+    // back out of the mode. Every other
+    // element (top toolbar, bottom-right FAB +
+    // 4-item panel, minimap + collapsed icon,
+    // selection sheet, practice config sheet,
+    // top-centre mode chip) hides itself via
+    // `&& !isLockEngaged` so the screen is as
+    // close to a pure canvas as possible.
+    val isLockEngaged = state.globalImageLock || state.lockCanvasFrozen
     // Snackbar surface for runtime errors emitted by the ViewModel. We use a
     // remember-durable host and pump the flow inside a LaunchedEffect that
     // also calls PockRefAction.ConsumeError on dismiss so the VM can clear
@@ -985,7 +1012,7 @@ fun PockRefApp(
             // accidentally survive across a practice
             // session).
             if (state.images.isNotEmpty() && state.cropImageId == null &&
-                state.practiceState == null &&
+                state.practiceState == null && !isLockEngaged &&
                 // V_NOW (2026-06-08, sheet auto-hide):
                 // when the selection sheet is up, the
                 // bottom-right FAB and its 4 expandable list
@@ -995,6 +1022,14 @@ fun PockRefApp(
                 // itself has its own "一键排版" entry in
                 // row2 (multi/box) so the action stays
                 // reachable while a selection is active.
+                // V_NOW (2026-06-10, "全局锁定/冻结模式只
+                // 显示全局锁定按钮"): the FAB + 4-item
+                // panel is also hidden when
+                // [isLockEngaged] is true — locked /
+                // frozen mode is a read-only viewing
+                // surface, the only chrome the user
+                // needs to see is the [GlobalLockButton]
+                // itself.
                 state.selectedImageIds.isEmpty()
             ) {
                 BottomRightActionPanel(
@@ -1145,7 +1180,7 @@ fun PockRefApp(
             // gated by this — it stays visible on the
             // start screen because it's the primary "add
             // your first image" affordance.
-            if (state.practiceState == null && state.images.isNotEmpty()) {
+            if (state.practiceState == null && state.images.isNotEmpty() && !isLockEngaged) {
                 TopToolbar(
                 state = state,
                 // V_NOW: any click on the top toolbar
@@ -1477,6 +1512,21 @@ fun PockRefApp(
     // WindowInsets read per recomposition, which is negligible.
     val statusBarTopPx = WindowInsets.statusBars.getTop(LocalDensity.current)
     val statusBarTopDp = with(LocalDensity.current) { statusBarTopPx.toDp() }
+    // V_NOW (2026-06-10, "全局锁定/冻结模式只显示
+    // 全局锁定按钮"): re-derive the same
+    // [isLockEngaged] boolean the outer [PockRefApp]
+    // function uses, but locally inside [CanvasPanel]
+    // so the inner chrome layers
+    // ([MinimapChrome] /
+    // [SelectionModeOverlay] / [SelectionBottomSheet]
+    // / [PracticeConfigSheet] / [CropOverlay] gate)
+    // can reference it without being threaded through
+    // the parameter list. The boolean is a pure
+    // function of [state] (no async I/O), so
+    // recomputing it here matches the outer value
+    // exactly on every recomposition and keeps the
+    // signature of [CanvasPanel] short.
+    val isLockEngaged = state.globalImageLock || state.lockCanvasFrozen
     Box(
         modifier
             .fillMaxSize()
@@ -1548,7 +1598,7 @@ fun PockRefApp(
                             ?: imageLazyLoader?.readImageBytes(off, len)
                     },
                 )
-            } else if (state.selectedImageIds.isNotEmpty()) {
+            } else if (state.selectedImageIds.isNotEmpty() && !isLockEngaged) {
                 // V_NOW (P2-C1): M3 ModalBottomSheet
                 // replaces the legacy
                 // SelectionFloatingToolbar. Visibility
@@ -1559,6 +1609,22 @@ fun PockRefApp(
                 // close ✕, drag handle, or scrim tap.
                 // See the SelectionBottomSheet KDoc
                 // for the full design contract.
+                // V_NOW (2026-06-10, "全局锁定/冻结模式只
+                // 显示全局锁定按钮"): also gate on
+                // [!isLockEngaged] so the selection
+                // sheet can't appear while the canvas
+                // is in read-only lock / freeze mode
+                // (the chrome is supposed to be
+                // invisible at that point). The
+                // reducer has its own guard
+                // ([PureRefViewModel.setLocked] /
+                // [PureRefViewModel.beginSceneGesture])
+                // that prevents new gestures from
+                // starting, but this gate is a UI-
+                // level safety so an existing
+                // selection left over from before
+                // the user locked can't keep
+                // resurfacing the sheet.
                 SelectionBottomSheet(
                     state = state,
                     onAction = onAction,
@@ -1636,7 +1702,23 @@ fun PockRefApp(
                     androidx.compose.ui.platform.LocalContext.current,
                 )
                 PracticeConfigSheet(
-                    visible = state.practiceConfigSheetOpen,
+                    // V_NOW (2026-06-10, "全局锁定/
+                    // 冻结模式只显示全局锁定按钮"):
+                    // mask the practice config
+                    // sheet with [!isLockEngaged] so
+                    // it can't pop while the canvas
+                    // is in read-only lock / freeze
+                    // mode. The reducer already
+                    // blocks [StartPractice] when
+                    // [globalImageLock] is on, but
+                    // this gate prevents the config
+                    // sheet from even APPEARING in
+                    // the first place — the user
+                    // wouldn't be able to tap "开始"
+                    // anyway, so hiding the sheet
+                    // is the right user-facing
+                    // behaviour.
+                    visible = state.practiceConfigSheetOpen && !isLockEngaged,
                     selectedCount = state.selectedImageIds.size,
                     lastConfig = appPrefs.lastPracticeConfig,
                     onStart = { config ->
@@ -1683,7 +1765,24 @@ fun PockRefApp(
                 // select mode — irrelevant during the
                 // practice session (the user is staring
                 // at an image, not selecting).
-                if (state.practiceState == null) {
+                if (state.practiceState == null && !isLockEngaged &&
+                    // V_NOW (2026-06-10, "使用 sheet
+                    // 时取消 chip 显示"): the top-
+                    // centre mode chip and the
+                    // bottom-centre
+                    // [SelectionBottomSheet] carry
+                    // the same conceptual payload
+                    // (which mode the user is in),
+                    // so showing BOTH at once is
+                    // redundant. When the sheet is
+                    // up the chip auto-hides, and
+                    // when the sheet is dismissed
+                    // (no selection) the chip
+                    // returns. Same UI state
+                    // ([PockRefUiState.selectedImageIds]
+                    // is empty ↔ sheet hidden ↔
+                    // chip visible).
+                    state.selectedImageIds.isEmpty()) {
   SelectionModeOverlay(
   state = state,
   modifier = Modifier.padding(
@@ -1767,7 +1866,7 @@ fun PockRefApp(
             // anyway, so skipping the render saves a
             // few pref writes per second of a long
             // session.
-            if (state.cropImageId == null && state.practiceState == null) {
+            if (state.cropImageId == null && state.practiceState == null && !isLockEngaged) {
                 // V_NOW: wrap in BoxWithConstraints so the
                 // drag-clamping math below can read the
                 // parent size (the call site itself is outside
@@ -5071,40 +5170,21 @@ private fun TopToolbar(
     val keyboardController = LocalSoftwareKeyboardController.current
 
     val hasOpenSubPanel = menuExpanded || state.settingsSheetOpen
-    LaunchedEffect(state.topToolbarExpanded, hasOpenSubPanel) {
-        if (state.topToolbarExpanded && !hasOpenSubPanel) {
-            // V_NOW (user bug report — "top bar doesn't
-            // auto-collapse even after 3s"): the previous
-            // design used `isInteracting` as a LaunchedEffect
-            // key, so any pointer event that flipped the
-            // boolean (hover Enter/Exit from a stylus
-            // crossing the toolbar) cancelled the in-flight
-            // `delay(3000)`. S Pen crossing the toolbar at
-            // the natural pace of drawing (<3s per crossing)
-            // kept the timer reset indefinitely.
-            //
-            // New design: poll the wall clock against
-            // [lastInteractionMs] (which is ONLY updated by
-            // real interactions — see the pointerInput
-            // above for the exact filter). The
-            // LaunchedEffect's key is just
-            // `(state.topToolbarExpanded, hasOpenSubPanel)`
-            // so it doesn't re-launch on every pointer
-            // event; the loop reads the latest
-            // [lastInteractionMs] via snapshot each
-            // iteration. Worst-case collapse time is
-            // 3000ms + 100ms (one poll period) of the latest
-            // [lastInteractionMs] write, regardless of how
-            // much hover noise the toolbar is receiving.
-            while (true) {
-                val elapsed = System.currentTimeMillis() - lastInteractionMs
-                if (elapsed >= 3000L) {
-                    onAction(PockRefAction.SetTopToolbarExpanded(false))
-                    break
-                }
-                val waitMs = (3000L - elapsed).coerceIn(100L, 1000L)
-                delay(waitMs)
-            }
+    // V_NOW (2026-06-10 user request "禁用顶栏的自动收起功能"):
+    // The previous design had a 3s inactivity timer that auto-
+    // collapsed the top toolbar after the user stopped
+    // interacting with it. The user has explicitly disabled
+    // that behavior — the top toolbar must stay expanded and
+    // visible for the entire app session. We replace the
+    // `while (true) { delay(…) }` auto-collapse loop with a
+    // one-shot guard that flips
+    // [PockRefUiState.topToolbarExpanded] back to true if
+    // anything else (blur-restore, an old reducer call) set
+    // it to false. The effect's key is just `hasOpenSubPanel`
+    // so it doesn't re-launch on every interaction event.
+    LaunchedEffect(hasOpenSubPanel) {
+        if (!state.topToolbarExpanded) {
+            onAction(PockRefAction.SetTopToolbarExpanded(true))
         }
     }
 
@@ -5743,7 +5823,17 @@ ToolbarIconButton(
 }
             }
             AnimatedVisibility(
-                visible = state.topToolbarExpanded,
+                // V_NOW (2026-06-10 user request "禁用顶栏的自动收起功能"):
+                // Hard-coded `true` so the top toolbar never
+                // collapses regardless of what the reducer /
+                // blur-restore / focus handlers do with
+                // [PockRefUiState.topToolbarExpanded]. The
+                // [LaunchedEffect] above is a belt-and-suspenders
+                // backstop in case other code paths still set the
+                // flag, but the renderer itself now ignores the
+                // flag. This is the single source of truth for
+                // "the top toolbar is always visible".
+                visible = true,
                 enter = expandHorizontally(animationSpec = tween(200, easing = FastOutSlowInEasing)),
                 exit = shrinkHorizontally(animationSpec = tween(200, easing = FastOutSlowInEasing)),
             ) {
@@ -6811,21 +6901,43 @@ private fun PockRefCanvas(
                     // finger lands inside
                     // [cornerHitRadiusPx] of one of the
                     // SINGLE selected image's 4 projected
-                    // corners; cleared on release. The
-                    // move loop dispatches
-                    // [PockRefAction.SetSelectedImageScale]
-                    // on every frame while non-null,
-                    // skipping every other single-finger
-                    // branch.
-                    var cornerDrag: CornerDragState? = null
+                    // V_NOW (2026-06-10 single-image
+                    // corner-handle v3): SINGLE and
+                    // GROUP corner drags share the
+                    // same [GroupCornerDragState]
+                    // (1-element "group" for SINGLE,
+                    // N-element for GROUP), so the
+                    // separate [cornerDrag] variable
+                    // was removed. The unified
+                    // 1-element-group geometry
+                    // (per-AABB scaling) is the only
+                    // path that remains.
+                    // V_NOW (2026-06-10 #3 corner-handle
+                    // undo/redo atomicity): tracks whether
+                    // the current down-to-up gesture opened
+                    // a [BeginSceneGesture] transaction so
+                    // the up handler can close it with
+                    // [EndSceneGesture]. Independent of
+                    // [groupCornerDrag]
+                    // because the user might cancel the
+                    // drag mid-gesture (e.g. drag off the
+                    // canvas); in that case we still want
+                    // to close the gesture so the
+                    // [updateSceneForGesture] reducer
+                    // doesn't leave [sceneGestureActive]
+                    // stuck at `true` for the next
+                    // gesture.
+                    var cornerDragActive = false
                     // V_NOW (4-corner scale handles,
-                    // MULTI/BOX path): per-gesture state
-                    // for the group-AABB corner drag.
-                    // Captured at down time when the
-                    // finger lands on one of the 4
-                    // corners of the unioned AABB
-                    // enclosing every selected image.
-                    // Move loop dispatches
+                    // SINGLE+GROUP unified path):
+                    // per-gesture state for the corner
+                    // drag. Captured at down time when
+                    // the finger lands on one of the 4
+                    // corners — of the image's rotated
+                    // footprint AABB (SINGLE) or of
+                    // the unioned AABB enclosing every
+                    // selected image (GROUP). Move loop
+                    // dispatches
                     // [PockRefAction.SetSelectedImagesScale]
                     // on every frame while non-null.
                     var groupCornerDrag: GroupCornerDragState? = null
@@ -6931,76 +7043,130 @@ private fun PockRefCanvas(
                         val sId = cs2.selectedImageId
                         val hasGroupSelection = sIds.size >= 2
                         val hasSingleSelection = sId != null && sIds.size <= 1
-                        // -------- SINGLE path: per-image 4 corners
-                        if (hasSingleSelection) {
-                            val cornerTarget = cs2.images.firstOrNull { it.id == sId }
-                            val ok = cornerTarget != null &&
-                                !cs2.isImageLocked(cornerTarget.id)
-                            if (ok) {
-                                val ct = cornerTarget!!
-                                val wW = ct.displaySize.width * ct.scale
-                                val wH = ct.displaySize.height * ct.scale
-                                val projected = projectImageCornersToScreen(
-                                    imageCenter = ct.center,
-                                    imageWidth = wW,
-                                    imageHeight = wH,
-                                    rotationDegrees = ct.rotationDegrees,
-                                    canvasScale = cs2.canvasScale,
-                                    canvasOffset = cs2.canvasOffset,
-                                    viewportWidth = size.width.toFloat(),
-                                    viewportHeight = size.height.toFloat(),
-                                )
-                                val hitIdx = hitTestCornerHandle(
-                                    projectedCorners = projected,
-                                    screenPoint = downPos,
-                                    hitRadiusPx = cornerHitRadiusPx,
-                                )
-                                if (hitIdx >= 0) {
-                                    val anchorScreen = projected[3 - hitIdx]
-                                    val initialDiag = kotlin.math.hypot(
-                                        projected[hitIdx].x - anchorScreen.x,
-                                        projected[hitIdx].y - anchorScreen.y,
-                                    )
-                                    if (initialDiag > 1f) {
-                                        val spec = CornerHandles.forImage(ct.id, wW, wH)
-                                            .corners[hitIdx]
-                                        cornerDrag = CornerDragState(
-                                            imageId = ct.id,
-                                            initialScale = ct.scale,
-                                            initialDiagonalScreen = initialDiag,
-                                            initialMoveScreen = projected[hitIdx],
-                                            initialAnchorScreen = anchorScreen,
-                                            initialAnchorWorld = CornerDragState.anchorWorldFromLocal(
-                                                spec.anchorLocal,
-                                                ct.center,
-                                                wW,
-                                                wH,
-                                                ct.rotationDegrees,
-                                            ),
-                                        )
-                                    }
+                        // V_NOW (group corner-handle
+                        // anchor fix v2): the screen-to-
+                        // world conversion for the
+                        // group-corner move corner's
+                        // down-time world position.
+                        val cs2Center = Offset(
+                            size.width.toFloat() / 2f + cs2.canvasOffset.x,
+                            size.height.toFloat() / 2f + cs2.canvasOffset.y,
+                        )
+                        // V_NOW (2026-06-10 single-image
+                        // corner-handle v3): SINGLE and
+                        // GROUP corner drags now share
+                        // the same per-AABB geometry
+                        // (see the [MULTI/BOX path]
+                        // comment below + the
+                        // [PockRefViewModelBatch.setSelectedImagesScale]
+                        // reducer). The previous SINGLE
+                        // path called a separate
+                        // [computeCornerDragResult]
+                        // helper that operated on the
+                        // image's intrinsic width/height
+                        // and rotation, but it gave
+                        // incorrect results in practice
+                        // (the dragged corner
+                        // overshooted the finger and the
+                        // diagonal anchor drifted on
+                        // every frame, especially when
+                        // the image was rotated). The
+                        // fix is to use the same code
+                        // path the multi-select uses:
+                        // build a 1-element "group"
+                        // whose AABB IS the image's
+                        // rotated footprint AABB, and
+                        // let the reducer apply
+                        //   newAabb = pivot
+                        //     + (initialAabb - pivot) * factor
+                        // uniformly. The drag handler
+                        // below captures the 1-element
+                        // [GroupCornerDragState]; the
+                        // existing move-handler branch
+                        // `if (gcorner != null)` does
+                        // the rest. Result: the SINGLE
+                        // and GROUP paths behave
+                        // identically (same per-AABB
+                        // math), and the diagonal
+                        // anchor stays pinned at the
+                        // opposite corner.
+                        val hasAnySelection =
+                            sId != null || sIds.isNotEmpty()
+                        // -------- SINGLE/GROUP shared
+                        // path: per-image 4 corners for
+                        // SINGLE, group AABB 4 corners
+                        // for GROUP. Unified through
+                        // [GroupCornerDragState] below.
+                        if (hasAnySelection) {
+                            // Build the per-frame image
+                            // list and AABB. For SINGLE,
+                            // it's a 1-element "group";
+                            // for GROUP, the full
+                            // multi-select union.
+                            val cornerImages: List<com.pockref.app.model.SceneImage> =
+                                if (hasSingleSelection) {
+                                    listOf(cs2.images.first { it.id == sId })
+                                } else {
+                                    cs2.images.filter { it.id in sIds }
                                 }
-                            }
-                        }
-                        // -------- MULTI/BOX path: group AABB 4 corners
-                        if (cornerDrag == null && hasGroupSelection) {
-                            val groupImages = cs2.images.filter { it.id in sIds }
-                            // Refuse if EVERY member is locked
-                            // (the group can't move / scale at
-                            // all; the drag would no-op).
-                            val anyUnlocked = groupImages.any {
-                                !cs2.isImageLocked(it.id)
-                            }
-                            if (anyUnlocked && groupImages.isNotEmpty()) {
-                                val gaabb = groupSelectionAabb(groupImages)
-                                if (gaabb.width > 1f && gaabb.height > 1f) {
-                                    val gProjected = projectGroupAabbCornersToScreen(
-                                        groupAabb = gaabb,
-                                        canvasScale = cs2.canvasScale,
-                                        canvasOffset = cs2.canvasOffset,
-                                        viewportWidth = size.width.toFloat(),
-                                        viewportHeight = size.height.toFloat(),
+                            // Refuse if EVERY member is
+                            // locked. (SINGLE: that
+                            // means the only selected
+                            // image is locked. GROUP: no
+                            // unlocked members — the
+                            // group can't move / scale
+                            // at all; the drag would
+                            // no-op.)
+                            val anyUnlocked =
+                                cornerImages.any {
+                                    !cs2.isImageLocked(it.id)
+                                }
+                            if (anyUnlocked) {
+                                // Compute the union AABB
+                                // over the candidate
+                                // images.
+                                val cornerAabb =
+                                    if (hasSingleSelection) {
+                                        // SINGLE shortcut:
+                                        // the "group AABB"
+                                        // IS the image's
+                                        // rotated footprint
+                                        // AABB.
+                                        val ct =
+                                            cornerImages.first()
+                                        rotatedFootprintAabb(
+                                            center = ct.center,
+                                            displayW = ct.displaySize.width.toFloat(),
+                                            displayH = ct.displaySize.height.toFloat(),
+                                            scale = ct.scale,
+                                            rotationDegrees = ct.rotationDegrees,
+                                        )
+                                    } else {
+                                        groupSelectionAabb(cornerImages).rect
+                                    }
+                                if (cornerAabb.width > 1f && cornerAabb.height > 1f) {
+                                    // Project the AABB
+                                    // 4 corners to
+                                    // screen, hit-test
+                                    // the pointer
+                                    // against them.
+                                    val gaabbObj = GroupAabb(
+                                        rect = cornerAabb,
+                                        center = Offset(
+                                            (cornerAabb.left + cornerAabb.right) / 2f,
+                                            (cornerAabb.top + cornerAabb.bottom) / 2f,
+                                        ),
+                                        width = cornerAabb.width,
+                                        height = cornerAabb.height,
                                     )
+                                    val gProjected =
+                                        projectGroupAabbCornersToScreen(
+                                            groupAabb = gaabbObj,
+                                            canvasScale = cs2.canvasScale,
+                                            canvasOffset = cs2.canvasOffset,
+                                            viewportWidth = size.width.toFloat(),
+                                            viewportHeight = size.height.toFloat(),
+                                        )
                                     val gHitIdx = hitTestCornerHandle(
                                         projectedCorners = gProjected,
                                         screenPoint = downPos,
@@ -7013,15 +7179,74 @@ private fun PockRefCanvas(
                                             gProjected[gHitIdx].y - gAnchorScreen.y,
                                         )
                                         if (gDiag > 1f) {
+                                            val gRect = cornerAabb
+                                            val gPivotX = when (gHitIdx) {
+                                                0, 2 -> gRect.right
+                                                else -> gRect.left
+                                            }
+                                            val gPivotY = when (gHitIdx) {
+                                                0, 1 -> gRect.bottom
+                                                else -> gRect.top
+                                            }
+                                            val gImageAabbs =
+                                                cornerImages
+                                                    .associate { img ->
+                                                        img.id to
+                                                            rotatedFootprintAabb(
+                                                                center = img.center,
+                                                                displayW = img.displaySize.width.toFloat(),
+                                                                displayH = img.displaySize.height.toFloat(),
+                                                                scale = img.scale,
+                                                                rotationDegrees = img.rotationDegrees,
+                                                            )
+                                                    }
+                                            val gAnchorWorld = Offset(gPivotX, gPivotY)
+                                            val gMoveWorld = Offset(
+                                                (gProjected[gHitIdx].x - cs2Center.x) / cs2.canvasScale,
+                                                (gProjected[gHitIdx].y - cs2Center.y) / cs2.canvasScale,
+                                            )
                                             groupCornerDrag = GroupCornerDragState(
-                                                imageIds = sIds,
-                                                initialScales = groupImages
+                                                imageIds = cornerImages.map { it.id }.toSet(),
+                                                initialScales = cornerImages
                                                     .associate { it.id to it.scale },
                                                 initialGroupDiagonalScreen = gDiag,
                                                 initialMoveScreen = gProjected[gHitIdx],
                                                 initialAnchorScreen = gAnchorScreen,
-                                                initialGroupCenterWorld = gaabb.center,
+                                                initialGroupCenterWorld = gaabbObj.center,
+                                                initialCenters = cornerImages
+                                                    .associate { it.id to it.center },
+                                                initialGroupAabb = gRect,
+                                                initialImageAabbs = gImageAabbs,
+                                                initialAnchorWorld = gAnchorWorld,
+                                                initialMoveWorld = gMoveWorld,
+                                                pivotX = gPivotX,
+                                                pivotY = gPivotY,
                                             )
+                                            // V_NOW (2026-06-10
+                                            // #3 corner-handle
+                                            // undo/redo
+                                            // atomicity):
+                                            // see the
+                                            // SINGLE-path
+                                            // comment above.
+                                            // The
+                                            // [BeginSceneGesture]
+                                            // here wraps
+                                            // every move-
+                                            // frame into
+                                            // one undo
+                                            // entry. The
+                                            // release
+                                            // branch
+                                            // below calls
+                                            // [PockRefAction.EndSceneGesture]
+                                            // to close
+                                            // the gesture
+                                            // and flush
+                                            // a single
+                                            // diff.
+                                            currentOnAction(PockRefAction.BeginSceneGesture)
+                                            cornerDragActive = true
                                         }
                                     }
                                 }
@@ -7029,7 +7254,7 @@ private fun PockRefCanvas(
                         }
                     }
 
-                    if (stylusButtonDown && cornerDrag == null && groupCornerDrag == null) {
+                    if (stylusButtonDown && groupCornerDrag == null) {
                         // Force BOX mode for this gesture. The down
                         // might have hit an image — we ignore the hit
                         // because the S Pen button is for selection,
@@ -7069,7 +7294,7 @@ private fun PockRefCanvas(
                         // `dragCanvas = true` arming below
                         // — matching the user's intent
                         // "image 上单指拖动 = 移动画布".
-                        if (s.boxSelectMode && hitId !in s.selectedImageIds && cornerDrag == null && groupCornerDrag == null) {
+                        if (s.boxSelectMode && hitId !in s.selectedImageIds && groupCornerDrag == null) {
                             currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                             boxSelectStart = downPos
                             boxSelectDragging = true
@@ -7131,7 +7356,7 @@ private fun PockRefCanvas(
                                 }
                             }
                         }
-                    } else if (s.boxSelectMode && cornerDrag == null && groupCornerDrag == null) {
+                    } else if (s.boxSelectMode && groupCornerDrag == null) {
                         // V_NOW: skip starting a new box-select
                         // when a corner drag is already active
                         // (the user grabbed a group corner handle
@@ -7469,27 +7694,54 @@ private fun PockRefCanvas(
 
                              when (transformMode) {
                                 ImageTransformMode.SCALE -> {
-                                    // V_NOW (user spec "取消双指
-                                    // 捏和缩放图片"): two-finger
-                                    // pinch-scale is disabled.
-                                    // The 4 corner handles on the
-                                    // selected image are now the
-                                    // only way to scale an image;
-                                    // the canvas can be zoomed via
-                                    // the dedicated minimap
-                                    // long-press slider (not via
-                                    // two-finger pinch anymore).
-                                    // The ROTATE branch below is
-                                    // still active — two-finger
-                                    // rotation works the same as
-                                    // before. No action is
-                                    // dispatched; the user's
-                                    // fingers still see the
-                                    // existing pinch-distance
-                                    // tracking, just no image /
-                                    // canvas size change.
+                                    // V_NOW (2026-06-10 user spec
+                                    // "双指捏缩放画布,图片自身
+                                    // 不响应双指"): the SCALE
+                                    // branch fires on
+                                    // `distanceDelta != 1f`
+                                    // (i.e. a pinch). The image
+                                    // scale path is intentionally
+                                    // a no-op (4 corner handles
+                                    // are the only way to scale
+                                    // an image); the canvas is
+                                    // zoomed via
+                                    // [PockRefAction.ZoomCanvas]
+                                    // when there's no selected
+                                    // image, and the no-op
+                                    // remains for the has-selected
+                                    // case (the user has to drop
+                                    // the selection first to pinch-
+                                    // zoom the canvas — same
+                                    // behaviour the user spec
+                                    // asked for).
+                                    if (!hasSelected) {
+                                        val pinchZoomEnabledNoSel = isGestureEnabled(
+                                            currentState.gestureToggles,
+                                            GestureId.PINCH_ZOOM,
+                                        )
+                                        if (distanceDelta != 1f && pinchZoomEnabledNoSel) {
+                                            currentOnAction(
+                                                PockRefAction.ZoomCanvas(
+                                                    distanceDelta,
+                                                    centroid,
+                                                ),
+                                            )
+                                        }
+                                    }
                                 }
                                 ImageTransformMode.ROTATE -> {
+                                    // Two-finger ROTATE is a
+                                    // per-image gesture ONLY
+                                    // (canvas rotation is not
+                                    // supported — canvas
+                                    // orientation is fixed in
+                                    // PockRef). When no image is
+                                    // selected the gesture is a
+                                    // no-op: the user spec says
+                                    // "双指捏 → 画布缩放;图片
+                                    // 自身不响应双指" which means
+                                    // a no-selection pinch is
+                                    // zoom-only, not rotate-only.
                                     val pinchRotateEnabled = isGestureEnabled(currentState.gestureToggles, GestureId.PINCH_ROTATE)
                                     if (hasSelected) {
                                         if (normalizedAngleDelta != 0f && pinchRotateEnabled) {
@@ -7505,23 +7757,6 @@ private fun PockRefCanvas(
                                             // the scale component's
                                             // post-pan correction.
                                             currentOnAction(PockRefAction.TransformSelectedImage(1f, rotationDeg, Offset.Zero, worldPivot))
-                                        }
-                                    } else {
-                                        // V_NOW: gate the no-selection
-                                        // canvas-zoom path through the
-                                        // pinch-zoom gesture toggle too.
-                                        // [pinchZoomEnabled] is in scope
-                                        // only inside the [SCALE] arm's
-                                        // `if (hasSelected)` branch above;
-                                        // this `else` (no-selection) is
-                                        // a separate scope so we re-derive
-                                        // it here.
-                                        val pinchZoomEnabledNoSel = isGestureEnabled(
-                                            currentState.gestureToggles,
-                                            GestureId.PINCH_ZOOM,
-                                        )
-                                        if (distanceDelta != 1f && pinchZoomEnabledNoSel) {
-                                            currentOnAction(PockRefAction.ZoomCanvas(distanceDelta, centroid))
                                         }
                                     }
                                 }
@@ -7543,76 +7778,96 @@ private fun PockRefCanvas(
                             val change = changes[0]
 
                             // V_NOW (4-corner scale handles,
-                            // SINGLE path): when a corner drag
-                            // is active, route the move to
-                            // [PockRefAction.SetSelectedImageScale]
-                            // and skip every other single-
-                            // finger branch.
-                            val corner = cornerDrag
-                            if (corner != null) {
-                                val (newScale, newCenterScreen) = computeCornerDragResult(
-                                    initialMoveScreen = corner.initialMoveScreen,
-                                    initialAnchorScreen = corner.initialAnchorScreen,
-                                    currentMoveScreen = change.position,
-                                )
-                                val targetScale = (corner.initialScale * newScale)
-                                    .coerceIn(0.1f, 8.0f)
-                                val cs2 = currentState
-                                val cs2Center = Offset(
-                                    size.width.toFloat() / 2f + cs2.canvasOffset.x,
-                                    size.height.toFloat() / 2f + cs2.canvasOffset.y,
-                                )
-                                val worldCenter = Offset(
-                                    (newCenterScreen.x - cs2Center.x) / cs2.canvasScale,
-                                    (newCenterScreen.y - cs2Center.y) / cs2.canvasScale,
-                                )
-                                currentOnAction(
-                                    PockRefAction.SetSelectedImageScale(
-                                        newScale = targetScale,
-                                        worldCenter = worldCenter,
-                                        worldPivot = corner.initialAnchorWorld,
-                                    ),
-                                )
-                                change.consume()
-                                lastPointerPosState.value = change.position
-                                autoScrollEligibleState.value = false
-                                continue
-                            }
-
-                            // V_NOW (4-corner scale handles,
-                            // MULTI/BOX path): when a group
-                            // corner drag is active, route
-                            // the move to
-                            // [PockRefAction.SetSelectedImagesScale].
+                            // SINGLE+GROUP shared path): both
+                            // modes now route through the
+                            // 1-element "group" [GroupCornerDragState]
+                            // (the SINGLE-path down handler
+                            // builds a 1-element group; the
+                            // GROUP-path down handler builds a
+                            // N-element group; both use the
+                            // same per-AABB
+                            // [SetSelectedImagesScale] reducer
+                            // in the move handler below).
+                            // The legacy [cornerDrag] /
+                            // [SetSelectedImageScale] /
+                            // [computeCornerDragResult] path
+                            // was deleted because the
+                            // separate SINGLE geometry drifted
+                            // the diagonal anchor (the moved
+                            // corner overshooted the finger
+                            // and the anchor "walked" on every
+                            // frame, especially when the image
+                            // was rotated). The unified path
+                            // keeps the opposite corner pinned
+                            // for SINGLE the same way it does
+                            // for GROUP.
                             val gcorner = groupCornerDrag
                             if (gcorner != null) {
-                                val (newFactor, newCenterScreen) = computeGroupCornerDragResult(
-                                    initialGroupDiagScreen = gcorner.initialGroupDiagonalScreen,
-                                    currentMoveScreen = change.position,
-                                    initialAnchorScreen = gcorner.initialAnchorScreen,
-                                )
                                 val cs2 = currentState
                                 val cs2Center = Offset(
                                     size.width.toFloat() / 2f + cs2.canvasOffset.x,
                                     size.height.toFloat() / 2f + cs2.canvasOffset.y,
                                 )
-                                val worldCenter = Offset(
-                                    (newCenterScreen.x - cs2Center.x) / cs2.canvasScale,
-                                    (newCenterScreen.y - cs2Center.y) / cs2.canvasScale,
+                                // V_NOW (2026-06-10 group
+                                // corner-handle anchor fix v2):
+                                // compute [factor] in WORLD
+                                // space (|N-A| / |M-A|) and
+                                // re-derive the new group AABB
+                                // corner N in world space, but
+                                // pass the per-AABB payload to
+                                // the reducer — the reducer
+                                // applies
+                                //   newImageAabb = pivot
+                                //     + (initialAabb - pivot) * factor
+                                // for each member, so the group
+                                // AABB chrome stays pinned at
+                                // A regardless of rotation /
+                                // offsets. The previous
+                                // payload (`worldCenter +
+                                // absoluteScales`) only worked
+                                // for axis-aligned members
+                                // whose center matched the
+                                // group AABB center — for
+                                // rotated members the union
+                                // of new per-image AABBs
+                                // drifted off the spec'd
+                                // `newGroupCenter ±
+                                // initialAABB.size/2 * factor`
+                                // and the diagonal anchor
+                                // "walked" as the user
+                                // dragged.
+                                val anchorWorld = gcorner.initialAnchorWorld
+                                val moveWorld = gcorner.initialMoveWorld
+                                val initialDiagWorld = kotlin.math.hypot(
+                                    moveWorld.x - anchorWorld.x,
+                                    moveWorld.y - anchorWorld.y,
                                 )
-                                // V_NOW: compute absolute scales from
-                                // initial scales + the softened ratio.
-                                // Previously newFactor was multiplied by
-                                // the CURRENT scale each frame, causing
-                                // compounding (too-fast, jerky scaling).
-                                // Now: absoluteScale = initialScale * newFactor
-                                val absoluteScales = gcorner.initialScales.mapValues { (_, initScale) ->
-                                    (initScale * newFactor).coerceIn(0.1f, 8.0f)
+                                val currentMoveWorld = Offset(
+                                    (change.position.x - cs2Center.x) / cs2.canvasScale,
+                                    (change.position.y - cs2Center.y) / cs2.canvasScale,
+                                )
+                                val newDiagWorld = kotlin.math.hypot(
+                                    currentMoveWorld.x - anchorWorld.x,
+                                    currentMoveWorld.y - anchorWorld.y,
+                                )
+                                val rawRatio = if (initialDiagWorld > 0.0001f) {
+                                    newDiagWorld / initialDiagWorld
+                                } else {
+                                    1f
+                                }
+                                val factor = if (kotlin.math.abs(rawRatio - 1f) <= 0.03f) {
+                                    1f
+                                } else {
+                                    rawRatio.coerceIn(0.1f, 8.0f)
                                 }
                                 currentOnAction(
                                     PockRefAction.SetSelectedImagesScale(
-                                        absoluteScales = absoluteScales,
-                                        worldCenter = worldCenter,
+                                        factor = factor,
+                                        initialGroupAabb = gcorner.initialGroupAabb,
+                                        initialImageAabbs = gcorner.initialImageAabbs,
+                                        initialScales = gcorner.initialScales,
+                                        pivotX = gcorner.pivotX,
+                                        pivotY = gcorner.pivotY,
                                     ),
                                 )
                                 change.consume()
@@ -7740,6 +7995,31 @@ private fun PockRefCanvas(
                     }
 
                     // V_NOW (2026-06-10 #3 corner-handle
+                    // undo/redo atomicity): close the
+                    // corner-drag scene gesture opened in
+                    // the down handler so the reducer's
+                    // [endSceneGesture] flushes ONE
+                    // before-vs-final diff to the undo
+                    // stack (see [beginSceneGesture] /
+                    // [updateSceneForGesture]). Reset
+                    // [cornerDrag] / [groupCornerDrag] so
+                    // the next gesture starts clean. Guard
+                    // on [cornerDragActive] rather than
+                    // [cornerDrag] / [groupCornerDrag]
+                    // because the gesture may have been
+                    // cancelled mid-stroke (finger lifted
+                    // off the canvas before the move loop
+                    // could run); we still want to close
+                    // the gesture so [sceneGestureActive]
+                    // doesn't stay stuck at `true` for the
+                    // next down.
+                    if (cornerDragActive) {
+                        currentOnAction(PockRefAction.EndSceneGesture)
+                        cornerDragActive = false
+                        groupCornerDrag = null
+                    }
+
+                    // V_NOW (2026-06-10 #3 corner-handle
                     // anchor pinning user spec "单指拖 corner
                     // handle 后 pin 释放, canvas zoom 没回正"):
                     // when the user is in [fittedImageId]
@@ -7775,7 +8055,16 @@ private fun PockRefCanvas(
                     // selected image (the focus gesture in
                     // [PockRefApp] L7692-7707 short-circuits on
                     // [multiSelectMode] / [boxSelectMode]).
-                    val cornerDragImageId = cornerDrag?.imageId
+                    // V_NOW (2026-06-10 single-image
+                    // corner-handle v3): SINGLE now
+                    // uses the same 1-element
+                    // [GroupCornerDragState] as GROUP;
+                    // we read the SINGLE image id from
+                    // [groupCornerDrag.imageIds] (it's
+                    // a 1-element set for SINGLE) so the
+                    // auto-unzoom on release still
+                    // works.
+                    val cornerDragImageId = groupCornerDrag?.imageIds?.firstOrNull()
                     val fittedId = currentState.fittedImageId
                     if (cornerDragImageId != null && fittedId == cornerDragImageId) {
                         currentOnAction(PockRefAction.FitImageToScreen(cornerDragImageId))
@@ -8743,68 +9032,6 @@ private fun DrawScope.drawAngleSnapGuide(
 }
 
 /**
- * V_NOW (4-corner scale handles, SINGLE path):
- * per-gesture state for a single-image corner drag.
- * Captured once in the down handler when the finger
- * lands inside [CORNER_HIT_RADIUS_DP] of one of the
- * 4 projected corners of the SINGLE selected image,
- * then read on every move event to drive the
- * [PockRefAction.SetSelectedImageScale] dispatch.
- *
- * Geometry: the user is dragging the "move-handle"
- * corner (its projected screen position at down time
- * is [initialMoveScreen]) and the OPPOSITE corner
- * is the "anchor" ([initialAnchorScreen]). The
- * image scales around the anchor as the move-handle
- * moves, via [computeCornerDragResult].
- *
- * [imageId] identifies the SINGLE selected image
- * the drag is operating on; the reducer's lock
- * guard refuses to act on a different image. The
- * GROUP corner drag ([GroupCornerDragState]) uses
- * a different action and a different state struct.
- */
-private data class CornerDragState(
-    val imageId: String,
-    val initialScale: Float,
-    val initialDiagonalScreen: Float,
-    val initialMoveScreen: Offset,
-    val initialAnchorScreen: Offset,
-    val initialAnchorWorld: Offset,
-) {
-    companion object {
-        /**
-         * Convert an image-local anchor coordinate to
-         * its world-space (scene) position. Same math
-         * [drawSceneImage] uses in reverse: center on
-         * image, rotate around image center, re-translate
-         * to world. The pre-computed world position is
-         * what [PockRefAction.SetSelectedImageScale.worldPivot]
-         * pins in place as the image scales.
-         */
-        fun anchorWorldFromLocal(
-            anchorLocal: Offset,
-            imageCenter: Offset,
-            worldWidth: Float,
-            worldHeight: Float,
-            rotationDegrees: Float,
-        ): Offset {
-            val rad = Math.toRadians(rotationDegrees.toDouble())
-            val cosR = cos(rad).toFloat()
-            val sinR = sin(rad).toFloat()
-            val halfW = worldWidth / 2f
-            val halfH = worldHeight / 2f
-            val dx = anchorLocal.x - halfW
-            val dy = anchorLocal.y - halfH
-            return Offset(
-                imageCenter.x + dx * cosR - dy * sinR,
-                imageCenter.y + dx * sinR + dy * cosR,
-            )
-        }
-    }
-}
-
-/**
  * V_NOW (4-corner scale handles, MULTI/BOX path):
  * per-gesture state for a group-AABB corner drag.
  * Captured in the down handler when the finger lands
@@ -8837,6 +9064,48 @@ private data class GroupCornerDragState(
     val initialMoveScreen: Offset,
     val initialAnchorScreen: Offset,
     val initialGroupCenterWorld: Offset,
+    val initialCenters: Map<String, Offset>,
+    // V_NOW (2026-06-10 group corner-handle anchor
+    // fix v2): the down-time group AABB in WORLD
+    // coords. The reducer applies
+    //   newGroupAabb = pivot + (initialGroupAabb - pivot) * factor
+    //   newImageAabb = pivot + (initialImageAabb - pivot) * factor
+    // so the rendered group AABB (which is the
+    // union of the per-image new AABBs) is
+    // automatically pinned at the anchor corner
+    // A = (pivotX, pivotY).
+    val initialGroupAabb: Rect,
+    // V_NOW: per-image rotated footprint AABBs at
+    // down time, in WORLD coords. Keyed by image
+    // id. These are the per-image "input boxes"
+    // the new geometry scales by [factor] around
+    // the pivot. Each one is a Rect(left, top,
+    // right, bottom) covering the union of the
+    // image's 4 rotated corners.
+    val initialImageAabbs: Map<String, Rect>,
+    // V_NOW: the world-space positions of the
+    // anchor (A) and move (M) corners of the
+    // group AABB at down time. The move handler
+    // computes [factor] from these:
+    //   factor = |currentMove_world - A| / |M - A|
+    // — both in world space so the canvas scale
+    // doesn't enter the ratio. (The old geometry
+    // used screen-space diagonals + a screen-to-
+    // world conversion on the resulting center;
+    // the new geometry factors out the canvas
+    // transform entirely by computing the ratio
+    // in world space directly.)
+    val initialAnchorWorld: Offset,
+    val initialMoveWorld: Offset,
+    // V_NOW: the (X, Y) pivot for the per-AABB
+    // scaling. = (initialGroupAabb.left or
+    // initialGroupAabb.right, initialGroupAabb.top
+    // or initialGroupAabb.bottom) depending on
+    // which corner the user grabbed. The caller
+    // decides this from the hit-test
+    // [gHitIdx] in the down handler.
+    val pivotX: Float,
+    val pivotY: Float,
 )
 
 /**
@@ -10601,6 +10870,18 @@ private fun BoxScope.GlobalLockButton(
     val lockInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val isLockHovered by lockInteractionSource.collectIsHoveredAsState()
     val isLockPressed by lockInteractionSource.collectIsPressedAsState()
+    // V_NOW (2026-06-10 #1 long-press freeze not firing):
+    // wrap [state] in a `rememberUpdatedState` so the
+    // long-lived [pointerInput(Unit)] lambda body reads
+    // the *current* `state` on every tap / long-press,
+    // not the value captured at first composition. Without
+    // this wrapper, the lambda is only created once
+    // (key = Unit) and the `state.lockCanvasFrozen` /
+    // `state.globalImageLock` branches it consults never
+    // update — so the second time the user toggles the
+    // button, the dispatcher can read a stale "not
+    // frozen" and behave as if it were the first press.
+    val currentStateRef = rememberUpdatedState(state)
     val lockStateLayer = when {
         isLockPressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
         isLockHovered -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
@@ -10665,7 +10946,8 @@ private fun BoxScope.GlobalLockButton(
             .pointerInput(Unit) {
                 detectTapGestures(
                     onLongPress = {
-                        if (state.lockCanvasFrozen) {
+                        val s = currentStateRef.value
+                        if (s.lockCanvasFrozen) {
                             onAction(PockRefAction.ToggleLockCanvasFrozen)
                             onAction(PockRefAction.ToggleGlobalImageLock)
                         } else {
@@ -10673,7 +10955,8 @@ private fun BoxScope.GlobalLockButton(
                         }
                     },
                     onTap = {
-                        if (state.lockCanvasFrozen) {
+                        val s = currentStateRef.value
+                        if (s.lockCanvasFrozen) {
                             onAction(PockRefAction.ToggleLockCanvasFrozen)
                         } else {
                             onAction(PockRefAction.ToggleGlobalImageLock)

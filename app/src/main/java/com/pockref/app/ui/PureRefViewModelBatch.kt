@@ -1,6 +1,7 @@
 package com.pockref.app.ui
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import com.pockref.app.model.AlignMode
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.isImageLocked
@@ -429,7 +430,56 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
      * boundary — the user can pull a group all the
      * way to 10% of original, same as a single image.
      */
-    internal fun setSelectedImagesScale(absoluteScales: Map<String, Float>, worldCenter: Offset) {
+    internal fun setSelectedImagesScale(
+        // V_NOW (2026-06-10 group corner-handle
+        // anchor fix v2): the previous geometry was
+        //   newCenter_i = worldCenter
+        //     + (initialCenter_i - initialGroupCenter) * factor
+        // which keeps the group AABB's CENTER pinned to
+        // the worldCenter midpoint — but for rotated
+        // members (or any member whose center is offset
+        // from the group AABB center), the union of
+        // per-image rotated footprints is NOT exactly
+        // `newGroupCenter ± (initialAABB/2) * factor`,
+        // so the rendered group AABB drifts in the
+        // direction perpendicular to the drag diagonal,
+        // and the diagonal anchor "walks" across the
+        // canvas as the user drags. The corrected
+        // geometry is "the group AABB grows around the
+        // pinned anchor corner A" — expressed as a
+        // PER-AABB operation: each image's rotated
+        // footprint AABB is rescaled by [factor] around
+        // the SAME pivot (A) that the group AABB uses,
+        // so
+        //   - group AABB = union(per-image AABBs) grows
+        //     by exactly [factor] around A → its 4
+        //     corners stay correct
+        //   - per-image center is the new AABB's center
+        //   - per-image scale is `initialScale * factor`
+        //     (matches the new AABB's footprint)
+        // [factor] is the diagonal length ratio
+        // `|N - A| / |M - A|` computed in world space
+        // (|M - A| is the down-time diagonal between
+        // the move corner and the anchor corner).
+        factor: Float,
+        initialImageAabbs: Map<String, Rect>,
+        initialScales: Map<String, Float>,
+        // V_NOW: the per-hitIdx pivot for the
+        // group AABB. `pivotX` is the X coord of the
+        // anchor corner A, `pivotY` is the Y coord.
+        // For hitIdx=3 (user grabbed BR), pivot =
+        // (groupAabb.left, groupAabb.top) (A is TL).
+        // For hitIdx=0 (user grabbed TL), pivot =
+        // (groupAabb.right, groupAabb.bottom) (A is
+        // BR). The formula
+        //   newEdge = pivot + (initialEdge - pivot) * factor
+        // applied to all 4 edges of the group AABB
+        // AND to the 4 edges of every member AABB
+        // keeps the rendered group AABB perfectly
+        // pinned at A with the rest scaled by factor.
+        pivotX: Float,
+        pivotY: Float,
+    ) {
         val stateBefore = mainVm._uiState.value
         val targetIds = stateBefore.selectedImageIds.ifEmpty {
             stateBefore.selectedImageId?.let(::setOf).orEmpty()
@@ -443,17 +493,34 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
             copy(
                 images = images.map { img ->
                     if (img.id !in transformableIds) img else {
-                        val newScale = (absoluteScales[img.id] ?: img.scale)
+                        val initialScale = initialScales[img.id] ?: img.scale
+                        val newScale = (initialScale * factor)
                             .coerceIn(0.1f, 8.0f)
-                        val effective = newScale / img.scale
-                        val dx = img.center.x - worldCenter.x
-                        val dy = img.center.y - worldCenter.y
+                        // Per-image new AABB = pivot + (initialAabb - pivot) * factor.
+                        // This is the "each image's rotated footprint
+                        // AABB grows by [factor] around the same pivot
+                        // the group AABB uses" geometry. It guarantees
+                        // the rendered group AABB is exactly the
+                        // union of the per-image new AABBs, so the
+                        // chrome's anchor corner A stays pinned at
+                        // [pivotX, pivotY] (the down-time value).
+                        val initialAabb = initialImageAabbs[img.id] ?: Rect(
+                            left = img.center.x - 1f,
+                            top = img.center.y - 1f,
+                            right = img.center.x + 1f,
+                            bottom = img.center.y + 1f,
+                        )
+                        val newLeft = pivotX + (initialAabb.left - pivotX) * factor
+                        val newTop = pivotY + (initialAabb.top - pivotY) * factor
+                        val newRight = pivotX + (initialAabb.right - pivotX) * factor
+                        val newBottom = pivotY + (initialAabb.bottom - pivotY) * factor
+                        val newCenter = Offset(
+                            (newLeft + newRight) / 2f,
+                            (newTop + newBottom) / 2f,
+                        )
                         img.copy(
                             scale = newScale,
-                            center = Offset(
-                                worldCenter.x + dx * effective,
-                                worldCenter.y + dy * effective,
-                            ),
+                            center = newCenter,
                         )
                     }
                 },
