@@ -41,6 +41,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -813,6 +814,55 @@ private fun RecentFileTile(
                         imageVector = Icons.Rounded.PushPin,
                         contentDescription = "已置顶",
                         tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+            // V_NOW (2026-06-11, user bug report "重新打开
+            // 文件后封面图没有'已设为封面'的标识"):
+            // cover-image badge on TopEnd. Mirrors the
+            // single-select sheet's "设为封面" button
+            // (PureRefApp.kt — same [Icons.Rounded.Star]
+            // icon), so the visual language is consistent
+            // across the start page and the in-canvas
+            // sheet. M3 [tertiaryContainer] /
+            // [onTertiaryContainer] — distinct from the
+            // brand teal [primary] (multi-select
+            // checkbox) and the soft lavender
+            // [secondaryContainer] (pinned badge) so the
+            // three corner indicators don't fight for
+            // visual weight.
+            //
+            // 24dp circle / 16dp icon matches the
+            // pinned-badge geometry for symmetric corner
+            // pins. M3 role: "tertiary state, persistent
+            // indicator" (same role as the chip family
+            // and progress meters).
+            //
+            // Mutex with the TopEnd multi-select
+            // checkbox — the checkbox only appears in
+            // [multiSelectMode], and the star badge only
+            // appears in idle mode, so the two never
+            // overlap on the same tile. The thumbnail's
+            // actual cover content is already driven by
+            // [entry.coverImageId] in the [LaunchedEffect]
+            // above; this badge is purely the "I am the
+            // cover" affordance the user noticed was
+            // missing.
+            if (entry.coverImageId != null && !multiSelectMode) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.tertiaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Star,
+                        contentDescription = "已设为封面",
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
                         modifier = Modifier.size(16.dp),
                     )
                 }

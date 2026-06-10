@@ -21,6 +21,7 @@ import com.pockref.app.data.PurSceneCodec
 import com.pockref.app.data.SceneImageDecoder
 import com.pockref.app.model.BackgroundPreset
 import com.pockref.app.model.PockRefScene
+import com.pockref.app.model.decodeRecentScenes
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.model.RecentSceneEntry
 import com.pockref.app.model.SceneNaming
@@ -1693,26 +1694,14 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     private fun loadRecentScenes(): List<RecentSceneEntry> {
-        return prefs.getString(RECENT_SCENES_KEY, null)
-            ?.lineSequence()
-            ?.mapNotNull { line ->
-                val parts = line.split("|")
-                if (parts.size >= 3) RecentSceneEntry(
-                    parts[0],
-                    parts[1],
-                    parts[2],
-                    parts.getOrElse(3) { "0" }.toLongOrNull() ?: 0L,
-                    parts.getOrElse(4) { "" },
-                    parts.getOrElse(5) { "0" }.toLongOrNull() ?: 0L,
-                    pinned = parts.getOrElse(6) { "0" } == "1",
-                    // V_NOW (2026-06-10 coverImageId): 8th field.
-                    // Empty string = null (no custom cover).
-                    // Non-empty = the image id to use as cover.
-                    coverImageId = parts.getOrElse(7) { "" }.ifEmpty { null },
-                ) else null
-            }
-            ?.toList()
-            .orEmpty()
+        // V_NOW (2026-06-11): delegate to the pure
+        // [com.pockref.app.model.decodeRecentScenes] so the
+        // encode/decode round-trip is unit-testable on the
+        // JVM. The format is byte-identical to the inline
+        // implementation that lived here previously — see
+        // [com.pockref.app.model.encodeRecentScenes] for the
+        // 8-field layout.
+        return decodeRecentScenes(prefs.getString(RECENT_SCENES_KEY, null))
     }
 
     // V_NOW (L2 empty-canvas revamp 2026-06-10): flip the

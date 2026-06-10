@@ -351,6 +351,77 @@ data class RecentSceneEntry(
     val coverImageId: String? = null,
 )
 
+// V_NOW (2026-06-11, "cover image bug — clear cover doesn't restore
+// default thumbnail" investigation): extracted the recent-scenes
+// prefs serialization into pure top-level functions so the encode
+// / decode round-trip can be unit-tested on the JVM without
+// spinning up a full [PockRefViewModel] (which needs an Android
+// [Application] and a half-dozen collaborator singletons).
+//
+// Format is byte-identical to the eight inline serialization
+// call-sites in [com.pockref.app.ui.PockRefViewModel] (the writer
+// path). The 8-field `|`-delimited layout is:
+//
+//   uri | label (| → /) | source | timestamp | filePath (| → /)
+//   | fileSize | pinned (1/0) | coverImageId ("" = null)
+//
+// Trailing `|`-joined with `\n` for multi-entry blobs. Read with
+// `lineSequence()` + `split("|", limit = 8)` (or
+// `getOrElse { "" }` to be safe with older 7-field rows from
+// pre-coverImageId installs).
+//
+// The writer call-sites are still inlined for diff-minimality
+// (a future commit can migrate them to [encodeRecentScenes] in
+// one go — the on-disk format is identical either way).
+
+/**
+ * Encode the recent-scenes list into the prefs blob format.
+ * Pure function — no Android dependencies. Mirrors the inline
+ * serialization in [com.pockref.app.ui.PockRefViewModel] exactly
+ * (label and filePath `|` → `/` escaping, coverImageId via
+ * `orEmpty()` so a null value round-trips through the empty
+ * string).
+ */
+internal fun encodeRecentScenes(entries: List<RecentSceneEntry>): String =
+    entries.joinToString("\n") {
+        listOf(
+            it.uri,
+            it.label.replace("|", "/"),
+            it.source,
+            it.timestamp.toString(),
+            it.filePath.replace("|", "/"),
+            it.fileSize.toString(),
+            if (it.pinned) "1" else "0",
+            it.coverImageId.orEmpty(),
+        ).joinToString("|")
+    }
+
+/**
+ * Decode the prefs blob into a recent-scenes list. Mirrors
+ * [com.pockref.app.ui.PockRefViewModel.loadRecentScenes] — the
+ * minimum row size is 3 (uri/label/source); missing trailing
+ * fields default to the [RecentSceneEntry] defaults.
+ * `coverImageId` is the 8th field, so older 7-field blobs
+ * (pre-coverImageId installs) get a null cover.
+ */
+internal fun decodeRecentScenes(blob: String?): List<RecentSceneEntry> =
+    blob?.lineSequence()
+        ?.mapNotNull { line ->
+            val parts = line.split("|")
+            if (parts.size >= 3) RecentSceneEntry(
+                uri = parts[0],
+                label = parts[1],
+                source = parts[2],
+                timestamp = parts.getOrElse(3) { "0" }.toLongOrNull() ?: 0L,
+                filePath = parts.getOrElse(4) { "" },
+                fileSize = parts.getOrElse(5) { "0" }.toLongOrNull() ?: 0L,
+                pinned = parts.getOrElse(6) { "0" } == "1",
+                coverImageId = parts.getOrElse(7) { "" }.ifEmpty { null },
+            ) else null
+        }
+        ?.toList()
+        .orEmpty()
+
 /**
  * V_NOW (L2 empty-canvas revamp 2026-06-10): controls
  * the sort order of the recent-files grid shown on
