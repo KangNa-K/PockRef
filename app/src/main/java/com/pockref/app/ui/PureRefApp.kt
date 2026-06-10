@@ -65,6 +65,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.googlefonts.Font
+import androidx.compose.ui.text.googlefonts.GoogleFont
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
@@ -401,6 +405,31 @@ private const val ROTATE_THRESHOLD = ROTATE_THRESHOLD_DEG
 // with the user's light/dark choice.
 private val LockedStrokeColor: Color = Color(0xFFE57373)
 private val LockedGlowColor: Color = Color(0x55E57373)
+
+// V_NOW (2026-06-10 user spec "启动页 pockref 字体要
+// 圆润些"): use Google Fonts' Nunito via the Downloadable
+// Fonts API instead of bundling TTF. Benefits:
+//   - APK stays small (no 130 KB font file per weight)
+//   - User gets the latest version of Nunito automatically
+//   - No minSdk 26 requirement (Downloadable Fonts works
+//     back to API 14 via GMS Core)
+//   - Multiple weights (400, 700, 900) share the same
+//     [FontFamily] declaration, so we can pick weight at
+//     the call site via TextStyle.fontWeight
+// The provider authority `com.google.android.gms.fonts`
+// must be declared in AndroidManifest.xml <queries> on
+// Android 11+ for the system to resolve the provider.
+private val GoogleFontsProvider = GoogleFont.Provider(
+    providerAuthority = "com.google.android.gms.fonts",
+    providerPackage = "com.google.android.gms",
+    certificates = com.pockref.app.R.array.com_google_android_gms_fonts_certs,
+)
+private val NunitoFont = GoogleFont("Nunito")
+private val NunitoFontFamily = FontFamily(
+    Font(googleFont = NunitoFont, fontProvider = GoogleFontsProvider, weight = FontWeight.Normal),
+    Font(googleFont = NunitoFont, fontProvider = GoogleFontsProvider, weight = FontWeight.Bold),
+    Font(googleFont = NunitoFont, fontProvider = GoogleFontsProvider, weight = FontWeight.Black),
+)
 
 // V_NOW (user feedback "P0-A1 阈值按 density 缩放"):
 // the previous thresholds were raw pixel constants, set
@@ -5029,7 +5058,37 @@ private fun EmptyCanvasState(
         ) {
             Text(
                 "PockRef",
-                style = MaterialTheme.typography.headlineMedium,
+                // V_NOW (2026-06-10 user spec "启动页
+                // pockref 字体"): use Nunito (a rounded
+                // geometric sans) via Google Fonts
+                // Downloadable Fonts API, sized and
+                // weighted per Material 3 type scale.
+                //
+                //   - displaySmall (36sp): the M3 tier
+                //     for prominent-but-secondary
+                //     heroes (e.g. empty-state titles,
+                //     splash logos). displayLarge
+                //     (57sp) is reserved for "big
+                //     marketing numbers" and would
+                //     dwarf the FAB below; the
+                //     previous 44sp was a one-off that
+                //     doesn't map to any M3 role.
+                //   - Bold (700): M3 default for
+                //     display* is Normal (400); Bold
+                //     gives the "logo" affordance just
+                //     enough weight to read as a brand
+                //     mark without the chunky
+                //     solid-fill feel of Black (900)
+                //     that the previous iteration
+                //     had.
+                //   - letterSpacing 0: M3 default
+                //     for display* is tight; the
+                //     previous 0.5sp tracking made
+                //     "PockRef" feel like two words.
+                style = MaterialTheme.typography.displaySmall.copy(
+                    fontFamily = NunitoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                ),
                 color = MaterialTheme.colorScheme.primary,
             )
             ExtendedFloatingActionButton(

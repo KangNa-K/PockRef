@@ -8,8 +8,8 @@
 
 package com.pockref.app.ui
 
-import android.graphics.BitmapFactory
 import android.net.Uri
+import com.pockref.app.data.PurSceneCodec
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
@@ -60,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -276,12 +277,47 @@ private fun RecentFileTile(
     var dragOffset by remember { mutableFloatStateOf(0f) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    var bitmap by remember(entry.uri) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    LaunchedEffect(entry.uri) {
+    var bitmap by remember(entry.uri, entry.coverImageId) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    LaunchedEffect(entry.uri, entry.coverImageId) {
         bitmap = withContext(Dispatchers.IO) {
             runCatching {
-                context.contentResolver.openInputStream(Uri.parse(entry.uri))?.use { input ->
-                    BitmapFactory.decodeStream(input)?.asImageBitmap()
+                // V_NOW (2026-06-10 user spec "启动页封面的显示规则"):
+                // .pur is a custom binary format — BitmapFactory can't
+                // decode it. We must parse via PurSceneCodec and use
+                // SceneImageDecoder to extract the thumbnail.
+                val tempFile = java.io.File.createTempFile("pockref_cover_", ".pur", context.cacheDir)
+                try {
+                    context.contentResolver.openInputStream(Uri.parse(entry.uri))?.use { input ->
+                        tempFile.outputStream().use { out -> input.copyTo(out) }
+                    }
+                    val codec = PurSceneCodec()
+                    val scene = codec.readFromFile(tempFile)
+                    // images are sorted by zIndex ascending; the
+                    // topmost (highest zIndex) image is the best
+                    // default thumbnail — it's what the user sees
+                    // on the canvas surface.
+                    val targetImage = if (entry.coverImageId != null) {
+                        // custom cover: find the image with matching id
+                        scene.images.find { it.id == entry.coverImageId }
+                            // fall back to topmost image if id not found
+                            ?: scene.images.maxByOrNull { it.zIndex }
+                    } else {
+                        // default: topmost image = canvas thumbnail
+                        scene.images.maxByOrNull { it.zIndex }
+                    }
+                    if (targetImage != null) {
+                        // readFromFile already calls setSourceFile for
+                        // desktop .pur; for custom format (imageBytes
+                        // inline) no sourceFile is needed. Re-set here
+                        // to ensure the RAF is open for offset-based
+                        // desktop images.
+                        codec.imageDecoder.setSourceFile(tempFile)
+                        codec.imageDecoder.decodeThumbnail(targetImage)?.bitmap?.asImageBitmap()
+                    } else {
+                        null
+                    }
+                } finally {
+                    tempFile.delete()
                 }
             }.getOrNull()
         }
@@ -356,6 +392,30 @@ private fun RecentFileTile(
         .aspectRatio(1f)
         .clip(RoundedCornerShape(8.dp))
         .background(tileBaseColor)
+        .then(
+            // V_NOW (2026-06-10, user spec "浅色主题的
+            // 选定框和勾选框改成和深色主题一样"):
+            // selected tiles get a dark translucent
+            // overlay so the cyan border + checkbox
+            // are equally legible on light and dark
+            // thumbnails. Without this, on a pale
+            // reference-art thumbnail the dark
+            // "primary" cyan border (#005E7A) blends
+            // into a light gray image and the
+            // selection reads as "very faint outline
+            // you have to squint at". The dark
+            // scrim (15% black) is heavy enough to
+            // read as "this is highlighted" on
+            // any thumbnail background but light
+            // enough to keep the underlying image
+            // visible — the same role Google Photos
+            // uses for its select-mode overlay.
+            if (isSelected) {
+                Modifier.background(Color.Black.copy(alpha = 0.15f))
+            } else {
+                Modifier
+            },
+        )
         .then(
             if (isSelected) {
                 Modifier.border(
@@ -668,23 +728,47 @@ private fun RecentFileTile(
                 // [surfaceContainer] / [surfaceVariant]
                 // backgrounds (M3 spec guarantees the
                 // contrast pair).
-                Icon(
-                    imageVector = if (isSelected) {
-                        Icons.Rounded.CheckBox
-                    } else {
-                        Icons.Rounded.CheckBoxOutlineBlank
-                    },
-                    contentDescription = if (isSelected) "已选中" else "未选中",
-                    tint = if (isSelected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
+                // V_NOW (2026-06-10, user spec "浅色主题的
+                // 选定框和勾选框改成和深色主题一样"):
+                // the checkbox now sits on a 28dp
+                // semi-opaque white circle (the same
+                // "always-legible" backing used in
+                // Google Photos select mode). The
+                // backing is drawn with [Color.White]
+                // at 85% alpha so it adapts to both
+                // light and dark themes — the user
+                // sees a soft "pin" in the top-end
+                // corner that's readable on any
+                // thumbnail, including a black
+                // reference image (where an unbacked
+                // white checkbox would vanish). The
+                // [Icon] sits centered inside the
+                // 28dp backing (24dp icon), giving
+                // 2dp breathing room.
+                Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(4.dp)
-                        .size(24.dp),
-                )
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.85f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = if (isSelected) {
+                            Icons.Rounded.CheckBox
+                        } else {
+                            Icons.Rounded.CheckBoxOutlineBlank
+                        },
+                        contentDescription = if (isSelected) "已选中" else "未选中",
+                        tint = if (isSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
             }
             // V_NOW (2026-06-10, user spec "把启动页置顶的
             // 文件的左上角标记换成置顶按钮同款图标 +

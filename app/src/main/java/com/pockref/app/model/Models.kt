@@ -332,6 +332,23 @@ data class RecentSceneEntry(
     val filePath: String = "",
     val fileSize: Long = 0L,
     val pinned: Boolean = false,
+    /**
+     * V_NOW (2026-06-10 user spec "启动页封面的显示规则"):
+     * the image id the user has marked as this scene's
+     * cover. `null` = no custom cover set; the start-page
+     * tile falls back to the canvas thumbnail (the first
+     * image in the scene, same as before this field).
+     * Non-null = the tile loads and displays this specific
+     * image from the scene file instead of the canvas
+     * thumbnail.
+     *
+     * Persisted in SharedPreferences alongside the other
+     * RecentSceneEntry fields so the cover survives app
+     * restart. Set via [PockRefAction.SetAsCover] which
+     * writes both [PockRefUiState.coverImageId] (runtime)
+     * and this field (persistent).
+     */
+    val coverImageId: String? = null,
 )
 
 /**

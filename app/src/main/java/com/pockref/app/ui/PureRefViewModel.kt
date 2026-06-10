@@ -613,7 +613,19 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             // 934b80f handler that was silently removed by
             // 720078f. See PureRefActions.SetAsCover docstring
             // for the full story.
-            is PockRefAction.SetAsCover -> _uiState.update { it.copy(coverImageId = action.imageId) }
+            is PockRefAction.SetAsCover -> {
+                _uiState.update { it.copy(coverImageId = action.imageId) }
+                // V_NOW (2026-06-10 user spec "启动页封面的显示规则"):
+                // persist the cover into the matching RecentSceneEntry
+                // so it survives app restart.
+                val sceneUri = currentSceneUri?.toString()
+                if (sceneUri != null) {
+                    val updated = _uiState.value.recentScenes.map {
+                        if (it.uri == sceneUri) it.copy(coverImageId = action.imageId) else it
+                    }
+                    persistRecentScenes(updated)
+                }
+            }
             PockRefAction.BeginSceneGesture -> beginSceneGesture()
             PockRefAction.EndSceneGesture -> endSceneGesture()
             is PockRefAction.BeginImageDrag -> transformController.beginImageDrag(action.imageId)
@@ -1632,6 +1644,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it.filePath.replace("|", "/"),
                 it.fileSize.toString(),
                 if (it.pinned) "1" else "0",
+                it.coverImageId.orEmpty(),
             ).joinToString("|")
         }).apply()
         _uiState.update { it.copy(recentScenes = updated) }
@@ -1656,6 +1669,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it.filePath.replace("|", "/"),
                 it.fileSize.toString(),
                 if (it.pinned) "1" else "0",
+                it.coverImageId.orEmpty(),
             ).joinToString("|")
         }).apply()
         _uiState.update { it.copy(recentScenes = updated) }
@@ -1672,6 +1686,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it.filePath.replace("|", "/"),
                 it.fileSize.toString(),
                 if (it.pinned) "1" else "0",
+                it.coverImageId.orEmpty(),
             ).joinToString("|")
         }).apply()
         _uiState.update { it.copy(recentScenes = updated) }
@@ -1690,6 +1705,10 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     parts.getOrElse(4) { "" },
                     parts.getOrElse(5) { "0" }.toLongOrNull() ?: 0L,
                     pinned = parts.getOrElse(6) { "0" } == "1",
+                    // V_NOW (2026-06-10 coverImageId): 8th field.
+                    // Empty string = null (no custom cover).
+                    // Non-empty = the image id to use as cover.
+                    coverImageId = parts.getOrElse(7) { "" }.ifEmpty { null },
                 ) else null
             }
             ?.toList()
@@ -1715,6 +1734,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it.filePath.replace("|", "/"),
                 it.fileSize.toString(),
                 if (it.pinned) "1" else "0",
+                it.coverImageId.orEmpty(),
             ).joinToString("|")
         }).apply()
         _uiState.update { it.copy(recentScenes = updated) }
@@ -1763,6 +1783,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it.filePath.replace("|", "/"),
                 it.fileSize.toString(),
                 if (it.pinned) "1" else "0",
+                it.coverImageId.orEmpty(),
             ).joinToString("|")
         }).apply()
         _uiState.update { it.copy(recentScenes = updated) }
@@ -1978,6 +1999,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                         it.filePath.replace("|", "/"),
                         it.fileSize.toString(),
                         if (it.pinned) "1" else "0",
+                        it.coverImageId.orEmpty(),
                     ).joinToString("|")
                 }).apply()
                 _uiState.update {

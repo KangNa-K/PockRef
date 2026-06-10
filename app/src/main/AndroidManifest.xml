@@ -66,6 +66,16 @@
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="*/*" />
         </intent>
+        <!-- V_NOW (2026-06-10 user spec "启动页 pockref 字体"):
+             Downloadable Fonts 通过 GMS Core 的 fonts provider
+             异步拉取。Android 11+ (API 30+) Package Visibility
+             要求调用方显式声明会 query 的 provider authority
+             才能 resolve 成功。这是 Google 推荐的标准 query
+             方式。 -->
+        <provider
+            android:authorities="com.google.android.gms.fonts"
+            android:name="com.google.android.gms.fonts"
+            android:exported="false" />
     </queries>
 
     <application
