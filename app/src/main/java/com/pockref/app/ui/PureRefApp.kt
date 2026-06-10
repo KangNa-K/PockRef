@@ -7016,6 +7016,31 @@ private fun PockRefCanvas(
                             break
                         }
                     }
+                    // V_NOW (2026-06-10 user spec "启动页的最近
+                    // 文件左右滑动都没有反应"): the unconditional
+                    // [down.consume()] below was eating EVERY
+                    // pointer-down on the canvas, including
+                    // pointer-downs that land on the start-page
+                    // [EmptyCanvasState] / [RecentFileGrid]
+                    // overlay. The grid's [LazyVerticalGrid]
+                    // vertical scroll and the tile's
+                    // [awaitEachGesture] swipe detector both
+                    // need an unconsumed down to start their
+                    // gesture loops — a consumed down means
+                    // they never see the gesture start, so
+                    // both vertical scroll and horizontal
+                    // swipe-to-pin silently no-op'd.
+                    //
+                    // Fix: skip the consume (and the entire
+                    // canvas gesture loop) when the canvas
+                    // is empty (start-page state). The
+                    // [EmptyCanvasState] overlay sits on top
+                    // of the canvas in the z-order and
+                    // handles its own gestures; the canvas
+                    // pointerInput has nothing useful to do
+                    // when there are no images to drag /
+                    // select / transform.
+                    if (currentState.images.isEmpty()) return@awaitEachGesture
                     down.consume()
                     // If the crop overlay is active, skip all
                     // canvas gesture processing so touches on
