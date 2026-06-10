@@ -285,8 +285,19 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     }
                     if (!hasImageMime) return@withContext emptyList<SceneImage>()
                     val item = clip.getItemAt(0)
-                    val text = item.coerceToText(app)?.toString()?.trim() ?: return@withContext emptyList<SceneImage>()
-                    val uri = try { Uri.parse(text) } catch (_: Exception) { null }
+                    // Try to get the URI directly from the clip item.
+                    // Android clipboards store image data in several
+                    // ways: (a) a content URI via item.getUri() (most
+                    // common for copied images from browsers / gallery
+                    // apps), (b) an inline URI property on API 31+,
+                    // or (c) as a text representation that happens to
+                    // be a URI string. The old code only tried
+                    // coerceToText → Uri.parse, which misses cases
+                    // (a) and (b) — the clip has image/ MIME but
+                    // coerceToText returns null or a non-URI label,
+                    // so the import silently fails.
+                    val uri = item.uri
+                        ?: try { Uri.parse(item.coerceToText(app)?.toString()?.trim() ?: "") } catch (_: Exception) { null }
                     if (uri == null) return@withContext emptyList<SceneImage>()
                     val scheme = uri.scheme
                     if (scheme !in listOf("content", "file", "android.resource")) return@withContext emptyList<SceneImage>()
@@ -295,9 +306,10 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     if (rawBytes.isEmpty()) return@withContext emptyList<SceneImage>()
                     var mime = mainVm.contentResolver.getType(uri)
                     if (mime == null) {
+                        val uriStr = uri.toString()
                         mime = when {
-                            text.endsWith(".png", ignoreCase = true) -> "image/png"
-                            text.endsWith(".webp", ignoreCase = true) -> "image/webp"
+                            uriStr.endsWith(".png", ignoreCase = true) -> "image/png"
+                            uriStr.endsWith(".webp", ignoreCase = true) -> "image/webp"
                             else -> "image/jpeg"
                         }
                     }
