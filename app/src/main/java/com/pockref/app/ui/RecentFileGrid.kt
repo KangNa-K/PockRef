@@ -258,18 +258,13 @@ private fun RecentFileTile(
                         .background(
                             // V_NOW (L2 polish v6 2026-06-10):
                             // swap primary <-> tertiary container
-                            // based on the current pinned state.
-                            // The user reported the previous
-                            // build "长按置顶,再长按取消置顶"
-                            // because the button looked the
-                            // same regardless of state — they
-                            // couldn't tell whether a tap
-                            // actually toggled the flag. With
-                            // the two distinct backgrounds the
-                            // state is obvious at a glance: a
-                            // filled tertiary container means
-                            // the entry IS pinned, the primary
-                            // tint means it is NOT.
+                            // based on the current pinned state
+                            // so the user sees the difference
+                            // between "已置顶" and "未置顶" at
+                            // a glance (the previous build
+                            // looked the same regardless of
+                            // state, which made the toggle
+                            // feedback invisible).
                             if (entry.pinned) MaterialTheme.colorScheme.tertiary
                             else MaterialTheme.colorScheme.primary
                         )
