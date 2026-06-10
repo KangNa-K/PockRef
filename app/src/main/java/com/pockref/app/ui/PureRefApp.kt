@@ -7511,36 +7511,38 @@ private fun PockRefCanvas(
                         currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                         boxSelectStart = downPos
                         boxSelectDragging = true
-                    } else if (hitId != null && !s.globalImageLock) {
-                        // V_NOW (2026-06-08 "全局锁定后图片上
-                        // 单指拖动识别为移动画布" v3): gate
-                        // this entire branch on
-                        // [!s.globalImageLock]. The previous
-                        // per-image-lock-only check inside
-                        // (L6117: `hitImage?.locked != true`)
-                        // correctly suppressed the drag-arm
-                        // for per-image locked images, but
-                        // for [globalImageLock] it still set
-                        // [activeDragImageId] = hitId (when
-                        // per-image locked=false). The
-                        // reducer then silently no-op'd in
-                        // [BeginImageDrag] (see
-                        // [PureRefViewModelTransform.beginImageDrag]
-                        // L833 which checks
-                        // [state.isImageLocked] and returns),
-                        // and the move loop fell into a
-                        // no-op branch because `dragId != null`
-                        // but `dragStarted` never flipped
-                        // true.
-                        //
-                        // With the guard here, the whole
-                        // image-down branch is skipped when
-                        // [globalImageLock] is on, so the
-                        // pointer falls through to the
-                        // `dragCanvas = true` arming below
-                        // — matching the user's intent
-                        // "image 上单指拖动 = 移动画布".
-                        if (s.boxSelectMode && hitId !in s.selectedImageIds && groupCornerDrag == null) {
+                    } else if (hitId != null) {
+                        // V_NOW (2026-06-11 "全局锁定/冻结模式
+                        // 双击聚焦" fix): the gate on
+                        // [!s.globalImageLock] was removed.
+                        // The previous guard skipped this
+                        // entire branch when global lock was
+                        // on, which meant [activeDragImageId]
+                        // was never set — and the double-tap
+                        // detection at pointer-up time
+                        // (`if (activeDragImageId != null)`)
+                        // was unreachable, so double-tap
+                        // focus/unfocus silently no-op'd in
+                        // global lock mode. Now we always
+                        // enter this branch when the user
+                        // tapped on an image, but inside we
+                        // check [s.globalImageLock] to decide
+                        // whether to arm the drag or just
+                        // record the hit for double-tap.
+                        if (s.globalImageLock) {
+                            // Global lock: don't arm the drag,
+                            // but record [activeDragImageId]
+                            // so double-tap detection works.
+                            // Also set [dragCanvas = true] so
+                            // single-finger drag on the image
+                            // pans the canvas (matching the
+                            // user's expectation that locked
+                            // images are "view-only").
+                            activeDragImageId = hitId
+                            if (isGestureEnabled(s.gestureToggles, GestureId.MOVE_IMAGE)) {
+                                dragCanvas = true
+                            }
+                        } else if (s.boxSelectMode && hitId !in s.selectedImageIds && groupCornerDrag == null) {
                             currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                             boxSelectStart = downPos
                             boxSelectDragging = true
