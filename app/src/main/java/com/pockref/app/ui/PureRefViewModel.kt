@@ -458,6 +458,9 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.SaveScene -> sceneController.saveScene(action.uri)
             is PockRefAction.OpenRecentScene -> sceneController.loadScene(Uri.parse(action.uri))
             is PockRefAction.RemoveRecentScene -> removeRecentScene(action.uri)
+            is PockRefAction.RenameRecentScene -> renameRecentScene(action.uri, action.newLabel)
+            is PockRefAction.TogglePinRecentScene -> togglePinRecentScene(action.uri)
+            is PockRefAction.ImportMixed -> importMixed(action.uris)
             PockRefAction.CloseScene -> sceneController.onCloseScene()
             is PockRefAction.SelectImage -> transformController.selectImage(action.imageId)
             PockRefAction.Deselect -> transformController.deselect()
@@ -580,15 +583,6 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             }
             is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(action.point, action.showSheet)
             is PockRefAction.BringImageToFront -> transformController.bringImageToFront(action.imageId)
-            // V_NOW (2026-06-10 user spec "单选 sheet 第一行
-            // 按钮 = ... / 设为封面"): cover is a UI-only flag
-            // (no scene change, no undo). Just write
-            // [PockRefUiState.coverImageId]. `null` clears
-            // the cover (the export-thumbnail path already
-            // falls back to the first image in the scene when
-            // coverImageId is null, so there's nothing else
-            // to update).
-            is PockRefAction.SetAsCover -> _uiState.update { it.copy(coverImageId = action.imageId) }
             PockRefAction.BeginSceneGesture -> beginSceneGesture()
             PockRefAction.EndSceneGesture -> endSceneGesture()
             is PockRefAction.BeginImageDrag -> transformController.beginImageDrag(action.imageId)
@@ -1606,6 +1600,31 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it.timestamp.toString(),
                 it.filePath.replace("|", "/"),
                 it.fileSize.toString(),
+                if (it.pinned) "1" else "0",
+            ).joinToString("|")
+        }).apply()
+        _uiState.update { it.copy(recentScenes = updated) }
+    }
+
+    // V_NOW (L2 polish 2026-06-10): rename a recent entry's
+    // display label. Re-serializes the prefs entry so the
+    // new label survives process death. Empty newLabel is
+    // silently dropped.
+    internal fun renameRecentScene(uri: String, newLabel: String) {
+        if (newLabel.isBlank()) return
+        if (_uiState.value.recentScenes.none { it.uri == uri }) return
+        val updated = _uiState.value.recentScenes.map {
+            if (it.uri == uri) it.copy(label = newLabel) else it
+        }
+        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+            listOf(
+                it.uri,
+                it.label.replace("|", "/"),
+                it.source,
+                it.timestamp.toString(),
+                it.filePath.replace("|", "/"),
+                it.fileSize.toString(),
+                if (it.pinned) "1" else "0",
             ).joinToString("|")
         }).apply()
         _uiState.update { it.copy(recentScenes = updated) }
@@ -1621,6 +1640,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it.timestamp.toString(),
                 it.filePath.replace("|", "/"),
                 it.fileSize.toString(),
+                if (it.pinned) "1" else "0",
             ).joinToString("|")
         }).apply()
         _uiState.update { it.copy(recentScenes = updated) }
@@ -1638,10 +1658,53 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     parts.getOrElse(3) { "0" }.toLongOrNull() ?: 0L,
                     parts.getOrElse(4) { "" },
                     parts.getOrElse(5) { "0" }.toLongOrNull() ?: 0L,
+                    pinned = parts.getOrElse(6) { "0" } == "1",
                 ) else null
             }
             ?.toList()
             .orEmpty()
+    }
+
+    // V_NOW (L2 empty-canvas revamp 2026-06-10): flip the
+    // pinned flag on the entry whose URI matches uri.
+    // Pinned entries float to the top of the RecentFileGrid
+    // regardless of timestamp sort. Re-serializes the prefs
+    // entry so the flag survives process death.
+    internal fun togglePinRecentScene(uri: String) {
+        val target = _uiState.value.recentScenes.firstOrNull { it.uri == uri } ?: return
+        val updated = _uiState.value.recentScenes.map {
+            if (it.uri == uri) it.copy(pinned = !it.pinned) else it
+        }
+        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+            listOf(
+                it.uri,
+                it.label.replace("|", "/"),
+                it.source,
+                it.timestamp.toString(),
+                it.filePath.replace("|", "/"),
+                it.fileSize.toString(),
+                if (it.pinned) "1" else "0",
+            ).joinToString("|")
+        }).apply()
+        _uiState.update { it.copy(recentScenes = updated) }
+    }
+
+    // V_NOW (L2 empty-canvas revamp 2026-06-10): the new
+    // single-launcher import path. Reads the URI's MIME
+    // via ContentResolver and routes the URI list to
+    // importImages for image MIME or to loadScene for the
+    // PockRef scene MIME / octet-stream / unknown. Empty
+    // lists are silently dropped.
+    internal fun importMixed(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val firstMime = contentResolver.getType(uris.first())
+        val isSceneMime = firstMime == "application/x-pockref-scene" ||
+            firstMime == "application/octet-stream"
+        if (isSceneMime) {
+            sceneController.loadScene(uris.first())
+        } else {
+            sceneController.importImages(uris)
+        }
     }
 
     // ---------------------------------------------------------------------
