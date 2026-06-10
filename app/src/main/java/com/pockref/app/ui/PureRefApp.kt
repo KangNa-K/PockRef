@@ -82,7 +82,6 @@ import androidx.compose.material.icons.automirrored.rounded.RotateRight
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.rounded.FileOpen
-import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.CheckBox
@@ -152,10 +151,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SheetValue
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
@@ -296,14 +291,12 @@ import kotlinx.coroutines.launch
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -1232,32 +1225,27 @@ fun PockRefApp(
             // 4-item panel's expanded state can't
             // accidentally survive across a practice
             // session).
+            // Auto-hide the FAB when the selection sheet would
+            // visually overlap it. The sheet is BottomCenter-
+            // aligned with widthIn(max = SheetMaxWidth); the
+            // FAB sits at BottomEnd with CornerInset padding.
+            // If the FAB's left edge falls inside the sheet's
+            // right edge, skip the render.
+            val fabOverlapsSheet = state.selectedImageIds.isNotEmpty() && run {
+                val containerWidthDp = with(LocalDensity.current) { constraints.maxWidth.toDp() }
+                val sheetWidthDp = minOf(containerWidthDp, Dimens.SheetMaxWidth)
+                val sheetRightDp = (containerWidthDp + sheetWidthDp) / 2
+                val fabLeftDp = containerWidthDp - Dimens.CornerInset -
+                    Dimens.BottomPanelChromeSize
+                fabLeftDp < sheetRightDp
+            }
             if (state.images.isNotEmpty() && state.cropImageId == null &&
                 state.practiceState == null && !isLockEngaged &&
-                // V_NOW (2026-06-08, sheet auto-hide):
-                // when the selection sheet is up, the
-                // bottom-right FAB and its 4 expandable list
-                // items compete with the sheet for the
-                // bottom row. Auto-hide the entire panel
-                // while the sheet is visible. The sheet
-                // itself has its own "一键排版" entry in
-                // row2 (multi/box) so the action stays
-                // reachable while a selection is active.
-                // V_NOW (2026-06-10, "全局锁定/冻结模式只
-                // 显示全局锁定按钮"): the FAB + 4-item
-                // panel is also hidden when
-                // [isLockEngaged] is true — locked /
-                // frozen mode is a read-only viewing
-                // surface, the only chrome the user
-                // needs to see is the [GlobalLockButton]
-                // itself.
-                state.selectedImageIds.isEmpty()
+                !fabOverlapsSheet
             ) {
                 BottomRightActionPanel(
                     state = state,
                     onAction = onAction,
-                    onImport = onImport,
-                    onOpenScene = onOpenScene,
                     onSaveScene = onSaveScene,
                     onExportCanvas = {
                         val sceneName = state.sceneName.ifBlank { "canvas" }
@@ -2326,16 +2314,6 @@ private fun SelectionBottomSheet(
     LaunchedEffect(state.selectionSheetShowTick) {
         dismissedByUser = false
     }
-    // V_NOW (S-04): alignment-direction dropdown state.
-    // Long-pressing the multi-select "水平翻转" button
-    // opens a DropdownMenu showing the 4 batch-align
-    // directions (top / bottom / left / right). The
-    // 4 directions also appear as the 2nd-5th buttons
-    // in [row1] for the common path (single tap), but
-    // the dropdown is a SHORTCUT for users who already
-    // have their finger on 水平翻转 and don't want
-    // to move it 4 columns to the right.
-    var alignmentMenuExpanded by remember { mutableStateOf(false) }
 
     BottomSheetPanel(
         visible = !dismissedByUser,
@@ -2446,15 +2424,6 @@ private fun SelectionBottomSheet(
                             label = "水平翻转",
                             active = allFlippedH,
                             onClick = { onAction(PockRefAction.FlipHorizontal) },
-                            // V_NOW (S-04): long-press opens the
-                            // 4-direction alignment dropdown.
-                            // The 4 directions also appear as
-                            // direct buttons in [row1] (the primary
-                            // path); this long-press is a
-                            // shortcut so a user whose finger
-                            // is already on 水平翻转 doesn't
-                            // have to move across 4 columns.
-                            onLongClick = { alignmentMenuExpanded = true },
                         ),
                         SheetActionSpec(Icons.Rounded.VerticalAlignTop, "向上对齐", false) {
                             onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_TOP))
@@ -2689,69 +2658,6 @@ private fun SelectionBottomSheet(
                             )
                         }
                     }
-                }
-            }
-            // V_NOW (S-04): alignment-direction DropdownMenu
-            // anchored to an invisible Box at the bottom of
-            // the sheet. The anchor Box takes 0dp of layout
-            // space (no children, no size modifier); the
-            // DropdownMenu itself is rendered via a
-            // [androidx.compose.ui.window.Popup] which
-            // floats above all content regardless.
-            //
-            // Only rendered in multi-select / box-select
-            // mode (the long-press handler is only wired
-            // up there). In single / locked modes the
-            // menu would have nothing to do — we early-
-            // return via the `expanded` check on the
-            // DropdownMenu itself.
-            Box(modifier = Modifier.fillMaxWidth()) {
-                DropdownMenu(
-                    expanded = alignmentMenuExpanded &&
-                        (state.multiSelectMode || state.boxSelectMode),
-                    onDismissRequest = { alignmentMenuExpanded = false },
-                    offset = androidx.compose.ui.unit.DpOffset(x = 24.dp, y = (-180).dp),
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("向上对齐") },
-                        leadingIcon = {
-                            Icon(Icons.Rounded.VerticalAlignTop, contentDescription = null)
-                        },
-                        onClick = {
-                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_TOP))
-                            alignmentMenuExpanded = false
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("向下对齐") },
-                        leadingIcon = {
-                            Icon(Icons.Rounded.VerticalAlignBottom, contentDescription = null)
-                        },
-                        onClick = {
-                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_BOTTOM))
-                            alignmentMenuExpanded = false
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("向左对齐") },
-                        leadingIcon = {
-                            Icon(Icons.Rounded.AlignHorizontalLeft, contentDescription = null)
-                        },
-                        onClick = {
-                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_LEFT))
-                            alignmentMenuExpanded = false
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("向右对齐") },
-                        leadingIcon = {
-                            Icon(Icons.Rounded.AlignHorizontalRight, contentDescription = null)
-                        },
-                        onClick = {
-                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_RIGHT))
-                            alignmentMenuExpanded = false
-                        },
-                    )
                 }
             }
         }
@@ -4034,29 +3940,28 @@ private fun BoxScope.MinimapChrome(
     // here lets us skip the auto-collapse timer too (no
     // point in timing a panel that's invisible).
     if (state.images.isEmpty()) return
-    // V_NOW (2026-06-08, sheet auto-hide): when the
-    // selection sheet is up, the minimap chrome
-    // (expanded ~200dp panel OR the collapsed 44dp pill)
-    // would compete with the sheet's bottom-row chrome
-    // for visual room. Auto-hide the ENTIRE minimap chrome
-    // — both the expanded panel AND the collapsed pill —
-    // so the user sees a clean bottom row consisting of
-    // just the sheet, with no floating minimap element to
-    // the side. The check happens BEFORE any long-press
-    // slider or auto-collapse timer is read, so the
-    // chrome doesn't even begin its enter animation.
-    if (state.selectedImageIds.isNotEmpty()) return
 
     val density = LocalDensity.current
     val cornerInsetPx = with(density) { Dimens.CornerInset.toPx() }
-    // Rough size estimate used ONLY for boundary clamping on
-    // drag. The actual minimap panel size is computed inside
-    // [CanvasMinimap] from the scene's bbox + aspect and
-    // varies per scene; we pick 200dp as a reasonable
-    // upper bound for the clamp math so the minimap can't
-    // drift completely off-screen even for very small /
-    // very large scenes.
     val estimatedMinimapSize = with(density) { 200.dp.toPx() }
+    // Auto-hide the minimap when the selection sheet would
+    // visually overlap it. The sheet is BottomCenter-aligned
+    // with widthIn(max = SheetMaxWidth); the minimap sits at
+    // BottomStart with CornerInset padding. If the minimap's
+    // right edge extends past the sheet's left edge, hide the
+    // entire minimap chrome so the bottom row stays clean.
+    // V_NOW (2026-06-11): converted to dp-based calculation
+    // (matching the FAB overlap fix above) to avoid subtle
+    // px/dp confusion. All values are in dp; [parentWidth]
+    // (px from BoxWithConstraints) is converted once at the
+    // top of the block.
+    if (state.selectedImageIds.isNotEmpty()) {
+        val parentWidthDp = with(density) { parentWidth.toDp() }
+        val sheetWidthDp = minOf(parentWidthDp, Dimens.SheetMaxWidth)
+        val sheetLeftDp = (parentWidthDp - sheetWidthDp) / 2
+        val minimapRightDp = Dimens.CornerInset + 200.dp
+        if (minimapRightDp > sheetLeftDp) return
+    }
     val dockThresholdPx = with(density) { 48.dp.toPx() }
 
     // Effective position with bounds clamping. The persisted
@@ -5827,6 +5732,35 @@ private fun TopToolbar(
                                 // makes the toolbar taller.
                                 .clip(RoundedCornerShape(8.dp))
                                 .combinedClickable(
+                                    // V_NOW: `indication = null` to
+                                    // suppress the M3 default hover
+                                    // state-layer (Indication.ringtap).
+                                    // The user reported that on S Pen
+                                    // hover, a faint gray rectangle
+                                    // appeared wrapping the chevron +
+                                    // add button pair. Root cause:
+                                    // this [combinedClickable] sits
+                                    // ABOVE the two child
+                                    // [ToolbarIconButton]s, and M3's
+                                    // default `Indication.ringtap`
+                                    // paints a hover overlay across
+                                    // the entire Row's bounds (clipped
+                                    // to RoundedCornerShape(8.dp)) on
+                                    // stylus `HoverInteraction.Enter`.
+                                    // Finger touch never shows it
+                                    // because the `PressInteraction`
+                                    // supersedes hover on contact.
+                                    // Mirrors the `indication = null`
+                                    // pattern used by
+                                    // [ToolbarIconButton] (line ~6458),
+                                    // the Lock button (line ~11075), and
+                                    // every other `clickable` in the
+                                    // toolbar (lines 1183, 1285, 1318,
+                                    // 6155, 6278, 6327, 6375).
+                                    interactionSource = remember {
+                                        MutableInteractionSource()
+                                    },
+                                    indication = null,
                                     onClick = {
                                         if (!currentState.topToolbarExpanded) {
                                             currentOnAction(
@@ -5951,23 +5885,7 @@ private fun TopToolbar(
 // V_NOW (2026-06-10 unified popup parity):
 // tap toggles [menuExpanded] — opens the
 // recent files popup if closed, closes
-// it if open. Same toggle contract as the
-// import button below, mirroring the
-// user-spec "behave like a switch".
-//
-// V_NOW (chrome-mutex): when opening
-// the recent files popup (closed→open),
-// we also force-close the import popup
-// (dispatch [onImportSourceMenuOpenChange]
-// = false) so the two popups are never
-// visible at the same time. Closing the
-// recent files popup (open→closed) is a
-// no-op for the import popup — it stays
-// closed (it was already closed by the
-// previous open). The inverse mutex
-// (import popup open closes recent files)
-// lives in the import button's onClick
-// body below.
+// it if open.
 ToolbarIconButton(
     imageVector = Icons.Rounded.KeyboardArrowDown,
     contentDescription = "最近文件",
@@ -6103,28 +6021,14 @@ ToolbarIconButton(
             // collapse in the same time feel — no jarring
             // asymmetry when the user opens the recent-files
             // menu while the action icons are also expanding.
+            val popupWidthDp = with(LocalDensity.current) {
+                toolbarRowWidth.toDp()
+            }
             AnimatedVisibility(
                 visible = menuExpanded,
                 enter = expandVertically(animationSpec = tween(200, easing = FastOutSlowInEasing)),
                 exit = shrinkVertically(animationSpec = tween(200, easing = FastOutSlowInEasing)),
             ) {
-                // V7: bind the popup's width to the toolbar
-                // Row's live width (captured via
-                // [onSizeChanged] above). The user spec is
-                // "popup width adapts to the toolbar's
-                // expanded/collapsed displayed width" — narrow
-                // when only the title is shown, wider when the
-                // action icons slide in. [toolbarRowWidth]
-                // starts at 0 and is written on the first
-                // layout pass (the toolbar is always visible,
-                // so this is well before the user can open
-                // the menu). The [with] conversion is recomputed
-                // each time the state changes — cheap, since
-                // [LocalDensity.current] doesn't change at
-                // runtime.
-                val popupWidthDp = with(LocalDensity.current) {
-                    toolbarRowWidth.toDp()
-                }
                 Column(
                     modifier = Modifier.width(popupWidthDp),
                 ) {
@@ -6236,6 +6140,8 @@ ToolbarIconButton(
             }
         }
     }
+                }  // closes popup Column
+            }  // closes AnimatedVisibility(menuExpanded)
             // V_NOW (2026-06-10 unified popup parity):
             // import popup — sibling of the recent-files
             // popup above. Same animation tokens
@@ -6265,33 +6171,7 @@ ToolbarIconButton(
                 Column(
                     modifier = Modifier.width(popupWidthDp),
                 ) {
-                    // Three option rows. No section
-                    // header (unlike the recent-files
-                    // popup which has a "最近" anchor) —
-                    // the 3 options here are
-                    // self-explanatory (each carries its
-                    // own leading icon + label), and the
-                    // import button itself ("导入图像" +
-                    // + glyph) already scopes the popup
-                    // to "import images". The label-only
-                    // path (no trailing sub-text like the
-                    // recent files' timestamp) means each
-                    // row is just leading icon + bodyMedium
-                    // text, mirroring the recent-files
-                    // Row's modifier pattern
-                    // (clickable + 12h/10v padding +
-                    // onSurfaceVariant tint + 18dp icon
-                    // + bodyMedium text).
-                    //
-                    // [相册] — gallery. Tapping closes
-                    // the popup and dispatches
-                    // [onPickGallery] which launches
-                    // [photoPickerLauncher] (Android 13+
-                    // PhotoPicker, auto-fallback to SAF
-                    // on older). Icon:
-                    // [Icons.Rounded.PhotoLibrary]
-                    // (Material 3 "stack of photos"
-                    // glyph).
+                    // [相册] — gallery.
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -6318,29 +6198,14 @@ ToolbarIconButton(
                             modifier = Modifier.size(18.dp),
                         )
                         Text(
-                            text = "相册",
+                            text = "从相册选择",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    // [剪贴板] — clipboard. Tapping
-                    // closes the popup and dispatches
-                    // [onPickClipboard] which calls
-                    // [onImportFromClipboard] =
-                    // ClipboardManager read (the
-                    // user-added 23:31 hand modification
-                    // that landed in the 8fa2bf9 merge).
-                    // Empty clipboard is handled silently
-                    // inside [onPickClipboard] — the
-                    // popup already closed itself, and
-                    // showing a snackbar here would race
-                    // the picker animation for the other
-                    // two paths. Icon:
-                    // [Icons.Rounded.ContentPaste]
-                    // (Material 3 "paste from clipboard"
-                    // glyph).
+                    // [剪贴板] — clipboard.
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -6367,28 +6232,14 @@ ToolbarIconButton(
                             modifier = Modifier.size(18.dp),
                         )
                         Text(
-                            text = "剪贴板",
+                            text = "从剪贴板粘贴",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    // [文件] — files. Tapping closes
-                    // the popup and dispatches
-                    // [onPickFiles] which calls
-                    // [onImport] = the existing SAF
-                    // [OpenMultipleDocuments] path. Kept
-                    // as the "I want a specific file
-                    // from my Downloads" option for power
-                    // users — some users store reference
-                    // images outside the Photo roll
-                    // (e.g. SD card, downloaded .zip
-                    // extracts), and the system
-                    // PhotoPicker doesn't reach those
-                    // locations but SAF does. Icon:
-                    // [Icons.Rounded.FileOpen] (Material
-                    // 3 "open file" glyph).
+                    // [文件] — files.
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -6415,7 +6266,7 @@ ToolbarIconButton(
                             modifier = Modifier.size(18.dp),
                         )
                         Text(
-                            text = "文件",
+                            text = "打开文件",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
@@ -6432,8 +6283,6 @@ ToolbarIconButton(
     // threading a separate `settingsSheetOpen` remember
     // through the call graph. See the [SettingsPanel] call
     // in [PockRefApp].
-}
-            }
         }
     }
 }
@@ -6464,15 +6313,20 @@ private fun ToolbarIconButton(
     tint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     active: Boolean = false,
 ) {
-    val activeBg = MaterialTheme.colorScheme.primaryContainer
-        .copy(alpha = Dimens.ChromeSurfaceAlpha)
     Box(
         modifier = Modifier
             .size(40.dp)
             .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
-            .background(
-                color = if (active && enabled) activeBg else Color.Transparent,
-            )
+            // V_NOW: removed the [active] state highlight
+            // (the [primaryContainer.copy(alpha = ChromeSurfaceAlpha)]
+            // background). The user found the highlight
+            // visually noisy — two adjacent buttons (chevron
+            // + add) would read as a single "container" when
+            // one was active, which they didn't want. The
+            // [active] parameter is kept for source-compat
+            // (callers still pass it for future re-enable)
+            // but the renderer no longer paints a tint for
+            // it.
             .clickable(
                 enabled = enabled,
                 interactionSource = remember { MutableInteractionSource() },
@@ -10623,8 +10477,6 @@ private fun ExportDialogHost(
 private fun BoxScope.BottomRightActionPanel(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
-    onImport: () -> Unit,
-    onOpenScene: () -> Unit,
     onSaveScene: () -> Unit,
     onExportCanvas: () -> Unit,
     // V_NOW: chrome-mutex inverse counterpart of
@@ -10653,16 +10505,8 @@ private fun BoxScope.BottomRightActionPanel(
     // polling loop reads [lastInteractionMs] via snapshot,
     // so hover noise can't keep resetting the timer.
     var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    // V_NOW: import 弹窗的状态。点击聚合 Import 按钮 flip 到
-    // true,ModalBottomSheet 弹出;关闭时(选项点击 / 外部 dismiss
-    // / drag down)回到 false。
-    var showImportSheet by remember { mutableStateOf(false) }
-    // V_NOW: 当 sheet 打开时 pause auto-collapse(否则 3s 后
-    // panel 会收起,导入按钮消失,用户来不及点选项)。
-    // 重新 key 上 showImportSheet 之后,LaunchedEffect 在
-    // sheet 关闭时会重新启动,自然续接。
-    LaunchedEffect(state.bottomRightPanelExpanded, showImportSheet) {
-        if (state.bottomRightPanelExpanded && !showImportSheet) {
+    LaunchedEffect(state.bottomRightPanelExpanded) {
+        if (state.bottomRightPanelExpanded) {
             while (true) {
                 val elapsed = System.currentTimeMillis() - lastInteractionMs
                 if (elapsed >= 3000L) {
@@ -10672,16 +10516,6 @@ private fun BoxScope.BottomRightActionPanel(
                 val waitMs = (3000L - elapsed).coerceIn(100L, 1000L)
                 delay(waitMs)
             }
-        }
-    }
-    // V_NOW: sheet 关闭时 refresh 计时器(sheet 内的 pointer
-    // 事件不经过 panel 的 pointerInput,所以 lastInteractionMs
-    // 不会被自动更新;否则 sheet 一关 panel 立刻检测到 elapsed
-    // >= 3000L 直接收起)。把这个 effect 单独出来,只在
-    // showImportSheet 翻转时跑一次。
-    LaunchedEffect(showImportSheet) {
-        if (!showImportSheet) {
-            lastInteractionMs = System.currentTimeMillis()
         }
     }
 
@@ -10784,45 +10618,6 @@ private fun BoxScope.BottomRightActionPanel(
                             // V_NOW: chrome-mutex.
                             onMenuDismiss()
                             onAction(PockRefAction.SetSettingsSheetOpen(true))
-                        },
-                    )
-                    // 2. Aggregate Import (V_NOW redesign):
-                    //    one button that surfaces BOTH
-                    //    "导入图片" (OpenMultipleDocuments,
-                    //    image/*) AND "打开场景文件"
-                    //    (OpenDocument, .pur MIME) via an M3
-                    //    [ModalBottomSheet] (the V_NOW
-                    //    redesign — first try was a
-                    //    [DropdownMenu] but the user found the
-                    //    dropdown felt too "weightless": the
-                    //    menu flash-disappeared the moment
-                    //    auto-collapse fired, and the dropdown
-                    //    anchor was visually invisible relative
-                    //    to the panel chrome). The bottom sheet
-                    //    is rendered at the [BottomRightActionPanel]
-                    //    level (sibling of the [Surface]) so it's
-                    //    a real popup window independent of the
-                    //    panel's auto-collapse lifecycle — see
-                    //    [showImportSheet] + the pause-collapse
-                    //    [LaunchedEffect] above for the
-                    //    coordination.
-                    //
-                    //    Icon: [Icons.Rounded.FileOpen] — the
-                    //    universal "open file" semantic that
-                    //    works for both image AND scene file.
-                    //    Considered [Input] / [MoveToInbox] /
-                    //    [LibraryAdd] / [PostAdd] but FileOpen
-                    //    has the strongest cross-format
-                    //    recognition (Google Drive uses it for
-                    //    "Open with") and matches the other
-                    //    chrome icons' visual weight.
-                    BottomPanelListItem(
-                        icon = Icons.Rounded.FileOpen,
-                        contentDescription = "Import",
-                        onClick = {
-                            // V_NOW: chrome-mutex.
-                            onMenuDismiss()
-                            showImportSheet = true
                         },
                     )
                     // 4. Export canvas — export the entire
@@ -10957,58 +10752,6 @@ private fun BoxScope.BottomRightActionPanel(
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
-        }
-    }
-
-    // V_NOW: import 弹窗。放在 [Surface] 外面、BottomRightActionPanel
-    // 函数的最后,作为整个 panel 的"兄弟"节点。理由:
-    //   1. **独立 window**: ModalBottomSheet 在 Compose
-    //      [Popup] 里渲染,有独立的 WindowToken,跟 panel
-    //      的 [Surface] 不共享 surface。这意味着 panel 收
-    //      起时 sheet 不会被一起擦掉(虽然我们也 pause 了
-    //      auto-collapse,见上面的 LaunchedEffect,但双保险)。
-    //   2. **位置**: ModalBottomSheet 默认从底部弹起,
-    //      跨过 panel 上方,看起来像"从面板里拽出来一个
-    //      选择器"。
-    //   3. **a11y + 键盘导航 + drag-down dismiss**:
-    //      M3 ModalBottomSheet 全免费。
-    //   4. **选项 click 立刻关 sheet + 触发 launcher**:
-    //      onClick 同步 showImportSheet=false(避免 sheet
-    //      还在动画时 launcher 已经在跑),再调 onImport 或
-    //      onOpenScene。launcher 走的是 ActivityResult
-    //      Contracts,本身异步,不会跟 sheet 动画打架。
-    if (showImportSheet) {
-        val sheetState = rememberModalBottomSheetState()
-        ModalBottomSheet(
-            onDismissRequest = { showImportSheet = false },
-            sheetState = sheetState,
-        ) {
-            ListItem(
-                headlineContent = { Text("导入图片") },
-                leadingContent = {
-                    Icon(
-                        Icons.Rounded.PhotoLibrary,
-                        contentDescription = null,
-                    )
-                },
-                modifier = Modifier.clickable {
-                    showImportSheet = false
-                    onImport()
-                },
-            )
-            ListItem(
-                headlineContent = { Text("打开文件") },
-                leadingContent = {
-                    Icon(
-                        Icons.Rounded.FolderOpen,
-                        contentDescription = null,
-                    )
-                },
-                modifier = Modifier.clickable {
-                    showImportSheet = false
-                    onOpenScene()
-                },
-            )
         }
     }
 }
