@@ -489,7 +489,17 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
             !stateBefore.isImageLocked(id)
         }
         if (transformableIds.isEmpty()) return
-        mainVm.mutateScene {
+        // V_NOW (2026-06-11, "小圆点缩放撤销/重做逐帧" fix):
+        // changed from [mutateScene] to [updateSceneForGesture].
+        // [mutateScene] pushes a diff on EVERY call, so a
+        // multi-frame corner drag would fill the undo stack
+        // with dozens of intermediate diffs — one per move
+        // event. [updateSceneForGesture] only captures the
+        // "before" state on the first frame and defers the
+        // single diff push until [EndSceneGesture], so the
+        // entire corner-drag gesture produces exactly one
+        // undo entry (matching the image-drag behavior).
+        mainVm.updateSceneForGesture {
             copy(
                 images = images.map { img ->
                     if (img.id !in transformableIds) img else {

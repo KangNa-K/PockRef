@@ -5121,6 +5121,7 @@ private fun EmptyCanvasState(
                 // pin and a bulk-action pin produce
                 // byte-identical on-disk state.
                 onSwipePin = { uri -> onAction(PockRefAction.TogglePinRecentScene(uri)) },
+                onSwipeDelete = { uri -> onAction(PockRefAction.RemoveRecentScene(uri)) },
                 onRename = { uri, newLabel ->
                     onAction(PockRefAction.RenameRecentScene(uri, newLabel))
                 },
