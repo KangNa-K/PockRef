@@ -4808,11 +4808,23 @@ private fun EmptyCanvasState(
                 sortMode = state.recentSortMode,
                 showPinnedOnly = state.showPinnedOnly,
                 onOpen = { onAction(PockRefAction.OpenRecentScene(it)) },
-                onRemove = { onAction(PockRefAction.RemoveRecentScene(it)) },
-                onTogglePin = { onAction(PockRefAction.TogglePinRecentScene(it)) },
                 onRename = { uri, newLabel ->
                     onAction(PockRefAction.RenameRecentScene(uri, newLabel))
                 },
+                // V_NOW (2026-06-10 user spec "启动页去掉长按
+                // 封面显示置顶和删除按钮，以及去除长按封面触发
+                // 其他功能的相关代码"): the long-press overlay
+                // (and its `onRemove` / `onTogglePin` callbacks)
+                // is removed from [RecentFileGrid]. Pin / Delete
+                // for a recent scene now live on the dedicated
+                // scene-edit path (the canvas-side "..." menu /
+                // scene-info sheet) — not in the start-page
+                // peek. The two callback params and the
+                // [PockRefAction.RemoveRecentScene] /
+                // [PockRefAction.TogglePinRecentScene]
+                // actions are intentionally left in place; they
+                // are dispatched from the canvas-side scene-edit
+                // path, just not from here.
             )
         }
     }

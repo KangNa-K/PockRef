@@ -11,6 +11,7 @@ package com.pockref.app.ui
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,20 +31,13 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.outlined.PushPin
-import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.VerticalAlignTop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import com.pockref.app.ui.theme.Dimens
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
@@ -55,7 +49,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -91,8 +84,6 @@ fun RecentFileGrid(
     sortMode: RecentSortMode,
     showPinnedOnly: Boolean,
     onOpen: (String) -> Unit,
-    onRemove: (String) -> Unit,
-    onTogglePin: (String) -> Unit,
     onRename: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -142,8 +133,6 @@ fun RecentFileGrid(
             RecentFileTile(
                 entry = entry,
                 onOpen = { onOpen(entry.uri) },
-                onRemove = { onRemove(entry.uri) },
-                onTogglePin = { onTogglePin(entry.uri) },
                 onRename = { newLabel -> onRename(entry.uri, newLabel) },
             )
         }
@@ -154,8 +143,6 @@ fun RecentFileGrid(
 private fun RecentFileTile(
     entry: RecentSceneEntry,
     onOpen: () -> Unit,
-    onRemove: () -> Unit,
-    onTogglePin: () -> Unit,
     onRename: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -169,17 +156,25 @@ private fun RecentFileTile(
             }.getOrNull()
         }
     }
-    // V_NOW (L2 polish v4 2026-06-10): swipe-to-dismiss
-    // replaced by long-press context menu. The previous
-    // SwipeToDismissBox reveal pattern was unintuitive (the
-    // 48dp circular buttons clipped against the narrow
-    // thumbnail width on a 3-column tablet grid, and the
-    // confirmValueChange dance between Settled and EndToStart
-    // confused the gesture's interaction with the surrounding
-    // LazyVerticalGrid). Long-press on the thumbnail now
-    // opens an M3 DropdownMenu anchored to the tile, with
-    // 置顶/取消置顶 and 删除 as 2 DropdownMenuItem entries.
-    var showMenu by remember { mutableStateOf(false) }
+    // V_NOW (2026-06-10 user spec "启动页去掉长按封面显示置顶
+    // 和删除按钮，以及去除长按封面触发其他功能的相关代码"):
+    // the long-press overlay (置顶/删除 M3 floating toolbar
+    // introduced in v5/v6/v7) is removed. The thumbnail is
+    // now a single-action tile — tap to open. Pin / Delete /
+    // Rename all live in the dedicated "edit scene" path on
+    // the canvas, not in the start-page peek.
+    //
+    // What survives from the v5/v6/v7 era:
+    //   - the persistent top-start "pinned" badge
+    //     ([Icons.Rounded.VerticalAlignTop] in a 20dp
+    //     tertiary circle) — this is a read-only indicator,
+    //     not a control, so it stays. Tapping the badge does
+    //     nothing (no clickable Modifier).
+    //   - the label below the thumbnail is still long-press-
+    //     able to open the rename dialog (long-press on
+    //     TEXT, not on the thumbnail image — the gesture
+    //     doesn't conflict with the thumbnail's plain
+    //     `clickable` anymore).
     var showRenameDialog by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
@@ -187,156 +182,38 @@ private fun RecentFileTile(
             .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(modifier = Modifier.fillMaxWidth()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .combinedClickable(
-                        onClick = onOpen,
-                        onLongClick = { showMenu = true },
-                    ),
-            ) {
-                val bmp = bitmap
-                if (bmp != null) {
-                    androidx.compose.foundation.Image(
-                        bitmap = bmp,
-                        contentDescription = entry.label,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-                if (entry.pinned) {
-                    Box(
-                        modifier = Modifier
-                            .padding(4.dp)
-                            .size(20.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.tertiary),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.VerticalAlignTop,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onTertiary,
-                            modifier = Modifier.size(14.dp),
-                        )
-                    }
-                }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onOpen),
+        ) {
+            val bmp = bitmap
+            if (bmp != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bmp,
+                    contentDescription = entry.label,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
-            // V_NOW (L2 polish v7 2026-06-10): M3 contextual
-            // floating toolbar replaces the v5/v6 bottom-
-            // corner dual circles. The previous build used
-            // two 48dp saturated (primary/tertiary/error)
-            // circles anchored at bottom-left and bottom-
-            // right with Arrangement.SpaceBetween, which
-            // had two M3-debt problems:
-            //   1. Raw primary/tertiary/error solid colors
-            //      clash with M3's container-role system.
-            //      M3 reserves those for Filled/FAB primary
-            //      surfaces and uses secondaryContainer /
-            //      tertiaryContainer / errorContainer for
-            //      tonal icon buttons. Bold saturated colors
-            //      on a 48dp circle is the MD2 pattern.
-            //   2. SpaceBetween corner anchoring on a
-            //      5-column tablet grid squeezed both 48dp
-            //      buttons into a ~110dp tile, and the
-            //      right-hand button clipped to a pill on
-            //      the narrowest thumbnails (visible in the
-            //      v6 device screenshot on the 5-col SM-X810
-            //      landscape).
-            //
-            // New layout: a single M3 floating toolbar at
-            // the bottom-centre of the tile, sized to
-            // content. The toolbar is a Surface with
-            // surfaceContainerHigh + tonalElevation 3dp (M3
-            // standard for elevated floating controls;
-            // matches Dimens.ToolbarElevation used by the
-            // top toolbar / auto-layout panel), shaped as
-            // a 20dp pill. Two 40dp FilledTonalIconButton
-            // entries (M3's standard icon-only action
-            // component):
-            //   - Pin: secondaryContainer by default, swaps
-            //     to tertiaryContainer when entry.pinned is
-            //     true (preserves v6's "pinned vs unpinned"
-            //     visual feedback AND matches the
-            //     persistent top-start pinned badge)
-            //   - Delete: errorContainer / onErrorContainer
-            //     (M3 canonical destructive-action color
-            //     pair — pale red surface with dark red
-            //     icon, not the bold solid red that v5/v6
-            //     used)
-            // The scrim is reduced from 35% to 28% because
-            // the floating toolbar's surface provides its
-            // own contrast boundary and the image should
-            // still be visible enough for the user to
-            // identify the file.
-            val overlayAlpha by androidx.compose.animation.core.animateFloatAsState(
-                targetValue = if (showMenu) 1f else 0f,
-                label = "recent-tile-overlay",
-            )
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(
-                        MaterialTheme.colorScheme.scrim.copy(alpha = 0.28f * overlayAlpha),
-                    ),
-            )
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 6.dp)
-                    .alpha(overlayAlpha),
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                tonalElevation = Dimens.ToolbarElevation,
-            ) {
-                Row(
-                    modifier = Modifier.padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+            if (entry.pinned) {
+                Box(
+                    modifier = Modifier
+                        .padding(4.dp)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.tertiary),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    FilledTonalIconButton(
-                        onClick = {
-                            onTogglePin()
-                            showMenu = false
-                        },
-                        colors = IconButtonDefaults.filledTonalIconButtonColors(
-                            containerColor = if (entry.pinned)
-                                MaterialTheme.colorScheme.tertiaryContainer
-                            else
-                                MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = if (entry.pinned)
-                                MaterialTheme.colorScheme.onTertiaryContainer
-                            else
-                                MaterialTheme.colorScheme.onSecondaryContainer,
-                        ),
-                    ) {
-                        Icon(
-                            imageVector =
-                                if (entry.pinned) Icons.Filled.PushPin
-                                else Icons.Outlined.PushPin,
-                            contentDescription = if (entry.pinned) "取消置顶" else "置顶",
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                    FilledTonalIconButton(
-                        onClick = {
-                            onRemove()
-                            showMenu = false
-                        },
-                        colors = IconButtonDefaults.filledTonalIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer,
-                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                        ),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Delete,
-                            contentDescription = "删除",
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Rounded.VerticalAlignTop,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiary,
+                        modifier = Modifier.size(14.dp),
+                    )
                 }
             }
         }
