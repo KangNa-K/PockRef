@@ -643,6 +643,15 @@ data class PockRefUiState(
     val sceneDefaultAlignment: ImageAlignment = ImageAlignment.CENTER,
     val selectedImageId: String? = null,
     val selectedImageIds: Set<String> = emptySet(),
+    /**
+     * V_NOW (L2 polish v6 2026-06-10): the user-chosen
+     * cover image for the scene. Drives the single-select
+     * sheet's "设为封面" action and is read by
+     * [com.pockref.app.ui.PureRefViewModelScene.exportCanvas]
+     * when no other cover is set. `null` means the
+     * scene falls back to the first image in z-order.
+     */
+    val coverImageId: String? = null,
     val multiSelectMode: Boolean = false,
     val boxSelectMode: Boolean = false,
  val boxSelectRect: RectF? = null,

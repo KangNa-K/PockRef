@@ -129,40 +129,10 @@ sealed interface PockRefAction {
      * decoded before a [SceneImage] can be constructed.
      */
     data object ImportFromClipboard : PockRefAction
-    /**
-     * V_NOW (L2 empty-canvas revamp 2026-06-10): the new
-     * single "添加图片" launcher payload. Replaces the
-     * previous [ImportImages] + [LoadScene] two-button
-     * layout on the empty canvas. The reducer reads the
-     * URI's MIME via ContentResolver and dispatches to
-     * [ImportImages] for image MIME or [LoadScene] for
-     * the PockRef scene MIME / octet-stream / unknown.
-     */
-    data class ImportMixed(val uris: List<Uri>) : PockRefAction
     data class LoadScene(val uri: Uri) : PockRefAction
     data class SaveScene(val uri: Uri) : PockRefAction
     data class OpenRecentScene(val uri: String) : PockRefAction
     data class RemoveRecentScene(val uri: String) : PockRefAction
-
-    /**
-     * V_NOW (L2 polish 2026-06-10): rename a recent file
-     * entry's display label. Dispatched by the long-press
-     * rename dialog in [com.pockref.app.ui.RecentFileGrid].
-     * The reducer writes the new label back to the matching
-     * RecentSceneEntry and re-serializes the prefs entry.
-     * An empty [newLabel] is a no-op.
-     */
-    data class RenameRecentScene(val uri: String, val newLabel: String) : PockRefAction
-
-    /**
-     * V_NOW (L2 empty-canvas revamp 2026-06-10): toggle the
-     * `pinned` flag on a [RecentSceneEntry]. Dispatched by
-     * the swipe-to-dismiss "star" button in
-     * [com.pockref.app.ui.RecentFileGrid]. The reducer
-     * updates the in-memory list and re-serializes the
-     * pinned bit as the 7th `|` field of the prefs entry.
-     */
-    data class TogglePinRecentScene(val uri: String) : PockRefAction
     data object CloseScene : PockRefAction
     data class SelectImage(val imageId: String?) : PockRefAction
     data object Deselect : PockRefAction
@@ -212,6 +182,18 @@ sealed interface PockRefAction {
     data class MoveImage(val imageId: String, val delta: Offset) : PockRefAction
     data class CycleImageUnderPoint(val point: Offset, val showSheet: Boolean = true) : PockRefAction
     data class BringImageToFront(val imageId: String) : PockRefAction
+    /**
+     * V_NOW (2026-06-10 user spec "单选 sheet 第一行按钮 = 水平翻转 /
+     * 裁切 / 右旋 90° / 复原 / 设为封面"): mark an image id as
+     * the scene's cover. `null` clears the cover (resets to the
+     * "no cover" state, so the export-thumbnail path falls back
+     * to the first image in the scene, same as before this
+     * field existed). Same single-id semantics as the
+     * [PockRefUiState.coverImageId] it writes — setting a new
+     * id simply replaces the previous; there is no
+     * "multiple covers" / "no cover" toggle in the spec.
+     */
+    data class SetAsCover(val imageId: String?) : PockRefAction
     data class PanCanvas(val delta: Offset) : PockRefAction
     data class ZoomCanvas(val scaleChange: Float, val focus: Offset) : PockRefAction
     /**

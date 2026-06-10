@@ -132,11 +132,10 @@ import androidx.compose.material.icons.rounded.AlignHorizontalLeft
 import androidx.compose.material.icons.rounded.AlignHorizontalRight
 import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
 import androidx.compose.material.icons.rounded.SwipeRight
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Card
@@ -491,20 +490,6 @@ fun PockRefApp(
     val importLauncher = rememberLauncherForActivityResult(OpenMultipleDocuments()) { uris ->
         onAction(PockRefAction.ImportImages(uris))
     }
-    // V_NOW (L2 empty-canvas revamp 2026-06-10): the new
-    // single-launcher import path. The launcher accepts the
-    // union of image/* and PockRef scene MIME / octet-stream
-    // so the user gets a single SAF picker that can pick
-    // BOTH images and .pur files. The reducer (via
-    // PockRefViewModel.importMixed) routes the URI list to
-    // ImportImages or LoadScene based on the URI's MIME.
-    val mixedImportLauncher = rememberLauncherForActivityResult(
-        OpenMultipleDocuments(),
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            onAction(PockRefAction.ImportMixed(uris))
-        }
-    }
     // V_NOW (2026-06-10 #2 import popup): gallery picker.
     // [PickMultipleVisualMedia] is the Android 13+
     // PhotoPicker API (auto-fallback to SAF on older
@@ -857,7 +842,7 @@ fun PockRefApp(
     // 按钮取消;保存动作只走 [LaunchedEffect] →
     // [saveSceneLauncher] 路径,即 unsaved-changes-dialog
     // 的 "Save As" 流程)。
-    val onImport: () -> Unit = { mixedImportLauncher.launch(arrayOf("image/*", "application/x-pockref-scene", "application/octet-stream")) }
+    val onImport: () -> Unit = { importLauncher.launch(arrayOf("image/*")) }
     // V_NOW: open-scene picker accepts the dedicated .pur
     // MIME plus the legacy `application/octet-stream` (so
     // files saved by older builds, which wrote octet-stream,
@@ -1562,7 +1547,8 @@ fun PockRefApp(
             EmptyCanvasState(
                 state = state,
                 onAction = onAction,
-                onImportMixed = onImport,
+                onImport = onImport,
+                onOpenScene = onOpenScene,
                 modifier = Modifier.align(Alignment.Center),
             )
         } else {
@@ -2219,6 +2205,28 @@ private fun SelectionBottomSheet(
                         },
                     )
                 } else {
+                    // V_NOW (2026-06-10 user spec "单选
+                    // sheet 第一行按钮 = 水平翻转 / 裁切 /
+                    // 右旋 90° / 复原 / 设为封面"): 5
+                    // buttons, single-select row1. The
+                    // previous "左旋 90°" entry is dropped
+                    // (users still have the 4-corner handle
+                    // rotate gesture on the canvas itself
+                    // for fine-grained angles — the sheet
+                    // button is the quick +/-90° path, and
+                    // -90° lives on the canvas handle). The
+                    // new 5th entry is the cover
+                    // affordance: tapping it marks the
+                    // single-selected image as the
+                    // [PockRefUiState.coverImageId] (same
+                    // id is re-tappable to clear it back to
+                    // null, matching the
+                    // [PockRefAction.SetAsCover] null =
+                    // clear semantics). Active state shows
+                    // when the currently selected image is
+                    // already the cover (subtle visual
+                    // confirmation).
+                    val currentSingleId = state.selectedImageId
                     listOf(
                         SheetActionSpec(Icons.Rounded.Flip, "水平翻转", allFlippedH) {
                             onAction(PockRefAction.FlipHorizontal)
@@ -2226,14 +2234,23 @@ private fun SelectionBottomSheet(
                         SheetActionSpec(Icons.Rounded.Crop, "裁切", false) {
                             onAction(PockRefAction.EnterCropMode)
                         },
-                        SheetActionSpec(Icons.AutoMirrored.Rounded.RotateLeft, "左旋 90°", false) {
-                            onAction(PockRefAction.RotateLeft)
-                        },
                         SheetActionSpec(Icons.AutoMirrored.Rounded.RotateRight, "右旋 90°", false) {
                             onAction(PockRefAction.RotateRight)
                         },
                         SheetActionSpec(Icons.Rounded.RestartAlt, "复原", false) {
                             onAction(PockRefAction.ResetTransform)
+                        },
+                        SheetActionSpec(
+                            icon = Icons.Rounded.Star,
+                            label = "设为封面",
+                            active = currentSingleId != null &&
+                                state.coverImageId == currentSingleId,
+                        ) {
+                            val id = currentSingleId
+                            if (id != null) {
+                                val next = if (state.coverImageId == id) null else id
+                                onAction(PockRefAction.SetAsCover(next))
+                            }
                         },
                     )
                 }
@@ -4731,9 +4748,13 @@ private fun Modifier.verticalLayoutSwap() = this.layout { measurable, constraint
 private fun EmptyCanvasState(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
-    onImportMixed: () -> Unit,
+    onImport: () -> Unit,
+    onOpenScene: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val recentImports = state.recentScenes.filter { it.source == "Saved" }.take(10)
+    val recentOpens = state.recentScenes.filter { it.source == "Opened" }.take(10)
+
     Surface(
         modifier = modifier.widthIn(max = 520.dp),
         shape = RoundedCornerShape(16.dp),
@@ -4750,31 +4771,192 @@ private fun EmptyCanvasState(
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
-            ExtendedFloatingActionButton(
-                onClick = onImportMixed,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                shape = RoundedCornerShape(12.dp),
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp),
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Rounded.Add, contentDescription = "添加图片", modifier = Modifier.size(24.dp))
+                FilledTonalButton(
+                    onClick = onImport,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Icon(Icons.Rounded.Image, contentDescription = null, modifier = Modifier.size(24.dp))
+                }
+                FilledTonalButton(
+                    onClick = onOpenScene,
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Icon(Icons.Rounded.FileOpen, contentDescription = null, modifier = Modifier.size(24.dp))
+                }
             }
-            RecentFileGrid(
-                entries = state.recentScenes,
-                sortMode = state.recentSortMode,
-                showPinnedOnly = state.showPinnedOnly,
-                onOpen = { onAction(PockRefAction.OpenRecentScene(it)) },
-                onRemove = { onAction(PockRefAction.RemoveRecentScene(it)) },
-                onTogglePin = { onAction(PockRefAction.TogglePinRecentScene(it)) },
-                onRename = { uri, newLabel ->
-                    onAction(PockRefAction.RenameRecentScene(uri, newLabel))
-                },
+
+            if (recentImports.isNotEmpty() || recentOpens.isNotEmpty()) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (recentImports.isNotEmpty()) {
+                        RecentFileSection(
+                            title = "最近导入",
+                            entries = recentImports,
+                            onOpen = { onAction(PockRefAction.OpenRecentScene(it)) },
+                            onRemove = { onAction(PockRefAction.RemoveRecentScene(it)) },
+                        )
+                    }
+                    if (recentOpens.isNotEmpty()) {
+                        RecentFileSection(
+                            title = "最近打开",
+                            entries = recentOpens,
+                            onOpen = { onAction(PockRefAction.OpenRecentScene(it)) },
+                            onRemove = { onAction(PockRefAction.RemoveRecentScene(it)) },
+                            showFileSize = true,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentFileSection(
+    title: String,
+    entries: List<RecentSceneEntry>,
+    onOpen: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    showFileSize: Boolean = false,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Surface(
+            shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            // V8: chrome-match the recent-files list
+            // surface. `surfaceVariant` carries a subtle
+            // primary-tinted blue cast; switching to the
+            // chrome surface token (neutral gray) makes the
+            // list visually sibling to the top toolbar.
+            color = MaterialTheme.colorScheme.surface
+                .copy(alpha = Dimens.ChromeSurfaceAlpha),
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+        ) {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 240.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
+                items(entries, key = { it.uri }) { entry ->
+                    RecentFileItem(
+                        entry = entry,
+                        showFileSize = showFileSize,
+                        onOpen = { onOpen(entry.uri) },
+                        onRemove = { onRemove(entry.uri) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentFileItem(
+    entry: RecentSceneEntry,
+    showFileSize: Boolean,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    var hovered by remember { mutableStateOf(false) }
+    val bgColor = if (hovered) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+    } else {
+        Color.Transparent
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onOpen,
+            )
+            .background(bgColor, RoundedCornerShape(6.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                entry.label,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    entry.filePath.ifBlank { entry.uri },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (showFileSize && entry.fileSize > 0L) {
+                    Text(
+                        formatFileSize(entry.fileSize),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    formatTimestamp(entry.timestamp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        IconButton(
+            onClick = onOpen,
+            modifier = Modifier
+                .size(28.dp)
+                .minimumInteractiveComponentSize(),
+        ) {
+            Icon(
+                Icons.Rounded.FileOpen,
+                contentDescription = "打开",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+        IconButton(
+            onClick = onRemove,
+            modifier = Modifier
+                .size(28.dp)
+                .minimumInteractiveComponentSize(),
+        ) {
+            Icon(
+                Icons.Rounded.Close,
+                contentDescription = "移除",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
 }
 
+private fun formatFileSize(size: Long): String {
+    return when {
+        size < 1024 -> "$size B"
+        size < 1024 * 1024 -> "${size / 1024} KB"
+         else -> String.format("%.1f MB", size / (1024.0 * 1024.0))
+    }
+}
 
 /**
  * V4: scene-name title that shrinks to fit the

@@ -31,9 +31,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.VerticalAlignTop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -255,7 +255,24 @@ private fun RecentFileTile(
                         .size(48.dp)
                         .alpha(overlayAlpha)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
+                        .background(
+                            // V_NOW (L2 polish v6 2026-06-10):
+                            // swap primary <-> tertiary container
+                            // based on the current pinned state.
+                            // The user reported the previous
+                            // build "长按置顶,再长按取消置顶"
+                            // because the button looked the
+                            // same regardless of state — they
+                            // couldn't tell whether a tap
+                            // actually toggled the flag. With
+                            // the two distinct backgrounds the
+                            // state is obvious at a glance: a
+                            // filled tertiary container means
+                            // the entry IS pinned, the primary
+                            // tint means it is NOT.
+                            if (entry.pinned) MaterialTheme.colorScheme.tertiary
+                            else MaterialTheme.colorScheme.primary
+                        )
                         .clickable {
                             onTogglePin()
                             showMenu = false
@@ -263,7 +280,9 @@ private fun RecentFileTile(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.VerticalAlignTop,
+                        imageVector =
+                            if (entry.pinned) Icons.Filled.PushPin
+                            else Icons.Outlined.PushPin,
                         contentDescription = if (entry.pinned) "取消置顶" else "置顶",
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(24.dp),
