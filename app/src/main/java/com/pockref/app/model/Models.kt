@@ -672,6 +672,25 @@ data class PockRefUiState(
  // who imported a few pictures.
  val globalImageLock: Boolean = false,
  /**
+  * V_NOW (2026-06-10 user spec "单选 sheet 第一行按钮 = 水平翻转 /
+  * 裁切 / 右旋 90° / 复原 / 设为封面"): the image id the user
+  * has explicitly marked as the scene's cover. `null` = no
+  * image is currently the cover (the cover badge / outline
+  * is hidden and the export-thumbnail path falls back to
+  * the first image in the scene, same as before this field
+  * existed). Pinned to a single image id; setting a new one
+  * simply replaces the previous — there is no
+  * "multiple covers" / "no cover" toggle in the spec.
+  *
+  * Intentionally NOT persisted in this commit — it's a
+  * view-only affordance (UI uses it to draw a "封面" badge
+  * on the chosen image). Persistence can be added when the
+  * scene-format gets a v2 cover field; until then the cover
+  * resets to `null` on app restart, which the user can
+  * always re-set with one tap.
+  */
+ val coverImageId: String? = null,
+ /**
  * V_NOW (2026-06-09 user spec "长按全局锁定时画布不可移动
  * 和旋转,同时按钮会变红"): when `true`, ALL canvas
  * transforms (pan / zoom / minimap zoom / minimap click-

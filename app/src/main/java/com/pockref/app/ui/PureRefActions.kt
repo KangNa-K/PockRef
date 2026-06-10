@@ -182,6 +182,18 @@ sealed interface PockRefAction {
     data class MoveImage(val imageId: String, val delta: Offset) : PockRefAction
     data class CycleImageUnderPoint(val point: Offset, val showSheet: Boolean = true) : PockRefAction
     data class BringImageToFront(val imageId: String) : PockRefAction
+    /**
+     * V_NOW (2026-06-10 user spec "单选 sheet 第一行按钮 = 水平翻转 /
+     * 裁切 / 右旋 90° / 复原 / 设为封面"): mark an image id as
+     * the scene's cover. `null` clears the cover (resets to the
+     * "no cover" state, so the export-thumbnail path falls back
+     * to the first image in the scene, same as before this
+     * field existed). Same single-id semantics as the
+     * [PockRefUiState.coverImageId] it writes — setting a new
+     * id simply replaces the previous; there is no
+     * "multiple covers" / "no cover" toggle in the spec.
+     */
+    data class SetAsCover(val imageId: String?) : PockRefAction
     data class PanCanvas(val delta: Offset) : PockRefAction
     data class ZoomCanvas(val scaleChange: Float, val focus: Offset) : PockRefAction
     /**
