@@ -531,10 +531,15 @@ class ImageOptimizer(private val context: Context) {
         val originalSize = imageBytes.size
 
         if (originalSize < config.minCompressThreshold) {
+            // Small-file passthrough: still report real dimensions so callers that
+            // gate on width/height > 0 (e.g. importImages) don't silently drop the
+            // image. Bug fix: previously width/height were hard-coded to 0 here.
+            val passthroughBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, passthroughBounds)
             return OptimizeResult(
                 bytes = imageBytes,
-                width = 0,
-                height = 0,
+                width = passthroughBounds.outWidth,
+                height = passthroughBounds.outHeight,
                 mimeType = mimeType,
                 originalSize = originalSize,
                 optimizedSize = originalSize,
@@ -627,10 +632,15 @@ class ImageOptimizer(private val context: Context) {
         val originalSize = imageBytes.size
 
         if (originalSize < config.minCompressThreshold) {
+            // Small-file passthrough: still report real dimensions so callers that
+            // gate on width/height > 0 (e.g. importImages) don't silently drop the
+            // image. Bug fix: previously width/height were hard-coded to 0 here.
+            val passthroughBounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, passthroughBounds)
             return OptimizeResult(
                 bytes = imageBytes,
-                width = 0,
-                height = 0,
+                width = passthroughBounds.outWidth,
+                height = passthroughBounds.outHeight,
                 mimeType = mimeType,
                 originalSize = originalSize,
                 optimizedSize = originalSize,
