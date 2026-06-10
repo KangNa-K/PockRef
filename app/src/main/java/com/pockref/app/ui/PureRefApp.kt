@@ -978,7 +978,149 @@ fun PockRefApp(
     ) { _ ->
         BoxWithConstraints(
             Modifier
-                .fillMaxSize(),
+                .fillMaxSize()
+                // V_NOW (2026-06-10, "sheet 点击空白处关闭"):
+                // a "tap outside to dismiss" detector on
+                // the outer BoxWithConstraints. Active
+                // ONLY when the start page is showing
+                // AND the user is in multi-select mode
+                // (the gate key is the AND of both
+                // booleans — the pointerInput is
+                // re-created when either flips).
+                //
+                // V_NOW: the detector uses a manual
+                // [awaitEachGesture] loop with
+                // [awaitFirstDown] + [awaitFirstUp],
+                // NOT [detectTapGestures], because we
+                // need to inspect the consumed state
+                // of the up event to decide whether
+                // a child has already claimed the
+                // gesture. [detectTapGestures] only
+                // fires its onTap when both the
+                // down AND the up are unconsumed
+                // (Compose's default for the
+                // underlying loop), but it doesn't
+                // expose that consumed state to the
+                // caller — the manual loop is the
+                // only way to check
+                // `up.isConsumed` from outside.
+                //
+                // V_NOW: cooperative consumption model.
+                //   - Empty area (no child consumed):
+                //     `up.isConsumed = false` →
+                //     fire onAction(ExitRecentMultiSelect)
+                //   - Tap on thumbnail: thumbnail's
+                //     [detectTapGestures] (multi-select
+                //     mode branch in v3) consumes the
+                //     up via its internal press
+                //     handling → `up.isConsumed = true`
+                //     → detector releases, no dismiss.
+                //   - Tap on the "添加图片" + button:
+                //     the button's [Modifier.clickable]
+                //     consumes the up → no dismiss.
+                //     (Tapping the + button in
+                //     multi-select mode would also
+                //     fire the SAF picker; we let
+                //     that happen rather than
+                //     dismissing multi-select too.)
+                //   - Tap on the sheet itself
+                //     (header / action buttons /
+                //     drag handle): the [BottomSheetPanel]'s
+                //     Surface consumes the up → no
+                //     dismiss. The sheet's own
+                //     swipe-down-to-dismiss and
+                //     header-close-button-to-dismiss
+                //     paths remain the primary
+                //     dismissal affordances.
+                //   - Tap on the bulk-delete confirm
+                //     dialog: the [AlertDialog]'s
+                //     content consumes the up → no
+                //     dismiss. The dialog's
+                //     onDismissRequest handles its own
+                //     dismissal.
+                //
+                // V_NOW: NO scrim is added. The
+                // tap-to-dismiss is a "natural"
+                // Android affordance without a visual
+                // hint — the user can discover it
+                // just by tapping. A scrim would dim
+                // the canvas (and the thumbnails
+                // behind it) which contradicts the
+                // non-modal design intent of the
+                // sheet — the user should still be
+                // able to see and interact with the
+                // grid below the sheet. (The
+                // existing [BottomSheetPanel] is
+                // also non-modal: the kdoc on that
+                // widget explicitly notes "Touches
+                // that land OUTSIDE the sheet's
+                // [Surface] pass through to the
+                // underlying canvas".)
+                .pointerInput(state.images.isEmpty() && state.recentMultiSelectMode) {
+                    if (!state.recentMultiSelectMode) return@pointerInput
+                    awaitEachGesture {
+                        // V_NOW: [requireUnconsumed = true]
+                        // is critical — without it, the
+                        // outer detector would see the
+                        // down even if a child
+                        // immediately consumed it, and
+                        // the loop would proceed to
+                        // await the up. The up check
+                        // would still catch the
+                        // consumed-up case, but
+                        // requiring unconsumed downs
+                        // from the start avoids a
+                        // useless gesture loop when a
+                        // child claims the gesture
+                        // instantly (e.g. the grid's
+                        // scroll on a vertical drag).
+                        val down = awaitFirstDown(requireUnconsumed = true)
+                        // V_NOW: manual up-wait via
+                        // [awaitPointerEvent] — the
+                        // Compose 1.2.x baseline used
+                        // here doesn't expose
+                        // [awaitFirstUp] directly (that
+                        // lands in 1.3+). The
+                        // [awaitPointerEvent] loop
+                        // below walks the change list
+                        // and looks for the matching
+                        // pointer going up; if it
+                        // finds the up AND the up
+                        // change is unconsumed, fire
+                        // the dismiss.
+                        var upConsumed = false
+                        var didFireUp = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes
+                                .firstOrNull { it.id == down.id }
+                                ?: break
+                            if (!change.pressed) {
+                                upConsumed = change.isConsumed
+                                didFireUp = true
+                                break
+                            }
+                            // V_NOW: if the change is
+                            // already consumed by a
+                            // child (e.g. a vertical
+                            // scroll on the grid), bail
+                            // out without firing the
+                            // dismiss — the child has
+                            // claimed the gesture.
+                            if (change.isConsumed && !change.pressed.not()) {
+                                // No-op — we keep looping
+                                // until the up so we
+                                // can still read the
+                                // consumed state. The
+                                // dismiss decision is
+                                // made on the up event.
+                            }
+                        }
+                        if (didFireUp && !upConsumed) {
+                            onAction(PockRefAction.ExitRecentMultiSelect)
+                        }
+                    }
+                },
         ) {
             CanvasPanel(
                 state = state,
@@ -1619,6 +1761,22 @@ fun PockRefApp(
             // the chrome slides in from the top and
             // bottom edges.
             //
+            // V_NOW (2026-06-10, sheet 统一): the v1.0
+            // dual top-bar + bottom-bar chrome has
+            // been collapsed into a SINGLE bottom
+            // sheet — [RecentMultiSelectSheet]. The
+            // sheet itself owns the
+            // "visible = recentMultiSelectMode &&
+            // recentScenes.isNotEmpty()" gate, so
+            // the call site just renders it
+            // unconditionally; the sheet no-ops
+            // when the gate is false. This matches
+            // the [com.pockref.app.ui.PureRefApp.SelectionBottomSheet]
+            // / crop overlay's [BottomSheetPanel]
+            // usage — one sheet, one chrome element,
+            // visual contract identical to every
+            // other sheet in the app.
+            //
             // V_NOW (BackHandler — see further down): the
             // system back button, when the start page is
             // in multi-select mode, exits multi-select
@@ -1628,19 +1786,15 @@ fun PockRefApp(
             // ranks ABOVE the scene-is-open case, which is
             // a no-op for the start page anyway (no
             // scene is open there — the [EmptyCanvasState]
-            // is the canvas-empty branch).
-            if (state.recentMultiSelectMode) {
-                RecentMultiSelectTopBar(
-                    state = state,
-                    onAction = onAction,
-                )
-            }
-            if (state.recentMultiSelectMode && state.recentScenes.isNotEmpty()) {
-                RecentMultiSelectBottomBar(
-                    state = state,
-                    onAction = onAction,
-                )
-            }
+            // is the canvas-empty branch). The sheet's
+            // own back handler is disabled
+            // ([dismissOnBackPress] = false) so the
+            // PockRefApp-level chain is the single
+            // back-press authority.
+            RecentMultiSelectSheet(
+                state = state,
+                onAction = onAction,
+            )
             BulkDeleteConfirmDialog(
                 state = state,
                 onAction = onAction,
@@ -4897,6 +5051,17 @@ private fun EmptyCanvasState(
                 onOpen = { onAction(PockRefAction.OpenRecentScene(it)) },
                 onEnterMultiSelect = { uri -> onAction(PockRefAction.EnterRecentMultiSelect(uri)) },
                 onToggleSelection = { uri -> onAction(PockRefAction.ToggleRecentSelection(uri)) },
+                // V_NOW (2026-06-10, v1.1 swipe-to-pin):
+                // the right-swipe on a recent tile
+                // dispatches the existing
+                // [PockRefAction.TogglePinRecentScene]
+                // action. No new action is needed —
+                // the swipe handler reuses the same
+                // toggle-path that the canvas-side
+                // "edit scene" code uses, so a swipe-
+                // pin and a bulk-action pin produce
+                // byte-identical on-disk state.
+                onSwipePin = { uri -> onAction(PockRefAction.TogglePinRecentScene(uri)) },
                 onRename = { uri, newLabel ->
                     onAction(PockRefAction.RenameRecentScene(uri, newLabel))
                 },

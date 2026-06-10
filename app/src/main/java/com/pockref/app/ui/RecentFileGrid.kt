@@ -10,10 +10,16 @@ package com.pockref.app.ui
 
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,6 +52,7 @@ import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -54,16 +61,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pockref.app.model.RecentSceneEntry
 import com.pockref.app.model.RecentSortMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 // V_NOW (L2 empty-canvas revamp 2026-06-10 + start-page
 // multi-select 2026-06-10): the recent-files grid that
@@ -100,6 +113,7 @@ fun RecentFileGrid(
     onOpen: (String) -> Unit,
     onEnterMultiSelect: (String) -> Unit,
     onToggleSelection: (String) -> Unit,
+    onSwipePin: (String) -> Unit,
     onRename: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -161,6 +175,7 @@ fun RecentFileGrid(
                 onLongPress = {
                     if (!multiSelectMode) onEnterMultiSelect(entry.uri)
                 },
+                onSwipePin = { onSwipePin(entry.uri) },
                 onRename = { newLabel -> onRename(entry.uri, newLabel) },
             )
         }
@@ -174,8 +189,92 @@ private fun RecentFileTile(
     isSelected: Boolean,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
+    onSwipePin: () -> Unit,
     onRename: (String) -> Unit,
 ) {
+    // V_NOW (2026-06-10, v1.1 swipe-to-pin, v2):
+    // the v1 implementation used M3
+    // [SwipeToDismissBox] but the user reported
+    // the gesture was "很难触发" (hard to trigger)
+    // on real-device first test. Three root causes
+    // were identified:
+    //   1. 30% positional threshold was too high
+    //      — on a 5-column landscape tablet
+    //      (560dp / tile) the threshold is 168dp,
+    //      a very long swipe.
+    //   2. [SwipeToDismissBox]'s internal
+    //      pointerInput competed with the
+    //      thumbnail's [combinedClickable] (which
+    //      has a long-press timer for "enter
+    //      multi-select"). Compose's cooperative
+    //      gesture model let the long-press timer
+    //      win in some races, cancelling the
+    //      horizontal drag.
+    //   3. The drag's default slop-detection
+    //      cooperated with [LazyVerticalGrid]'s
+    //      vertical scroll, so a near-horizontal
+    //      drag (e.g. 70° / 20°) could be claimed
+    //      as a vertical scroll instead.
+    //
+    // The v2 implementation below replaces
+    // [SwipeToDismissBox] with a hand-rolled
+    // [awaitEachGesture] loop that:
+    //   - Uses a FIXED 56dp commit threshold
+    //     (M3 [MinTouchTarget] 48dp + 8dp buffer)
+    //     regardless of tile width — same
+    //     "swipe distance" feel on phone, compact
+    //     tablet, and 5-col landscape.
+    //   - Consumes the pointer events aggressively
+    //     on the FIRST horizontal move past
+    //     [viewConfiguration.touchSlop], so neither
+    //     the [LazyVerticalGrid]'s vertical scroll
+    //     nor the [combinedClickable]'s long-press
+    //     timer can claim the gesture after the
+    //     drag has been identified as horizontal.
+    //   - Drives the foreground translation
+    //     directly via [graphicsLayer] + an
+    //     [Animatable] (no `SwipeToDismissBoxState`
+    //     to fight with) — the spring-back is a
+    //     single [Animatable.animateTo] call.
+    //
+    // The background reveal (pin icon + "置顶"
+    // label on primaryContainer) is rendered as
+    // a SIBLING of the moving foreground inside
+    // an outer [Box], so the background stays
+    // pinned at its position while the foreground
+    // slides over it. This is the same z-order
+    // trick [SwipeToDismissBox] uses internally,
+    // just unrolled so we control every detail.
+    val density = LocalDensity.current
+    val commitThresholdPx = with(density) { 56.dp.toPx() }
+    val maxDragPx = with(density) { 96.dp.toPx() }
+    // V_NOW (v1.1 swipe-to-pin v3): [mutableFloatStateOf]
+    // for [dragOffset] — the v2 implementation used
+    // an [Animatable] and called
+    // [Animatable.snapTo] inside a [scope.launch] on
+    // every pointer-move event. With a 60Hz pointer
+    // stream that meant dozens of coroutines all
+    // racing to update the same [Animatable]; the
+    // coroutine scheduler could deliver the updates
+    // out of order, leaving [dragOffset.value]
+    // lagging behind the actual finger position by
+    // 1-2 frames. The visible symptom was a "stutter"
+    // feel during the drag, and on some Compose
+    // versions the [Animatable] would refuse to
+    // commit (the gesture detector saw the finger
+    // move past the threshold but the visual offset
+    // hadn't caught up, so the release-vs-commit
+    // decision looked like "no drag happened"). A
+    // plain [mutableFloatStateOf] updates SYNCHRONOUSLY
+    // on every assignment — no coroutine queueing,
+    // no scheduler delays, the visual offset always
+    // matches the finger position in the same frame.
+    // The [animate] call (separate from
+    // [mutableFloatStateOf]) is used ONLY for the
+    // spring-back on release, when we explicitly
+    // want a 220ms eased animation.
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var bitmap by remember(entry.uri) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     LaunchedEffect(entry.uri) {
@@ -268,17 +367,233 @@ private fun RecentFileTile(
                 Modifier
             },
         )
-        .combinedClickable(
-            onClick = onTap,
-            onLongClick = onLongPress,
-        )
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(modifier = tileModifier) {
+        // V_NOW (v1.1 swipe-to-pin v2): the
+        // outer [Box] is the gesture root — both
+        // the pin-reveal background AND the moving
+        // foreground (thumbnail) live inside it.
+        // The outer Box itself does NOT move; only
+        // the inner foreground does, via
+        // [graphicsLayer] translationX driven by
+        // the [Animatable] `dragOffset` above.
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
+            // 1. Background (pin reveal) — rendered
+            //    FIRST so the foreground paints over
+            //    it. Only visible when dragOffset >
+            //    0.5f (small epsilon to avoid layout
+            //    flicker on the boundary). Background
+            //    does NOT have a pointerInput — it
+            //    never receives gestures (the
+            //    foreground covers it at rest, so the
+            //    user only ever touches the
+            //    foreground).
+            if (dragOffset > 0.5f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.CenterStart,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PushPin,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Text(
+                            text = "置顶",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+            // 2. Foreground (the actual thumbnail) —
+            //    receives gestures ([combinedClickable]
+            //    for tap + long-press, [pointerInput]
+            //    for horizontal drag) and moves right
+            //    via [graphicsLayer] translationX.
+            //    The [graphicsLayer] block is LAST
+            //    in the modifier chain so it applies
+            //    to everything (clip / background /
+            //    border / clickable / pointerInput).
+            Box(
+                modifier = tileModifier
+                    .pointerInput(entry.uri, multiSelectMode) {
+                        // V_NOW (v1.1 swipe-to-pin v3): the
+                        // foreground thumbnail carries
+                        // a SINGLE [pointerInput] that
+                        // handles ALL three idle-mode
+                        // gestures (tap / long-press /
+                        // swipe) — no [combinedClickable]
+                        // and no [detectTapGestures] —
+                        // because every Compose gesture
+                        // detector we tried to chain
+                        // competed with the others under
+                        // [LazyVerticalGrid]'s vertical
+                        // scroll pointerInput, and the
+                        // race outcome was that the
+                        // horizontal drag lost ~80% of
+                        // the time. By handling every
+                        // gesture class in one
+                        // [awaitEachGesture] loop there
+                        // is NO gesture arbitration —
+                        // the loop itself decides whether
+                        // a down-then-release-without-
+                        // movement is a tap, a
+                        // down-then-hold is a long-press,
+                        // or a down-then-horizontal-move
+                        // is a swipe.
+                        //
+                        // Multi-select mode uses a
+                        // SEPARATE branch (the early
+                        // return) that reuses Compose's
+                        // built-in [detectTapGestures] for
+                        // tap-to-toggle-selection. In
+                        // multi-select we don't need
+                        // long-press or swipe at all (the
+                        // bottom action bar owns those
+                        // actions), so a simple
+                        // [detectTapGestures] is enough
+                        // and avoids re-implementing tap
+                        // here.
+                        if (multiSelectMode) {
+                            detectTapGestures(
+                                onTap = { onTap() },
+                                // onLongPress is intentionally
+                                // omitted in multi-select
+                                // — long-press is a no-op
+                                // (the user is already in
+                                // multi-select, pressing
+                                // longer doesn't change
+                                // anything).
+                            )
+                            return@pointerInput
+                        }
+                        // Idle mode: tap + long-press +
+                        // horizontal swipe, all in one
+                        // [awaitEachGesture] loop.
+                        val touchSlop = viewConfiguration.touchSlop
+                        val longPressTimeoutMs = viewConfiguration.longPressTimeoutMillis
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            var isHorizontalDrag = false
+                            var didLongPress = false
+                            var didDispatch = false
+                            // Long-press timer — launched
+                            // on every gesture, cancelled
+                            // the moment the gesture is
+                            // identified as a swipe or
+                            // released before timeout.
+                            val longPressJob = scope.launch {
+                                delay(longPressTimeoutMs)
+                                if (!isHorizontalDrag) {
+                                    didLongPress = true
+                                    didDispatch = true
+                                    onLongPress()
+                                }
+                            }
+                            try {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes
+                                        .firstOrNull { it.id == down.id }
+                                        ?: break
+                                    if (!change.pressed) {
+                                        // Pointer up — commit
+                                        // decision time.
+                                        if (isHorizontalDrag) {
+                                            if (dragOffset > commitThresholdPx) {
+                                                onSwipePin()
+                                            }
+                                            scope.launch {
+                                                animate(
+                                                    initialValue = dragOffset,
+                                                    targetValue = 0f,
+                                                    animationSpec = tween(
+                                                        durationMillis = 220,
+                                                        easing = FastOutSlowInEasing,
+                                                    ),
+                                                ) { value, _ ->
+                                                    dragOffset = value
+                                                }
+                                            }
+                                        } else if (!didDispatch) {
+                                            // No movement, no long-press
+                                            // fired — must be a tap.
+                                            onTap()
+                                        }
+                                        break
+                                    }
+                                    if (!isHorizontalDrag) {
+                                        val dx = change.position.x - down.position.x
+                                        val dy = change.position.y - down.position.y
+                                        if (abs(dx) > touchSlop &&
+                                            abs(dx) > abs(dy)
+                                        ) {
+                                            isHorizontalDrag = true
+                                            // Cancel the long-press
+                                            // timer — the user is
+                                            // swiping, not holding.
+                                            longPressJob.cancel()
+                                            // Consume the down
+                                            // event so the parent
+                                            // [LazyVerticalGrid]
+                                            // doesn't see it as
+                                            // the start of a
+                                            // vertical scroll.
+                                            down.consume()
+                                        } else if (abs(dx) > touchSlop ||
+                                            abs(dy) > touchSlop
+                                        ) {
+                                            // Movement but NOT
+                                            // horizontal — the
+                                            // user is dragging
+                                            // diagonally. Cancel
+                                            // the long-press
+                                            // (it's not a hold),
+                                            // but DON'T claim the
+                                            // gesture (let the
+                                            // grid scroll).
+                                            longPressJob.cancel()
+                                        }
+                                    }
+                                    if (isHorizontalDrag) {
+                                        // We own the gesture —
+                                        // consume the change so
+                                        // no other detector
+                                        // (the grid's scroll,
+                                        // the long-press timer
+                                        // cancellation handler)
+                                        // can react.
+                                        change.consume()
+                                        val newOffset = (
+                                            dragOffset + change.positionChange().x
+                                            ).coerceIn(0f, maxDragPx)
+                                        dragOffset = newOffset
+                                    }
+                                }
+                            } finally {
+                                longPressJob.cancel()
+                            }
+                        }
+                    }
+                    .graphicsLayer {
+                        translationX = dragOffset
+                    },
+            ) {
             val bmp = bitmap
             if (bmp != null) {
                 androidx.compose.foundation.Image(
@@ -418,6 +733,7 @@ private fun RecentFileTile(
                     )
                 }
             }
+        }
         }
         Spacer(modifier = Modifier.height(4.dp))
         // V_NOW (2026-06-10, M3 multi-select

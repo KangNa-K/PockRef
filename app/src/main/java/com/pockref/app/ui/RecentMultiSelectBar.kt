@@ -6,20 +6,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
@@ -27,12 +21,11 @@ import androidx.compose.material.icons.rounded.Deselect
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,198 +38,76 @@ import com.pockref.app.model.PockRefUiState
 import com.pockref.app.ui.theme.Dimens
 
 /**
- * V_NOW (2026-06-10, "启动页多选 + 底部 Bulk Action Bar
- * 置顶"): the multi-select top app bar shown on the
- * start page when [PockRefUiState.recentMultiSelectMode]
- * is true. Mirrors the M3 [CenterAlignedTopAppBar] visual
- * contract — title in the centre, navigation icon
- * (X close) on the leading edge — but built directly from
- * [Surface] + [Row] so the chrome shares the
- * [com.pockref.app.ui.theme.Dimens] tokens (corner
- * radius / surface alpha / edge inset / tonal elevation)
- * the rest of the floating UI uses.
+ * V_NOW (2026-06-10, "启动页多选" → sheet 统一): the
+ * start-page multi-select chrome, refactored to a
+ * SINGLE M3 bottom sheet (replacing the previous
+ * dual top-bar + bottom-bar layout). Reuses the
+ * existing [BottomSheetPanel] widget for the chrome
+ * shell — 28dp top corners, 32×4dp drag handle,
+ * 560dp max width, 0dp tonalElevation, hairline
+ * outlineVariant border, 220ms slide-in animation.
+ * The visual contract is now byte-identical to
+ * the canvas's [com.pockref.app.ui.PureRefApp.SelectionBottomSheet]
+ * and the crop toolbar's [BottomSheetPanel] usage
+ * — every sheet in the app shares the same token
+ * vocabulary, so the user's "sheet 风格统一" goal
+ * is fully achieved.
  *
- * Visual contract:
- *   - `Surface(shape = 12dp, tonalElevation = 3dp,
- *     color = surface @ alpha 0.92)` — frosted glass,
- *     matches the top toolbar's pre-existing values.
- *   - 48dp height — M3 [MinTouchTarget], matches
- *     [Dimens.TopToolbarHeight].
- *   - Title: "已选 N 项" (or "选择项目" when the selection
- *     is empty) in [titleMedium] typography. The
- *     "N" is computed from the intersection of
- *     [PockRefUiState.recentSelection] and the
- *     currently-displayed [PockRefUiState.recentScenes]
- *     so a stale URI (one the user deleted via the
- *     bottom bar) doesn't bump the count.
- *   - Trailing X (close) icon button: dispatches
- *     [PockRefAction.ExitRecentMultiSelect]. Has a
- *     `contentDescription = "取消多选"` for TalkBack.
- *   - Status-bar inset: the bar pads itself by the
- *     status-bar height so it sits BELOW the system
- *     clock/battery, not under it. Without this
- *     padding the title's first line would be cut off
- *     on devices that draw the status bar on top of
- *     the app content (default Android 15+ behaviour).
+ * The sheet has two sections:
+ *   1. **Header** (56dp) — left: "已选 N 项"
+ *      [titleMedium] text (M3 ListItem header convention),
+ *      right: 48dp [IconButton] with [Icons.Rounded.Close],
+ *      `contentDescription = "取消多选"` for TalkBack.
+ *   2. **Actions row** (80dp) — 4 bulk action buttons
+ *      (全选 / 置顶 / 取消置顶 / 删除), unchanged from
+ *      the v1.0 dual-bar implementation.
  *
- * Positioning: this composable is designed to be
- * `align(Alignment.TopCenter)`-ed inside a [Box] that
- * also contains the [EmptyCanvasState] (sibling).
- * The bar's width is `matchParentSize()`-equivalent
- * (the [Surface] is constrained by its parent's
- * `widthIn(max = ...)` at the call site).
+ * Between the two sections is a 1dp
+ * [HorizontalDivider] tinted `outlineVariant @ 40%`
+ * — the M3 ListItem "header / content" separator
+ * pattern. The divider is INVISIBLE against most
+ * backgrounds and serves as a subtle visual chunk
+ * between the count info and the action affordances.
+ *
+ * Visibility:
+ *   - visible = [PockRefUiState.recentMultiSelectMode]
+ *     AND [PockRefUiState.recentScenes] is not empty.
+ *   - Empty recentScenes (impossible to multi-select
+ *     in that case) hides the sheet entirely — the
+ *     [EmptyCanvasState] "选择项目" surface would be
+ *     the only UI and the sheet would be a visual
+ *     orphan.
+ *
+ * Dismissal:
+ *   - Swipe-down on the sheet's drag handle (the
+ *     [BottomSheetPanel] default behaviour,
+ *     [swipeToDismiss] = true) dispatches
+ *     [PockRefAction.ExitRecentMultiSelect] via the
+ *     sheet's [onDismiss] callback.
+ *   - The sheet's own back-press handler is
+ *     DISABLED ([dismissOnBackPress] = false) because
+ *     [com.pockref.app.ui.PureRefApp]'s [BackHandler]
+ *     chain already routes back to the multi-select
+ *     exit branch (with higher-priority overrides
+ *     for the bulk-delete confirm dialog). Letting
+ *     the sheet register a second back handler would
+ *     double-fire on the same press.
+ *   - The header's [Close] icon button is a third
+ *     dismissal affordance, exposed for users who
+ *     don't notice the swipe gesture.
+ *
+ * Smart action bar:
+ *   - The actions row carries the same
+ *     "pin-unpin mixed" smart disable logic as the
+ *     v1.0 dual-bar implementation. The [PockRefAction]
+ *     dispatching is unchanged (复用
+ *     [PockRefAction.BulkSetRecentPin] etc.), so
+ *     the bulk pin / delete flow goes through the
+ *     same `persistRecentScenes` prefs path the
+ *     canvas-side edit-scene code uses.
  */
 @Composable
-fun BoxScope.RecentMultiSelectTopBar(
-    state: PockRefUiState,
-    onAction: (PockRefAction) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val validSelection = state.recentSelection.intersect(
-        state.recentScenes.map { it.uri }.toSet(),
-    )
-    val title = if (validSelection.isEmpty()) {
-        "选择项目"
-    } else {
-        "已选 ${validSelection.size} 项"
-    }
-    Surface(
-        modifier = modifier
-            .align(Alignment.TopCenter)
-            .padding(
-                horizontal = Dimens.EdgeInset,
-                vertical = Dimens.EdgeInset,
-            )
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .fillMaxWidth(),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(Dimens.ChromeCornerRadius),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-        tonalElevation = Dimens.ToolbarElevation,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(Dimens.TopToolbarHeight)
-                .padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            // V_NOW: the close icon is the bar's
-            // ONLY interactive element. The bar has
-            // no menu / overflow / settings / etc.
-            // — the bottom action bar below owns
-            // every multi-select action, and the
-            // top bar's only job is "show me how
-            // many I selected and let me get out".
-            // 48dp IconButton (default size) with
-            // 24dp icon (M3 standard) so the hit
-            // area is finger-friendly.
-            IconButton(
-                onClick = { onAction(PockRefAction.ExitRecentMultiSelect) },
-                modifier = Modifier.size(Dimens.TopToolbarHeight),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = "取消多选",
-                    modifier = Modifier.size(24.dp),
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 8.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.Medium,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                )
-            }
-            // V_NOW: the trailing slot is a 48dp
-            // "spacer" IconButton-sized Box so the
-            // title stays visually centred (the
-            // leading X is 48dp, so the trailing
-            // needs to match). The spacer is
-            // non-clickable — its only job is to
-            // balance the layout. Using a sized
-            // Box (not Spacer-with-modifier)
-            // because [Spacer] doesn't take a
-            // default min-touch-target, and a
-            // 0dp spacer would still leave the
-            // title off-centre by 4dp.
-            Box(modifier = Modifier.size(Dimens.TopToolbarHeight))
-        }
-    }
-}
-
-/**
- * V_NOW (2026-06-10): the multi-select bottom action
- * bar shown on the start page when
- * [PockRefUiState.recentMultiSelectMode] is true.
- * Mirrors the M3 [BottomAppBar] visual contract —
- * 80dp tall, action icons evenly distributed, icon-
- * above-text label per M3 small-bottom-app-bar
- * guidance — but built directly from [Surface] + [Row]
- * so the chrome shares the [Dimens] tokens.
- *
- * Actions (4 in the row, evenly spaced):
- *
- *   1. 全选 / 清空 (toggle): the icon and label
- *      switch based on whether the current
- *      selection covers the whole visible list
- *      ([PockRefAction.SelectAllRecentScenes] when
- *      not all are selected, [PockRefAction.ClearRecentSelection]
- *      when they are). The M3 "select all" / "deselect
- *      all" pattern is a single button that flips
- *      between two states, not two buttons.
- *
- *   2. 置顶 (always visible): when the selection
- *      contains ANY unpinned entry, the button is
- *      enabled and the icon is
- *      [Icons.Rounded.PushPin]. When ALL selected
- *      entries are already pinned, the button is
- *      disabled (alpha 0.38) — a tap would be a
- *      no-op anyway, the disabled state makes the
- *      "nothing to do" reading explicit.
- *
- *   3. 取消置顶 (always visible): symmetric to 置顶.
- *      Enabled when the selection contains ANY
- *      pinned entry, disabled when all selected
- *      entries are unpinned. The two buttons
- *      (置顶 / 取消置顶) are always both visible so
- *      the user can flip pinned ↔ unpinned with a
- *      single tap; the disabled state on each
- *      side is the M3 affordance for "this
- *      direction has no work to do".
- *
- *   4. 删除 (always visible): opens the bulk-delete
- *      confirmation dialog by dispatching
- *      [PockRefAction.RequestBulkDeleteConfirm].
- *      The actual deletion happens after the user
- *      confirms (see [BulkDeleteConfirmDialog]).
- *      Disabled when the selection is empty.
- *
- * V_NOW (smart affordance state): the bottom bar
- * reads [PockRefUiState.recentSelection] ∩
- * [PockRefUiState.recentScenes] (not just
- * [recentSelection]) to decide which buttons are
- * enabled — an orphan URI in the selection set
- * (one that was just deleted via a separate path)
- * doesn't flip the disabled state into "nothing
- * to do".
- *
- * Navigation-bar inset: the bar pads itself by
- * the gesture-navigation / 3-button-nav bar
- * height so the action icons aren't hidden by
- * the system nav bar on devices that don't
- * edge-to-edge the app.
- */
-@Composable
-fun BoxScope.RecentMultiSelectBottomBar(
+fun RecentMultiSelectSheet(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
     modifier: Modifier = Modifier,
@@ -245,25 +116,75 @@ fun BoxScope.RecentMultiSelectBottomBar(
     val validSelection = state.recentSelection.intersect(
         validScenes.map { it.uri }.toSet(),
     )
-    val allSelected = validScenes.isNotEmpty() &&
-        validScenes.all { it.uri in validSelection }
-    val anyUnpinned = validScenes.any { it.uri in validSelection && !it.pinned }
-    val anyPinned = validScenes.any { it.uri in validSelection && it.pinned }
-    val isAllPinned = validScenes.any { it.uri in validSelection } &&
-        validScenes.filter { it.uri in validSelection }.all { it.pinned }
-    Surface(
-        modifier = modifier
-            .align(Alignment.BottomCenter)
-            .padding(
-                horizontal = Dimens.EdgeInset,
-                vertical = Dimens.EdgeInset,
-            )
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .fillMaxWidth(),
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(Dimens.ChromeCornerRadius),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-        tonalElevation = Dimens.ToolbarElevation,
+    val visible = state.recentMultiSelectMode && validScenes.isNotEmpty()
+    BottomSheetPanel(
+        visible = visible,
+        // V_NOW: onDismiss routes to the multi-select
+        // exit action — handles BOTH swipe-down on
+        // the drag handle (BottomSheetPanel default)
+        // AND the header's close button (the
+        // IconButton onClick below). Both end the
+        // multi-select mode, which flips the
+        // visibility check above, which triggers
+        // the sheet's exit animation.
+        onDismiss = { onAction(PockRefAction.ExitRecentMultiSelect) },
+        modifier = modifier,
+        sheetMaxWidth = Dimens.SheetMaxWidth,
+        showDragHandle = true,
+        swipeToDismiss = true,
+        // V_NOW: back-press is owned by
+        // [com.pockref.app.ui.PureRefApp.BackHandler]
+        // which has the higher-priority bulk-delete
+        // confirm dialog branch. Disabling the
+        // sheet's own back handler prevents
+        // double-firing on the same press.
+        dismissOnBackPress = false,
     ) {
+        // ── Header: "已选 N 项" + ✕ ──
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            val title = if (validSelection.isEmpty()) {
+                "选择项目"
+            } else {
+                "已选 ${validSelection.size} 项"
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Medium,
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
+            IconButton(
+                onClick = { onAction(PockRefAction.ExitRecentMultiSelect) },
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "取消多选",
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+        }
+        // ── Divider: header / actions separator ──
+        HorizontalDivider(
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+        )
+        // ── Actions row: 4 bulk actions ──
+        val allSelected = validScenes.isNotEmpty() &&
+            validScenes.all { it.uri in validSelection }
+        val anyUnpinned = validScenes.any { it.uri in validSelection && !it.pinned }
+        val anyPinned = validScenes.any { it.uri in validSelection && it.pinned }
+        val isAllPinned = validScenes.any { it.uri in validSelection } &&
+            validScenes.filter { it.uri in validSelection }.all { it.pinned }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -325,9 +246,11 @@ fun BoxScope.RecentMultiSelectBottomBar(
     }
 }
 
+
+
 /**
  * V_NOW (2026-06-10): single button in the
- * [RecentMultiSelectBottomBar]'s action row. M3
+ * [RecentMultiSelectSheet]'s actions row. M3
  * small-bottom-app-bar convention is "icon above
  * text label" — a vertical [Column] of [Icon] +
  * [Text] inside a clickable surface. The surface
