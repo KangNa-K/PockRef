@@ -1075,7 +1075,7 @@ internal fun computeGroupCornerDragResult(
     val scaleFactor = if (kotlin.math.abs(rawRatio - 1f) <= CORNER_DRAG_DEADZONE) {
         1f
     } else {
-        rawRatio
+        kotlin.math.sqrt(rawRatio)
     }
     val newCenterScreen = Offset(
         (currentMoveScreen.x + initialAnchorScreen.x) / 2f,

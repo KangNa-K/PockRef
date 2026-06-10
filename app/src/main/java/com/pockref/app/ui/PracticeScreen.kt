@@ -1,3 +1,5 @@
+@file:Suppress("UnusedContentLambdaTargetStateParameter")
+
 package com.pockref.app.ui
 
 import androidx.activity.compose.BackHandler

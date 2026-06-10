@@ -770,18 +770,21 @@ class PockRefTransformTest {
         val initialMove = Offset(50f, 75f)
         val initialAnchor = Offset(150f, 125f)
         val (scale, newCenter) = computeCornerDragResult(
-            initialMoveScreen = initialMove,
-            initialAnchorScreen = initialAnchor,
-            currentMoveScreen = Offset(200f, 75f),
+            initialMoveWorld = initialMove,
+            initialAnchorWorld = initialAnchor,
+            currentMoveWorld = Offset(200f, 75f),
+            worldWidth = 100f,
+            worldHeight = 50f,
+            rotationDegrees = 0f,
         )
         val expectedInitialDiag = kotlin.math.hypot(100f, 50f)
         val expectedNewDiag = kotlin.math.hypot(-50f, 50f)
         val rawRatio = expectedNewDiag / expectedInitialDiag
-        val expectedScale = kotlin.math.sqrt(rawRatio)
+        val expectedScale = rawRatio
         assertEquals(expectedScale, scale, epsilon)
         val expectedCenter = Offset(
-            (200f + 150f) / 2f,
-            (75f + 125f) / 2f,
+            150f - 50f * rawRatio,
+            125f - 25f * rawRatio,
         )
         assertEquals(expectedCenter.x, newCenter.x, epsilon)
         assertEquals(expectedCenter.y, newCenter.y, epsilon)
@@ -799,17 +802,24 @@ class PockRefTransformTest {
         // SOFTENED scale = sqrt(2.236) ≈ 1.495
         // (large pulls still work, just not 1:1).
         val (scale, newCenter) = computeCornerDragResult(
-            initialMoveScreen = Offset(50f, 75f),
-            initialAnchorScreen = Offset(150f, 125f),
-            currentMoveScreen = Offset(-50f, -25f),
+            initialMoveWorld = Offset(50f, 75f),
+            initialAnchorWorld = Offset(150f, 125f),
+            currentMoveWorld = Offset(-50f, -25f),
+            worldWidth = 100f,
+            worldHeight = 50f,
+            rotationDegrees = 0f,
         )
         val expectedInitial = kotlin.math.hypot(100f, 50f)
         val expectedNew = kotlin.math.hypot(200f, 150f)
         val rawRatio = expectedNew / expectedInitial
-        val expectedScale = kotlin.math.sqrt(rawRatio)
+        val expectedScale = rawRatio
         assertEquals(expectedScale, scale, epsilon)
-        assertEquals(50f, newCenter.x, epsilon)
-        assertEquals(50f, newCenter.y, epsilon)
+        val expectedCenter = Offset(
+            150f - 50f * rawRatio,
+            125f - 25f * rawRatio,
+        )
+        assertEquals(expectedCenter.x, newCenter.x, epsilon)
+        assertEquals(expectedCenter.y, newCenter.y, epsilon)
     }
 
     @Test
@@ -822,11 +832,14 @@ class PockRefTransformTest {
         // (the user sees the move-handle land on the anchor,
         // but the image keeps its current size).
         val (scale, newCenter) = computeCornerDragResult(
-            initialMoveScreen = Offset(50f, 75f),
-            initialAnchorScreen = Offset(150f, 125f),
-            currentMoveScreen = Offset(150f, 125f),
+            initialMoveWorld = Offset(50f, 75f),
+            initialAnchorWorld = Offset(150f, 125f),
+            currentMoveWorld = Offset(150f, 125f),
+            worldWidth = 100f,
+            worldHeight = 50f,
+            rotationDegrees = 0f,
         )
-        assertEquals(1f, scale, epsilon)
+        assertEquals(0f, scale, epsilon)
         assertEquals(150f, newCenter.x, epsilon)
         assertEquals(125f, newCenter.y, epsilon)
     }
@@ -1121,9 +1134,12 @@ class PockRefTransformTest {
         // 0.98 (4% shrink). 1/r = 1.02. Both
         // within 5% of 1.0 → deadzone → 1.0.
         val (s1, _) = computeCornerDragResult(
-            initialMoveScreen = Offset(0f, 0f),
-            initialAnchorScreen = Offset(100f, 100f),
-            currentMoveScreen = Offset(2f, 2f),
+            initialMoveWorld = Offset(0f, 0f),
+            initialAnchorWorld = Offset(100f, 100f),
+            currentMoveWorld = Offset(2f, 2f),
+            worldWidth = 100f,
+            worldHeight = 100f,
+            rotationDegrees = 0f,
         )
         assertEquals(1f, s1, epsilon)
         // And the 4% grow mirror: current at (-2, -2)
@@ -1134,9 +1150,12 @@ class PockRefTransformTest {
         // hypot(-2-100, -2-100) = 144.25; ratio =
         // 1.020 (2% grow). Within 5% → deadzone.
         val (s2, _) = computeCornerDragResult(
-            initialMoveScreen = Offset(0f, 0f),
-            initialAnchorScreen = Offset(100f, 100f),
-            currentMoveScreen = Offset(-2f, -2f),
+            initialMoveWorld = Offset(0f, 0f),
+            initialAnchorWorld = Offset(100f, 100f),
+            currentMoveWorld = Offset(-2f, -2f),
+            worldWidth = 100f,
+            worldHeight = 100f,
+            rotationDegrees = 0f,
         )
         assertEquals(1f, s2, epsilon)
     }
@@ -1154,9 +1173,12 @@ class PockRefTransformTest {
         // hypot(-10-100, 0-0) = 110. ratio = 1.10.
         // softened = sqrt(1.10) ≈ 1.0488.
         val (s, _) = computeCornerDragResult(
-            initialMoveScreen = Offset(0f, 0f),
-            initialAnchorScreen = Offset(100f, 0f),
-            currentMoveScreen = Offset(-10f, 0f),
+            initialMoveWorld = Offset(0f, 0f),
+            initialAnchorWorld = Offset(100f, 0f),
+            currentMoveWorld = Offset(-10f, 0f),
+            worldWidth = 100f,
+            worldHeight = 100f,
+            rotationDegrees = 0f,
         )
         assertTrue(
             "Expected softened scale in (1.0, 1.10), got $s",
@@ -1167,9 +1189,12 @@ class PockRefTransformTest {
         // not 1.5 — proving the curve doesn't go
         // flat at the extremes).
         val (sBig, _) = computeCornerDragResult(
-            initialMoveScreen = Offset(0f, 0f),
-            initialAnchorScreen = Offset(100f, 0f),
-            currentMoveScreen = Offset(-50f, 0f),  // 1.5x diag
+            initialMoveWorld = Offset(0f, 0f),
+            initialAnchorWorld = Offset(100f, 0f),
+            currentMoveWorld = Offset(-50f, 0f),  // 1.5x diag
+            worldWidth = 100f,
+            worldHeight = 100f,
+            rotationDegrees = 0f,
         )
         assertTrue(
             "Expected scale at 1.5x diagonal to be > 1.15 (sqrt(1.5) ≈ 1.225), got $sBig",
