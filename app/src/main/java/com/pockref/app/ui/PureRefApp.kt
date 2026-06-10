@@ -1,3 +1,5 @@
+@file:Suppress("UnusedMaterial3ScaffoldPaddingParameter")
+
 package com.pockref.app.ui
 
 import android.content.Intent
@@ -7695,9 +7697,8 @@ private fun PockRefCanvas(
                              when (transformMode) {
                                 ImageTransformMode.SCALE -> {
                                     // V_NOW (2026-06-10 user spec
-                                    // "双指捏缩放画布,图片自身
-                                    // 不响应双指"): the SCALE
-                                    // branch fires on
+                                    // "双指缩放画布"): the
+                                    // SCALE branch fires on
                                     // `distanceDelta != 1f`
                                     // (i.e. a pinch). The image
                                     // scale path is intentionally
@@ -7705,28 +7706,39 @@ private fun PockRefCanvas(
                                     // are the only way to scale
                                     // an image); the canvas is
                                     // zoomed via
-                                    // [PockRefAction.ZoomCanvas]
-                                    // when there's no selected
-                                    // image, and the no-op
-                                    // remains for the has-selected
-                                    // case (the user has to drop
-                                    // the selection first to pinch-
-                                    // zoom the canvas — same
-                                    // behaviour the user spec
-                                    // asked for).
-                                    if (!hasSelected) {
-                                        val pinchZoomEnabledNoSel = isGestureEnabled(
-                                            currentState.gestureToggles,
-                                            GestureId.PINCH_ZOOM,
+                                    // [PockRefAction.ZoomCanvas].
+                                    //
+                                    // The [hasSelected] gate was
+                                    // removed because it
+                                    // contradicted the user spec
+                                    // "双指在碰到图片时无法缩放
+                                    // 画布" — when the user has
+                                    // a selection but starts a
+                                    // pinch whose centroid lands
+                                    // ON the selected image, the
+                                    // gesture should still zoom
+                                    // the canvas. Previously the
+                                    // gate silently dropped the
+                                    // gesture (no canvas zoom,
+                                    // no image scale), which
+                                    // read as "pinch doesn't
+                                    // work" exactly in the
+                                    // case the user wanted it
+                                    // most. The image is still
+                                    // safe (4-corner handles are
+                                    // the only way to scale
+                                    // it).
+                                    val pinchZoomEnabled = isGestureEnabled(
+                                        currentState.gestureToggles,
+                                        GestureId.PINCH_ZOOM,
+                                    )
+                                    if (distanceDelta != 1f && pinchZoomEnabled) {
+                                        currentOnAction(
+                                            PockRefAction.ZoomCanvas(
+                                                distanceDelta,
+                                                centroid,
+                                            ),
                                         )
-                                        if (distanceDelta != 1f && pinchZoomEnabledNoSel) {
-                                            currentOnAction(
-                                                PockRefAction.ZoomCanvas(
-                                                    distanceDelta,
-                                                    centroid,
-                                                ),
-                                            )
-                                        }
                                     }
                                 }
                                 ImageTransformMode.ROTATE -> {
@@ -8295,8 +8307,12 @@ private fun PockRefCanvas(
                             // sheet so a second tap (double-tap)
                             // can cancel it and focus instead.
                             val isSingleSelect = !isMultiSelect
-                                    currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = !isSingleSelect))
-                                    if (isSingleSelect) {
+                            if (isSingleSelect) {
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = false))
+                            } else {
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = true))
+                            }
+                            if (isSingleSelect) {
                                         // V_NOW (2026-06-08): same
                                         // debounce as the
                                         // unlocked-image path
