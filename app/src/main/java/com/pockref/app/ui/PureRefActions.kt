@@ -212,6 +212,32 @@ sealed interface PockRefAction {
     data class MoveImage(val imageId: String, val delta: Offset) : PockRefAction
     data class CycleImageUnderPoint(val point: Offset, val showSheet: Boolean = true) : PockRefAction
     data class BringImageToFront(val imageId: String) : PockRefAction
+    /**
+     * V_NOW (2026-06-10 user spec "单选 sheet 第一行按钮 = 水平翻转 /
+     * 裁切 / 右旋 90° / 复原 / 设为封面"): mark an image id as
+     * the scene's cover. `null` clears the cover (resets to the
+     * "no cover" state, so the export-thumbnail path falls back
+     * to the first image in the scene, same as before this
+     * field existed). Same single-id semantics as the
+     * [PockRefUiState.coverImageId] it writes — setting a new
+     * id simply replaces the previous; there is no
+     * "multiple covers" / "no cover" toggle in the spec.
+     *
+     * V_NOW (2026-06-10 revert repair): the action and its
+     * [com.pockref.app.ui.PureRefViewModel] handler were
+     * silently removed by commit `720078f` ("fix(L2 v6
+     * revert): restore v5 EmptyCanvasState+ExtendedFAB; add
+     * v6 coverImageId + Pin button visual state") along with
+     * the "设为封面" entry in the single-select sheet row1.
+     * The `PockRefUiState.coverImageId` field itself survived
+     * the revert (it's a passive state field), so reading it
+     * from the UI still worked, but dispatching the action
+     * was a no-op and the [com.pockref.app.ui.PureRefApp]
+     * SheetActionSpec had been replaced with the previous
+     * "左旋 90°" entry. This re-add is the [934b80f] commit
+     * re-applied.
+     */
+    data class SetAsCover(val imageId: String?) : PockRefAction
     data class PanCanvas(val delta: Offset) : PockRefAction
     data class ZoomCanvas(val scaleChange: Float, val focus: Offset) : PockRefAction
     /**

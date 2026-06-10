@@ -583,6 +583,20 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             }
             is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(action.point, action.showSheet)
             is PockRefAction.BringImageToFront -> transformController.bringImageToFront(action.imageId)
+            // V_NOW (2026-06-10 user spec "单选 sheet 第一行
+            // 按钮 = ... / 设为封面"): cover is a UI-only flag
+            // (no scene change, no undo). Just write
+            // [PockRefUiState.coverImageId]. `null` clears
+            // the cover (the export-thumbnail path already
+            // falls back to the first image in the scene when
+            // coverImageId is null, so there's nothing else
+            // to update).
+            //
+            // V_NOW (2026-06-10 revert repair): re-apply the
+            // 934b80f handler that was silently removed by
+            // 720078f. See PureRefActions.SetAsCover docstring
+            // for the full story.
+            is PockRefAction.SetAsCover -> _uiState.update { it.copy(coverImageId = action.imageId) }
             PockRefAction.BeginSceneGesture -> beginSceneGesture()
             PockRefAction.EndSceneGesture -> endSceneGesture()
             is PockRefAction.BeginImageDrag -> transformController.beginImageDrag(action.imageId)

@@ -131,6 +131,7 @@ import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.AlignHorizontalLeft
 import androidx.compose.material.icons.rounded.AlignHorizontalRight
 import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.SwipeRight
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Tune
@@ -2219,6 +2220,39 @@ private fun SelectionBottomSheet(
                         },
                     )
                 } else {
+                    // V_NOW (2026-06-10 user spec "单选
+                    // sheet 第一行按钮 = 水平翻转 / 裁切 /
+                    // 右旋 90° / 复原 / 设为封面"): 5
+                    // buttons, single-select row1. The
+                    // previous "左旋 90°" entry is dropped
+                    // (users still have the 4-corner handle
+                    // rotate gesture on the canvas itself
+                    // for fine-grained angles — the sheet
+                    // button is the quick +/-90° path, and
+                    // -90° lives on the canvas handle). The
+                    // new 5th entry is the cover
+                    // affordance: tapping it marks the
+                    // single-selected image as the
+                    // [PockRefUiState.coverImageId] (same
+                    // id is re-tappable to clear it back to
+                    // null, matching the
+                    // [PockRefAction.SetAsCover] null =
+                    // clear semantics). Active state shows
+                    // when the currently selected image is
+                    // already the cover (subtle visual
+                    // confirmation).
+                    //
+                    // V_NOW (2026-06-10 revert repair):
+                    // re-applies the `934b80f` row1 layout
+                    // that was silently reverted by `720078f`
+                    // ("fix(L2 v6 revert): restore v5
+                    // EmptyCanvasState+ExtendedFAB; add v6
+                    // coverImageId + Pin button visual
+                    // state"). The action and viewmodel
+                    // handler are also re-added; see
+                    // [PockRefAction.SetAsCover] for the
+                    // full story.
+                    val currentSingleId = state.selectedImageId
                     listOf(
                         SheetActionSpec(Icons.Rounded.Flip, "水平翻转", allFlippedH) {
                             onAction(PockRefAction.FlipHorizontal)
@@ -2226,14 +2260,23 @@ private fun SelectionBottomSheet(
                         SheetActionSpec(Icons.Rounded.Crop, "裁切", false) {
                             onAction(PockRefAction.EnterCropMode)
                         },
-                        SheetActionSpec(Icons.AutoMirrored.Rounded.RotateLeft, "左旋 90°", false) {
-                            onAction(PockRefAction.RotateLeft)
-                        },
                         SheetActionSpec(Icons.AutoMirrored.Rounded.RotateRight, "右旋 90°", false) {
                             onAction(PockRefAction.RotateRight)
                         },
                         SheetActionSpec(Icons.Rounded.RestartAlt, "复原", false) {
                             onAction(PockRefAction.ResetTransform)
+                        },
+                        SheetActionSpec(
+                            icon = Icons.Rounded.Star,
+                            label = "设为封面",
+                            active = currentSingleId != null &&
+                                state.coverImageId == currentSingleId,
+                        ) {
+                            val id = currentSingleId
+                            if (id != null) {
+                                val next = if (state.coverImageId == id) null else id
+                                onAction(PockRefAction.SetAsCover(next))
+                            }
                         },
                     )
                 }
