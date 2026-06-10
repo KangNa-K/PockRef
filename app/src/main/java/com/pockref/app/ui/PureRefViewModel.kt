@@ -460,6 +460,23 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.RemoveRecentScene -> removeRecentScene(action.uri)
             is PockRefAction.RenameRecentScene -> renameRecentScene(action.uri, action.newLabel)
             is PockRefAction.TogglePinRecentScene -> togglePinRecentScene(action.uri)
+            // V_NOW (2026-06-10, "启动页多选 + 底部 Bulk Action
+            // Bar 置顶"): start-page recent-files multi-select.
+            // See [PockRefAction.EnterRecentMultiSelect] kdoc
+            // for the full feature rationale.
+            is PockRefAction.EnterRecentMultiSelect -> enterRecentMultiSelect(action.uri)
+            PockRefAction.ExitRecentMultiSelect -> exitRecentMultiSelect()
+            is PockRefAction.ToggleRecentSelection -> toggleRecentSelection(action.uri)
+            PockRefAction.SelectAllRecentScenes -> selectAllRecentScenes()
+            PockRefAction.ClearRecentSelection -> clearRecentSelection()
+            is PockRefAction.BulkSetRecentPin -> bulkSetRecentPin(action.pinned)
+            PockRefAction.RequestBulkDeleteConfirm -> _uiState.update {
+                it.copy(bulkDeleteConfirmOpen = true)
+            }
+            PockRefAction.DismissBulkDeleteConfirm -> _uiState.update {
+                it.copy(bulkDeleteConfirmOpen = false)
+            }
+            is PockRefAction.BulkDeleteRecentScenes -> bulkDeleteRecentScenes(action.uris)
             is PockRefAction.ImportMixed -> importMixed(action.uris)
             PockRefAction.CloseScene -> sceneController.onCloseScene()
             is PockRefAction.SelectImage -> transformController.selectImage(action.imageId)
@@ -1703,11 +1720,206 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
+    // ── Start-page multi-select (V_NOW 2026-06-10) ─────────────────
+    // The seven internal handlers below drive the new
+    // start-page multi-select chrome. They share a single
+    // prefs serialization helper ([persistRecentScenes])
+    // that wraps the same `|`-delimited row format the
+    // four pre-existing single-file handlers
+    // ([addRecentScene] / [removeRecentScene] /
+    // [renameRecentScene] / [togglePinRecentScene]) write
+    // inline. The four pre-existing handlers are left
+    // untouched in THIS commit to keep the diff additive
+    // (a follow-up commit can migrate them to the
+    // helper; the on-disk format is identical either way
+    // so a user who pins from the start page sees the
+    // same prefs row as one who pins from the canvas-
+    // side "edit scene" path).
+    //
+    // V_NOW: every recent-scene mutation — single-file
+    // AND bulk — goes through the same `RECENT_SCENES_KEY`
+    // prefs key, so a future migration to a Room/SQLite
+    // recent-scenes table only needs to migrate one key.
+
+    /**
+     * V_NOW (2026-06-10): single-source prefs writer for
+     * the recent-scenes list, called by the bulk-pin
+     * handler below. The four pre-existing single-file
+     * handlers still inline the same `|`-serialization
+     * (left untouched for this commit to keep the diff
+     * additive) but the on-disk format is byte-identical
+     * — the helper is the source of truth going forward,
+     * the inlined copies are kept only for
+     * diff-minimality. Takes the full updated list and
+     * writes it as a single atomic `apply()`.
+     */
+    private fun persistRecentScenes(updated: List<RecentSceneEntry>) {
+        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+            listOf(
+                it.uri,
+                it.label.replace("|", "/"),
+                it.source,
+                it.timestamp.toString(),
+                it.filePath.replace("|", "/"),
+                it.fileSize.toString(),
+                if (it.pinned) "1" else "0",
+            ).joinToString("|")
+        }).apply()
+        _uiState.update { it.copy(recentScenes = updated) }
+    }
+
+    // V_NOW (2026-06-10): enter multi-select mode on the
+    // start page. Idempotent — dispatching when mode is
+    // already true is a no-op (the selection set is left
+    // untouched in that case so a stray re-dispatch
+    // doesn't drop the user's picks). The optional
+    // [seedUri] is the URI the long-press happened on;
+    // it's pre-selected so the user has a visible target
+    // on entry.
+    internal fun enterRecentMultiSelect(seedUri: String?) {
+        if (_uiState.value.recentMultiSelectMode) return
+        _uiState.update {
+            it.copy(
+                recentMultiSelectMode = true,
+                recentSelection = if (seedUri != null) setOf(seedUri) else emptySet(),
+            )
+        }
+    }
+
+    // V_NOW (2026-06-10): exit multi-select mode AND
+    // clear the selection. The reducer flips both the
+    // mode flag and the selection set in a single update
+    // so the UI sees a consistent "no chrome, no picks"
+    // state. Idempotent.
+    internal fun exitRecentMultiSelect() {
+        if (!_uiState.value.recentMultiSelectMode &&
+            _uiState.value.recentSelection.isEmpty()
+        ) return
+        _uiState.update {
+            it.copy(
+                recentMultiSelectMode = false,
+                recentSelection = emptySet(),
+            )
+        }
+    }
+
+    // V_NOW (2026-06-10): toggle [uri] in
+    // [PockRefUiState.recentSelection]. No-op if
+    // multi-select mode is off (a stray dispatch from a
+    // tap that arrived during the mode-flip transition
+    // shouldn't pollute the selection set when the chrome
+    // is about to disappear anyway). Also no-ops if
+    // [uri] doesn't correspond to a current
+    // [PockRefUiState.recentScenes] entry — defensive
+    // against a stale dispatch from a deleted file.
+    internal fun toggleRecentSelection(uri: String) {
+        val state = _uiState.value
+        if (!state.recentMultiSelectMode) return
+        if (state.recentScenes.none { it.uri == uri }) return
+        _uiState.update {
+            val next = it.recentSelection.toMutableSet().apply {
+                if (!add(uri)) remove(uri)
+            }
+            it.copy(recentSelection = next)
+        }
+    }
+
+    // V_NOW (2026-06-10): select every
+    // [RecentSceneEntry] in the current [recentScenes]
+    // list. Replaces (not adds to) the existing
+    // selection set — matches the Gmail "全选" semantics
+    // where the button is an absolute state, not a
+    // "select the rest" toggle. No-op on an empty
+    // [recentScenes] (button click while the list is
+    // empty is invisible anyway since the chrome doesn't
+    // render when there are no recent files).
+    internal fun selectAllRecentScenes() {
+        if (!_uiState.value.recentMultiSelectMode) return
+        _uiState.update {
+            it.copy(
+                recentSelection = it.recentScenes.map { entry -> entry.uri }.toSet(),
+            )
+        }
+    }
+
+    // V_NOW (2026-06-10): clear the selection WITHOUT
+    // exiting multi-select mode. The bottom bar's "清空"
+    // affordance (or its "all cleared" sentinel state)
+    // dispatches this. Idempotent.
+    internal fun clearRecentSelection() {
+        if (_uiState.value.recentSelection.isEmpty()) return
+        _uiState.update { it.copy(recentSelection = emptySet()) }
+    }
+
+    // V_NOW (2026-06-10): bulk-set the `pinned` flag on
+    // every URI in the current selection. Filters the
+    // selection to only URIs that still exist in
+    // [recentScenes] (an orphan from a deleted file would
+    // be a no-op anyway, but filtering up front keeps
+    // the on-disk format clean). No-op when selection is
+    // empty. Writes the prefs entry once at the end —
+    // NOT once per entry — so a 12-file pin is a single
+    // `apply()` instead of 12 fsyncs.
+    internal fun bulkSetRecentPin(pinned: Boolean) {
+        val state = _uiState.value
+        val targets = state.recentSelection
+            .intersect(state.recentScenes.map { it.uri }.toSet())
+        if (targets.isEmpty()) return
+        val updated = state.recentScenes.map { entry ->
+            if (entry.uri in targets) entry.copy(pinned = pinned) else entry
+        }
+        persistRecentScenes(updated)
+    }
+
+    // V_NOW (2026-06-10): bulk-delete the URIs in
+    // [uris]. Filters the input to only URIs that still
+    // exist in [recentScenes] (defense against a stale
+    // dispatch). After the delete, the selection set is
+    // filtered to keep only the survivors — a leftover
+    // selection count that points at no files would
+    // confuse the bottom-bar count. If the delete leaves
+    // [recentScenes] empty, multi-select mode is
+    // auto-exited so the chrome doesn't hang around an
+    // empty list. The bulk-delete confirm dialog is
+    // auto-closed in the same update (matches the
+    // user's mental model: "I confirmed, the dialog
+    // went away, the files are gone").
+    internal fun bulkDeleteRecentScenes(uris: List<String>) {
+        val state = _uiState.value
+        val targets = uris
+            .intersect(state.recentScenes.map { it.uri }.toSet())
+        if (targets.isEmpty()) return
+        val updated = state.recentScenes.filterNot { it.uri in targets }
+        val survivingSelection = state.recentSelection.intersect(
+            updated.map { it.uri }.toSet(),
+        )
+        val newMultiSelectMode = state.recentMultiSelectMode && updated.isNotEmpty()
+        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+            listOf(
+                it.uri,
+                it.label.replace("|", "/"),
+                it.source,
+                it.timestamp.toString(),
+                it.filePath.replace("|", "/"),
+                it.fileSize.toString(),
+                if (it.pinned) "1" else "0",
+            ).joinToString("|")
+        }).apply()
+        _uiState.update {
+            it.copy(
+                recentScenes = updated,
+                recentSelection = survivingSelection,
+                recentMultiSelectMode = newMultiSelectMode,
+                bulkDeleteConfirmOpen = false,
+            )
+        }
+    }
+
     // V_NOW (L2 empty-canvas revamp 2026-06-10): the new
     // single-launcher import path. Reads the URI's MIME
     // via ContentResolver and routes the URI list to
-    // importImages for image MIME or to loadScene for the
-    // PockRef scene MIME / octet-stream / unknown. Empty
+    // importImages for image MIME or to loadScene for
+    // the PockRef scene MIME / octet-stream / unknown. Empty
     // lists are silently dropped.
     internal fun importMixed(uris: List<Uri>) {
         if (uris.isEmpty()) return

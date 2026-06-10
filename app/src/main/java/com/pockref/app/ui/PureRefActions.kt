@@ -163,6 +163,112 @@ sealed interface PockRefAction {
      * pinned bit as the 7th `|` field of the prefs entry.
      */
     data class TogglePinRecentScene(val uri: String) : PockRefAction
+
+    // ── Start-page multi-select (V_NOW 2026-06-10) ─────────────────
+    // The eight actions below drive the new
+    // [com.pockref.app.ui.RecentMultiSelectTopBar] /
+    // [com.pockref.app.ui.RecentMultiSelectBottomBar] chrome
+    // that pairs with the existing
+    // [com.pockref.app.model.PockRefUiState.recentMultiSelectMode]
+    // / [recentSelection] state. Long-press on a recent tile
+    // dispatches [EnterRecentMultiSelect] (with the long-pressed
+    // URI auto-selected); subsequent taps on tiles dispatch
+    // [ToggleRecentSelection]. The bulk pin / delete buttons
+    // dispatch [BulkSetRecentPin] / [RequestBulkDeleteConfirm] →
+    // [BulkDeleteRecentScenes].
+    //
+    // Rationale: the user spec "启动页长按文件 = 多选" sets up
+    // long-press as the multi-select entry (NOT for showing
+    // a context menu, which the v5/v6/v7 overlay did before
+    // it was removed in 2026-06-10 per the
+    // RecentFileGrid.kt V_NOW comment). Long-press → multi-
+    // select → bulk action bar is the standard M3 / Gmail /
+    // Google Photos / Files-by-Google pattern.
+
+    /**
+     * Enter multi-select mode on the start-page recent files
+     * grid. The reducer flips
+     * [com.pockref.app.model.PockRefUiState.recentMultiSelectMode]
+     * to true and seeds [recentSelection] with [uri] (if
+     * non-null) so the user has a visible target on entry.
+     * Dispatched by the recent-tile long-press handler in
+     * [com.pockref.app.ui.RecentFileGrid]. Idempotent —
+     * dispatching when mode is already true is a no-op
+     * (the selection set is left untouched in that case so
+     * a stray re-dispatch doesn't drop the user's picks).
+     */
+    data class EnterRecentMultiSelect(val uri: String? = null) : PockRefAction
+
+    /**
+     * Exit multi-select mode. Clears [recentSelection] AND
+     * flips [recentMultiSelectMode] to false. Dispatched by
+     * the top app bar's close (X) button and the system back
+     * gesture (handled in
+     * [com.pockref.app.ui.PureRefApp.BackHandler]).
+     */
+    data object ExitRecentMultiSelect : PockRefAction
+
+    /**
+     * Add or remove [uri] from
+     * [com.pockref.app.model.PockRefUiState.recentSelection].
+     * No-op if multi-select mode is false. Dispatched by
+     * the tile tap handler when
+     * [com.pockref.app.model.PockRefUiState.recentMultiSelectMode]
+     * is true.
+     */
+    data class ToggleRecentSelection(val uri: String) : PockRefAction
+
+    /**
+     * Select every [com.pockref.app.model.RecentSceneEntry]
+     * in the current [recentScenes] list. Replaces the
+     * existing selection set (Gmail-style absolute toggle).
+     */
+    data object SelectAllRecentScenes : PockRefAction
+
+    /**
+     * Clear [com.pockref.app.model.PockRefUiState.recentSelection]
+     * WITHOUT exiting multi-select mode. Paired with
+     * [SelectAllRecentScenes] on the bottom bar.
+     */
+    data object ClearRecentSelection : PockRefAction
+
+    /**
+     * Bulk-set the [com.pockref.app.model.RecentSceneEntry.pinned]
+     * flag to [pinned] for every URI in
+     * [com.pockref.app.model.PockRefUiState.recentSelection].
+     * No-op if [recentSelection] is empty. The UI computes
+     * the smart "all pinned → show 取消置顶" mapping and
+     * dispatches the matching boolean.
+     */
+    data class BulkSetRecentPin(val pinned: Boolean) : PockRefAction
+
+    /**
+     * Open the bulk-delete confirmation dialog. Distinct
+     * from [BulkDeleteRecentScenes] (the actual destructive
+     * step) because the dialog has its own confirm/cancel
+     * lifecycle.
+     */
+    data object RequestBulkDeleteConfirm : PockRefAction
+
+    /**
+     * Close the bulk-delete confirmation dialog WITHOUT
+     * deleting. Dispatched by the dialog's cancel button,
+     * `onDismissRequest` (system back, scrim tap), and
+     * [BulkDeleteRecentScenes] handler (so the dialog
+     * auto-closes after a successful delete).
+     */
+    data object DismissBulkDeleteConfirm : PockRefAction
+
+    /**
+     * Delete every [com.pockref.app.model.RecentSceneEntry]
+     * whose URI is in [uris]. After the delete, the
+     * selection set is filtered to keep only survivors. If
+     * the delete leaves [recentScenes] empty, multi-select
+     * mode is auto-exited. Dispatched by the bulk-delete
+     * dialog's confirm button.
+     */
+    data class BulkDeleteRecentScenes(val uris: List<String>) : PockRefAction
+
     data object CloseScene : PockRefAction
     data class SelectImage(val imageId: String?) : PockRefAction
     data object Deselect : PockRefAction

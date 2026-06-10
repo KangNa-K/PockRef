@@ -645,10 +645,41 @@ fun PockRefApp(
     //      直接退出软件回到桌面").
     val sceneIsOpen = state.images.isNotEmpty() || state.canDirectSave
     val unsavedDialogShowing = state.showUnsavedChangesDialog
+    // V_NOW (2026-06-10, "启动页多选" back-press contract):
+    // when the start page is in multi-select mode, the
+    // system back button exits multi-select first. This
+    // is a new top-priority branch in the back-press
+    // chain that ranks ABOVE [menuExpanded] and
+    // [sceneIsOpen] — pressing back while in multi-select
+    // is the standard Android "I'm done with this
+    // ephemeral mode" gesture, and routing it to
+    // [CloseScene] (which only makes sense for an open
+    // scene) or to the system "finish activity" path
+    // would surprise the user. The existing two
+    // branches are preserved unchanged.
+    //
+    // Edge case: when [bulkDeleteConfirmOpen] is true,
+    // the back press should close the confirmation
+    // dialog FIRST, before exiting multi-select. This
+    // matches the M3 [AlertDialog] back-press contract
+    // (the dialog's own [onDismissRequest] would also
+    // fire on a back press, but having two
+    // simultaneous paths is the kind of redundancy
+    // that breaks under refactor — so we route the
+    // back press exclusively to the dialog dismiss
+    // when both are open).
+    val recentMultiSelectActive = state.recentMultiSelectMode && !sceneIsOpen
     BackHandler(
-        enabled = menuExpanded || (sceneIsOpen && !unsavedDialogShowing),
+        enabled = menuExpanded ||
+            recentMultiSelectActive ||
+            state.bulkDeleteConfirmOpen ||
+            (sceneIsOpen && !unsavedDialogShowing),
     ) {
         when {
+            state.bulkDeleteConfirmOpen ->
+                onAction(PockRefAction.DismissBulkDeleteConfirm)
+            recentMultiSelectActive ->
+                onAction(PockRefAction.ExitRecentMultiSelect)
             menuExpanded -> menuExpanded = false
             else -> onAction(PockRefAction.CloseScene)
         }
@@ -1560,6 +1591,60 @@ fun PockRefApp(
             bitmapCache = canvasBitmapCache,
         )
         if (state.images.isEmpty()) {
+            // V_NOW (2026-06-10, "启动页多选 + 底部 Bulk
+            // Action Bar 置顶"): the start-page multi-select
+            // chrome. Three siblings of the centered
+            // [EmptyCanvasState]:
+            //   1. [RecentMultiSelectTopBar] (top-aligned) —
+            //      only renders when [PockRefUiState.recentMultiSelectMode]
+            //      is true. Shows the "已选 N 项" count + a
+            //      close (X) button to exit the mode.
+            //   2. [RecentMultiSelectBottomBar] (bottom-
+            //      aligned) — only renders when in multi-
+            //      select mode AND [recentScenes] is not
+            //      empty (an empty list would mean no actions
+            //      to do, so the bar is hidden). Hosts the
+            //      全选/置顶/取消置顶/删除 bulk actions.
+            //   3. [BulkDeleteConfirmDialog] — sibling
+            //      overlay (not positioned; uses
+            //      [AlertDialog]'s built-in window). Only
+            //      renders when [PockRefUiState.bulkDeleteConfirmOpen]
+            //      is true. Confirms the user's intent
+            //      before the destructive [BulkDeleteRecentScenes]
+            //      dispatch fires.
+            // The three siblings are independent of the
+            // [EmptyCanvasState] — they don't move or
+            // re-layout it, the [Modifier.align] in
+            // [EmptyCanvasState] keeps it centred while
+            // the chrome slides in from the top and
+            // bottom edges.
+            //
+            // V_NOW (BackHandler — see further down): the
+            // system back button, when the start page is
+            // in multi-select mode, exits multi-select
+            // first (before the existing "close scene" /
+            // "finish activity" priority chain). The chain
+            // is updated so the recent-multi-select case
+            // ranks ABOVE the scene-is-open case, which is
+            // a no-op for the start page anyway (no
+            // scene is open there — the [EmptyCanvasState]
+            // is the canvas-empty branch).
+            if (state.recentMultiSelectMode) {
+                RecentMultiSelectTopBar(
+                    state = state,
+                    onAction = onAction,
+                )
+            }
+            if (state.recentMultiSelectMode && state.recentScenes.isNotEmpty()) {
+                RecentMultiSelectBottomBar(
+                    state = state,
+                    onAction = onAction,
+                )
+            }
+            BulkDeleteConfirmDialog(
+                state = state,
+                onAction = onAction,
+            )
             EmptyCanvasState(
                 state = state,
                 onAction = onAction,
@@ -4807,7 +4892,11 @@ private fun EmptyCanvasState(
                 entries = state.recentScenes,
                 sortMode = state.recentSortMode,
                 showPinnedOnly = state.showPinnedOnly,
+                multiSelectMode = state.recentMultiSelectMode,
+                selectedUris = state.recentSelection,
                 onOpen = { onAction(PockRefAction.OpenRecentScene(it)) },
+                onEnterMultiSelect = { uri -> onAction(PockRefAction.EnterRecentMultiSelect(uri)) },
+                onToggleSelection = { uri -> onAction(PockRefAction.ToggleRecentSelection(uri)) },
                 onRename = { uri, newLabel ->
                     onAction(PockRefAction.RenameRecentScene(uri, newLabel))
                 },

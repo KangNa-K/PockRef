@@ -723,6 +723,66 @@ data class PockRefUiState(
     val recentScenes: List<RecentSceneEntry> = emptyList(),
     val recentSortMode: RecentSortMode = RecentSortMode.RECENT,
     val showPinnedOnly: Boolean = false,
+    /**
+     * V_NOW (2026-06-10, "启动页多选 + 底部 Bulk Action Bar
+     * 置顶" feature): multi-select mode for the start-page
+     * recent-files grid. Independent of the canvas image
+     * selection state ([selectedImageIds] / [multiSelectMode])
+     * because:
+     *   1. Recent scenes are listed ONLY when
+     *      [com.pockref.app.model.PockRefUiState.images]
+     *      is empty (i.e. no scene is open), so the canvas
+     *      selection set is always empty in this UI state.
+     *      Sharing one state field would force "is the user
+     *      in selection mode?" to be a tri-state (off /
+     *      canvas-images / recent-scenes) which is more
+     *      complex than two independent booleans for no
+     *      observable benefit.
+     *   2. The two UIs have different chrome contracts:
+     *      canvas multi-select surfaces the
+     *      [com.pockref.app.ui.PureRefApp.SelectionBottomSheet];
+     *      start-page multi-select surfaces the
+     *      [com.pockref.app.ui.RecentMultiSelectTopBar] +
+     *      [com.pockref.app.ui.RecentMultiSelectBottomBar]
+     *      chrome. Reusing one field would mean the
+     *      renderers need to read it conditionally on
+     *      `images.isEmpty()` — exactly the same tri-state
+     *      issue as above.
+     *
+     * Lifecycle: enter via long-press on a recent tile (the
+     * tile's URI is auto-selected on entry) or via the
+     * upcoming [PockRefAction.EnterRecentMultiSelect] from
+     * any chrome button. Exit via the top app bar's close
+     * button, the system back gesture (handled in
+     * [com.pockref.app.ui.PureRefApp.BackHandler]), or
+     * [PockRefAction.ExitRecentMultiSelect].
+     */
+    val recentMultiSelectMode: Boolean = false,
+    /**
+     * V_NOW (2026-06-10): the set of [RecentSceneEntry.uri]s
+     * currently selected on the start page. Empty when
+     * [recentMultiSelectMode] is false (the reducer clears
+     * it on exit). The [com.pockref.app.ui.RecentMultiSelectBottomBar]
+     * derives its "all pinned" / "all unpinned" / "mixed"
+     * affordance states from the pinned bit of every entry
+     * whose URI is in this set, intersected with the
+     * current [recentScenes] (URIs that were removed from
+     * the underlying list while still in the selection are
+     * silently dropped on read).
+     */
+    val recentSelection: Set<String> = emptySet(),
+    /**
+     * V_NOW (2026-06-10): true = show the "确定删除 N 个最近
+     * 文件?" confirmation dialog. Dispatched by the
+     * bottom bar's delete button. Distinct from
+     * [recentMultiSelectMode] / [recentSelection] because
+     * the dialog has its own dismiss semantics (confirm /
+     * cancel) and the [PockRefAction.BulkDeleteRecentScenes]
+     * action is the actual destructive step, NOT the
+     * dialog-open action. See the dialog's kdoc for the
+     * full flow.
+     */
+    val bulkDeleteConfirmOpen: Boolean = false,
     val canvasScale: Float = 1f,
     val canvasOffset: Offset = Offset.Zero,
     val canvasViewportSize: Size2D = Size2D(0f, 0f),

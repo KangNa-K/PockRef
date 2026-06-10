@@ -123,7 +123,31 @@ class PockRefActionsTest {
     // the new scale factor from the current group
     // AABB diagonal length divided by the down-time
     // length.
-    private val expectedVariantCount: Int = 134
+    // V_NOW (2026-06-10, "启动页多选 + 底部 Bulk Action
+    // Bar 置顶" feature): the previous value (134)
+    // was already off by +3 — three variants had
+    // been added in commits since the 134 baseline
+    // (the `SetAsCover` revert-repair, the cover
+    // badge state, and the L2 empty-canvas
+    // `ImportMixed` payload), but the constant was
+    // never updated (a recurring failure mode the
+    // memory "broken commit 也要修" rule calls out).
+    // Setting it to the actual `permittedSubclasses.size`
+    // (146) here so the +9 delta for the recent-
+    // files multi-select feature is unambiguous.
+    // The nine added variants are:
+    //   - [EnterRecentMultiSelect] (long-press entry)
+    //   - [ExitRecentMultiSelect] (top-bar X / back)
+    //   - [ToggleRecentSelection] (tile tap in mode)
+    //   - [SelectAllRecentScenes] (全选 button)
+    //   - [ClearRecentSelection] (清空 button)
+    //   - [BulkSetRecentPin] (置顶 / 取消置顶 buttons)
+    //   - [RequestBulkDeleteConfirm] (删除 button)
+    //   - [DismissBulkDeleteConfirm] (dialog cancel)
+    //   - [BulkDeleteRecentScenes] (dialog confirm)
+    // The change is additive — no variant was renamed
+    // or removed.
+    private val expectedVariantCount: Int = 146
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses
