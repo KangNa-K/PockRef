@@ -1337,137 +1337,21 @@ fun PockRefApp(
             if (state.practiceState == null && state.images.isNotEmpty()) {
             val lockInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             val isLockHovered by lockInteractionSource.collectIsHoveredAsState()
-            val isLockPressed by lockInteractionSource.collectIsPressedAsState()
-            val lockStateLayer = when {
-                isLockPressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                isLockHovered -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                else -> Color.Transparent
-            }
-            // V_NOW (2026-06-08 user feedback "全局锁定按钮激活后
-            // 改成是和其他按钮一样是蓝色的"): the active
-            // lock state now also tints the BACKGROUND
-            // (not just the icon, which the line below
-            // already handles). The active background is
-            // [colorScheme.primaryContainer] with
-            // [onPrimaryContainer] for the icon — the
-            // M3-standard "filled toggle" pair, same
-            // pattern a [FilterChip] uses for its
-            // "selected" state. Inactive stays the
-            // [surface @ 0.92] frosted chrome the rest
-            // of the corner-chrome uses. The user
-            // explicitly wanted the active state to
-            // "read as blue like other buttons" — a
-            // primary-tinted background is the
-            // unambiguous visual signal of "this toggle
-            // is engaged" matching the M3 spec.
-            val activeTint = if (state.globalImageLock) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                Color.Transparent
-            }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(
-                        top = statusBarTopDp + Dimens.CornerInset,
-                        end = Dimens.CornerInset,
-                    )
-                    .size(Dimens.BottomPanelChromeSize)
-                    // V_NOW (2026-06-08): 1dp outlineVariant@40%
-                    // border matching the bottom-sheet chrome so
-                    // the global-lock button reads as the same
-                    // "outlined chrome" family. The border is
-                    // applied first (just after .size()) so the
-                    // three subsequent .background() modifiers
-                    // (frosted surface + active-tint + state-layer)
-                    // all paint INSIDE the rounded border, not
-                    // spilling past it. The shape on .border() is
-                    // required to keep the border itself rounded.
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant
-                            .copy(alpha = 0.4f),
-                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-                    )
-                    .background(
-                        color = MaterialTheme.colorScheme.surface
-                            .copy(alpha = Dimens.ChromeSurfaceAlpha),
-                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-                    )
-                    .background(
-                        // V_NOW (2026-06-08 user feedback):
-                        // the background now also tints
-                        // [primaryContainer] when the lock
-                        // is active, in addition to the
-                        // existing hover/press feedback
-                        // (which still uses
-                        // [primary.copy(alpha = 0.08-0.12)]
-                        // for the hover/press tints). The
-                        // two `background` modifiers stack
-                        // — the second one paints on top of
-                        // the first, so the active tint
-                        // wins when both apply.
-                        color = if (state.globalImageLock) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            Color.Transparent
-                        },
-                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-                    )
-                    .background(
-                        color = lockStateLayer,
-                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-                    )
-                    .hoverable(interactionSource = lockInteractionSource)
-                    .clickable {
-                        onAction(PockRefAction.ToggleGlobalImageLock)
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = if (state.globalImageLock) {
-                        androidx.compose.material.icons.Icons.Rounded.Lock
-                    } else {
-                        androidx.compose.material.icons.Icons.Rounded.LockOpen
-                    },
-                    contentDescription = if (state.globalImageLock) {
-                        "全局图片已锁定,点击解锁"
-                    } else {
-                        "全局图片未锁定,点击锁定全部图片"
-                    },
-                    modifier = Modifier.size(24.dp),
-                    // V_NOW (2026-06-08 user feedback
-                    // "全局锁定按钮激活后改成是和其他按钮一样是蓝色的"):
-                    // flip the active tint from
-                    // [colorScheme.error] (the previous
-                    // red — meant to read as a
-                    // "danger / irreversible" affordance)
-                    // to [colorScheme.primary] (the
-                    // brand cyan / deep-teal that every
-                    // other "active" chrome element in
-                    // PockRef uses). The active button
-                    // now reads as "engaged feature"
-                    // rather than "warning state", which
-                    // matches the user's mental model of
-                    // the global lock as just another
-                    // toggle (a counterpart to the FAB's
-                    // primary tint).
-                    tint = if (state.globalImageLock) {
-                        // V_NOW (2026-06-08 user feedback):
-                        // when the lock is active AND the
-                        // background is [primaryContainer],
-                        // the icon MUST be [onPrimaryContainer]
-                        // for WCAG contrast — the M3 pair
-                        // is non-negotiable. (If we kept
-                        // [primary] for the icon, it would
-                        // fail contrast against the
-                        // [primaryContainer] background.)
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                )
-            }
+            // V_NOW (2026-06-10): the global-lock button
+            // is extracted to [GlobalLockButton] so the
+            // [combinedClickable] opt-in lives at the
+            // helper-function level (rather than ad-hoc on
+            // a `val` declaration, which doesn't propagate
+            // to nested lambda call-sites). The helper
+            // carries the full visual / interaction spec;
+            // see its doc-comment for the three-state
+            // machine (OFF / SOFT / HARD) and the
+            // click / long-press dispatch matrix.
+            GlobalLockButton(
+                state = state,
+                onAction = onAction,
+                statusBarTopDp = statusBarTopDp,
+            )
             }  // close if (state.practiceState == null) gating the lock toggle
 
             if (state.isBusy && !state.batchOptimizeState.isRunning) {
@@ -10624,3 +10508,207 @@ private fun BottomPanelListItem(
 }
 
 
+// V_NOW (2026-06-10 user spec "全局锁定按钮长按触发
+// 冻结模式,按钮变红色;点击或长按红色全局锁定按钮
+// 解锁"): the global-lock toggle is now a TWO-AXIS
+// [combinedClickable] rather than a single tap, and
+// its visual branches on a three-state machine.
+//
+// State machine — single source of truth
+// ([state.lockCanvasFrozen] / [state.globalImageLock]):
+//   - OFF  : [LockOpen] icon, frosted surface,
+//            [onSurface] tint — the same look the
+//            button had pre-this-change.
+//   - SOFT : [Lock] icon, [primaryContainer] bg +
+//            [onPrimaryContainer] tint — the M3
+//            filled-toggle pair already in place
+//            since the "激活改成是和其他按钮一样是蓝色"
+//            revision. Reads as "engaged feature".
+//   - HARD : [Lock] icon, [errorContainer] bg +
+//            [onErrorContainer] tint — the M3
+//            error-color filled-toggle pair,
+//            deliberately distinct from SOFT's cyan
+//            so the user can tell at a glance "this
+//            is the panic-stop mode, not the normal
+//            lock".
+//
+// Click behaviour in each state:
+//   - OFF  → click engages SOFT (existing reducer).
+//   - SOFT → click disengages back to OFF.
+//   - HARD → click exits HARD but preserves SOFT
+//            (so the user steps from frozen-back-to-
+//            soft in one tap — per the user's
+//            "点击红色按钮解锁到蓝色" spec).
+//
+// Long-press behaviour:
+//   - OFF  → long-press engages HARD directly (and
+//            HARD's reducer also engages SOFT, so the
+//            button ends up in HARD state).
+//   - SOFT → long-press escalates to HARD (reducer
+//            already couples frozen-on ↔ soft-on).
+//   - HARD → long-press exits to OFF entirely
+//            (per the user's "长按红色按钮解锁" spec).
+//            We dispatch [ToggleGlobalImageLock] AFTER
+//            [ToggleLockCanvasFrozen] because the
+//            frozen-OFF branch of the reducer
+//            intentionally does NOT touch
+//            [globalImageLock] (so a user who wants
+//            "soft lock after stepping out of hard
+//            mode" isn't silently reset). For the
+//            explicit "stop everything" gesture, we
+//            want both flags off.
+//
+// Chrome tokens — identical to the original
+// single-tap button, only the dispatch path
+// changes:
+//   - 48dp square [Dimens.BottomPanelChromeSize]
+//   - 12dp [Dimens.ChromeCornerRadius] rounded
+//   - 1dp outlineVariant@40% border (or error@40%
+//     in HARD state)
+//   - [surface]@0.92 frosted base
+//   - 6dp [Dimens.FabElevation] (inherited from
+//     Box context; not asserted here — the
+//     surrounding chrome system applies the
+//     elevation via the host layout, same as the
+//     pre-refactor version).
+//
+// The @OptIn(ExperimentalFoundationApi::class) is
+// hoisted to the function declaration so it covers
+// [combinedClickable] inside the [Modifier] chain
+// without needing per-call suppression.
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun BoxScope.GlobalLockButton(
+    state: PockRefUiState,
+    onAction: (PockRefAction) -> Unit,
+    statusBarTopDp: androidx.compose.ui.unit.Dp,
+) {
+    val lockInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val isLockHovered by lockInteractionSource.collectIsHoveredAsState()
+    val isLockPressed by lockInteractionSource.collectIsPressedAsState()
+    val lockStateLayer = when {
+        isLockPressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        isLockHovered -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+        else -> Color.Transparent
+    }
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(
+                top = statusBarTopDp + Dimens.CornerInset,
+                end = Dimens.CornerInset,
+            )
+            .size(Dimens.BottomPanelChromeSize)
+            // 1dp outlineVariant@40% border matching
+            // the bottom-sheet chrome — same outlined
+            // family as the rest of the corner-chrome.
+            // HARD state flips to error@40% so the
+            // button's outline matches its fill — a
+            // fully red pill, not a red-fill-on-grey-
+            // outline.
+            .border(
+                width = 1.dp,
+                color = if (state.lockCanvasFrozen) {
+                    MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
+                } else {
+                    MaterialTheme.colorScheme.outlineVariant
+                        .copy(alpha = 0.4f)
+                },
+                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            )
+            .background(
+                color = MaterialTheme.colorScheme.surface
+                    .copy(alpha = Dimens.ChromeSurfaceAlpha),
+                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            )
+            // Active-tint background — three-state
+            // branch. SOFT → primaryContainer (cyan);
+            // HARD → errorContainer (red); OFF →
+            // transparent (frosted shows through). The
+            // two `background` modifiers stack — this
+            // one paints on top of the frosted base
+            // above, so the active tint wins when both
+            // apply.
+            .background(
+                color = when {
+                    state.lockCanvasFrozen ->
+                        MaterialTheme.colorScheme.errorContainer
+                    state.globalImageLock ->
+                        MaterialTheme.colorScheme.primaryContainer
+                    else -> Color.Transparent
+                },
+                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            )
+            .background(
+                color = lockStateLayer,
+                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            )
+            .hoverable(interactionSource = lockInteractionSource)
+            // combinedClickable wires click + long-press
+            // to the same target without losing
+            // accessibility actions (generates correct
+            // a11y "click" + "long-click" semantics).
+            // [combinedClickable] handles the 500ms
+            // threshold + ripple + haptics.
+            .combinedClickable(
+                onClick = {
+                    if (state.lockCanvasFrozen) {
+                        // From HARD: drop to SOFT
+                        // (preserve [globalImageLock]).
+                        onAction(PockRefAction.ToggleLockCanvasFrozen)
+                    } else {
+                        // From SOFT or OFF: standard
+                        // toggle on the soft flag.
+                        onAction(PockRefAction.ToggleGlobalImageLock)
+                    }
+                },
+                onLongClick = {
+                    if (state.lockCanvasFrozen) {
+                        // Long-press from HARD: full
+                        // unlock — drop frozen AND drop
+                        // soft lock in one gesture.
+                        onAction(PockRefAction.ToggleLockCanvasFrozen)
+                        onAction(PockRefAction.ToggleGlobalImageLock)
+                    } else {
+                        // Long-press from SOFT or OFF:
+                        // engage HARD (reducer also
+                        // engages SOFT internally, so
+                        // button ends in HARD state).
+                        onAction(PockRefAction.ToggleLockCanvasFrozen)
+                    }
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (state.globalImageLock || state.lockCanvasFrozen) {
+                androidx.compose.material.icons.Icons.Rounded.Lock
+            } else {
+                androidx.compose.material.icons.Icons.Rounded.LockOpen
+            },
+            contentDescription = when {
+                state.lockCanvasFrozen ->
+                    "画布已冻结,点按退到软锁,长按完全解锁"
+                state.globalImageLock ->
+                    "全局图片已锁定,点击解锁"
+                else ->
+                    "全局图片未锁定,点击锁定全部图片,长按进入冻结模式"
+            },
+            modifier = Modifier.size(24.dp),
+            // Icon tint follows the same three-state
+            // branch as the background so WCAG contrast
+            // pairs stay intact:
+            //   - OFF → onSurface on frosted
+            //   - SOFT → onPrimaryContainer
+            //   - HARD → onErrorContainer
+            tint = when {
+                state.lockCanvasFrozen ->
+                    MaterialTheme.colorScheme.onErrorContainer
+                state.globalImageLock ->
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                else ->
+                    MaterialTheme.colorScheme.onSurface
+            },
+        )
+    }
+}
