@@ -1499,3 +1499,51 @@ fun PockRefUiState.isImageLocked(imageId: String?): Boolean {
     if (imageId == null) return false
     return images.firstOrNull { it.id == imageId }?.locked == true
 }
+
+// V_NOW (2026-06-11, "cover image bug — clear cover doesn't
+// restore default thumbnail" investigation round 2): extracted
+// the cover-target picker from [com.pockref.app.ui.RecentFileGrid]
+// (the [LaunchedEffect] block that resolves
+// `entry.coverImageId` + `scene.images` into a `SceneImage` for
+// thumbnail decode) into a pure top-level function so the
+// three-way branch (`coverImageId matches` / `coverImageId
+// fallback` / `no cover, default`) is unit-testable on the JVM
+// without spinning up a Compose runtime.
+//
+// Tie-breaker note: Kotlin's [maxByOrNull] returns the FIRST
+// element with the maximum value when multiple elements tie.
+// For [scene.images] sourced from `readFromFile` that's the
+// FIRST transform id in the .pur file's transform table — which
+// for PockRef-Android-written files is the FIRST-imported image
+// (zIndex=0) and for desktop-written files is the FIRST
+// transform in the desktop's layer order. The user-reported
+// "clear cover doesn't restore" symptom is reproducible when
+// the user's chosen cover IS the same image
+// [pickCoverTarget] would pick as the default — see
+// [RecentScenesCodecTest.pickCoverTarget round-trips] for the
+// explicit assertion.
+
+/**
+ * Resolve which [SceneImage] in [images] should be used as the
+ * start-page thumbnail.
+ *
+ *   - If [coverImageId] is non-null AND a matching image exists
+ *     in [images] → that image (the user-chosen cover).
+ *   - If [coverImageId] is non-null BUT no match → fallback to
+ *     the zIndex-max image (current behavior, so a stale cover
+ *     id from a removed image doesn't render blank).
+ *   - If [coverImageId] is null → the zIndex-max image (the
+ *     canvas "topmost" thumbnail).
+ *
+ * Returns `null` only when [images] is empty.
+ */
+internal fun pickCoverTarget(
+    images: List<SceneImage>,
+    coverImageId: String?,
+): SceneImage? = when {
+    images.isEmpty() -> null
+    coverImageId != null ->
+        images.find { it.id == coverImageId }
+            ?: images.maxByOrNull { it.zIndex }
+    else -> images.maxByOrNull { it.zIndex }
+}

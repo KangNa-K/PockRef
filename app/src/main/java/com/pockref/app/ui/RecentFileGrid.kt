@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.AlertDialog
@@ -74,6 +75,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pockref.app.model.RecentSceneEntry
 import com.pockref.app.model.RecentSortMode
+import com.pockref.app.model.pickCoverTarget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -116,6 +118,7 @@ fun RecentFileGrid(
     onEnterMultiSelect: (String) -> Unit,
     onToggleSelection: (String) -> Unit,
     onSwipePin: (String) -> Unit,
+    onSwipeDelete: (String) -> Unit,
     onRename: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -178,6 +181,7 @@ fun RecentFileGrid(
                     if (!multiSelectMode) onEnterMultiSelect(entry.uri)
                 },
                 onSwipePin = { onSwipePin(entry.uri) },
+                onSwipeDelete = { onSwipeDelete(entry.uri) },
                 onRename = { newLabel -> onRename(entry.uri, newLabel) },
             )
         }
@@ -192,6 +196,7 @@ private fun RecentFileTile(
     onTap: () -> Unit,
     onLongPress: () -> Unit,
     onSwipePin: () -> Unit,
+    onSwipeDelete: () -> Unit,
     onRename: (String) -> Unit,
 ) {
     // V_NOW (2026-06-10, v1.1 swipe-to-pin, v2):
@@ -293,19 +298,18 @@ private fun RecentFileTile(
                     }
                     val codec = PurSceneCodec()
                     val scene = codec.readFromFile(tempFile)
-                    // images are sorted by zIndex ascending; the
-                    // topmost (highest zIndex) image is the best
-                    // default thumbnail — it's what the user sees
-                    // on the canvas surface.
-                    val targetImage = if (entry.coverImageId != null) {
-                        // custom cover: find the image with matching id
-                        scene.images.find { it.id == entry.coverImageId }
-                            // fall back to topmost image if id not found
-                            ?: scene.images.maxByOrNull { it.zIndex }
-                    } else {
-                        // default: topmost image = canvas thumbnail
-                        scene.images.maxByOrNull { it.zIndex }
-                    }
+                    // V_NOW (2026-06-11): delegate the
+                    // cover-vs-default three-way branch to
+                    // [com.pockref.app.model.pickCoverTarget]
+                    // so the picker is unit-testable on the
+                    // JVM. The semantics are identical to the
+                    // prior inline if/else — see
+                    // [pickCoverTarget] for the full branch
+                    // description.
+                    val targetImage = pickCoverTarget(
+                        images = scene.images,
+                        coverImageId = entry.coverImageId,
+                    )
                     if (targetImage != null) {
                         // readFromFile already calls setSourceFile for
                         // desktop .pur; for custom format (imageBytes
@@ -443,16 +447,11 @@ private fun RecentFileTile(
         // [graphicsLayer] translationX driven by
         // the [Animatable] `dragOffset` above.
         Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
-            // 1. Background (pin reveal) — rendered
-            //    FIRST so the foreground paints over
-            //    it. Only visible when dragOffset >
-            //    0.5f (small epsilon to avoid layout
-            //    flicker on the boundary). Background
-            //    does NOT have a pointerInput — it
-            //    never receives gestures (the
-            //    foreground covers it at rest, so the
-            //    user only ever touches the
-            //    foreground).
+            // 1. Background reveal layers — rendered FIRST
+            //    so the foreground paints over them.
+            //    Only visible when |dragOffset| > 0.5f.
+            //    Left-to-right (dragOffset > 0) = pin.
+            //    Right-to-left (dragOffset < 0) = delete.
             if (dragOffset > 0.5f) {
                 Box(
                     modifier = Modifier
@@ -477,6 +476,33 @@ private fun RecentFileTile(
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                             style = MaterialTheme.typography.bodyMedium,
                             maxLines = 1,
+                        )
+                    }
+                }
+            } else if (dragOffset < -0.5f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(end = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "删除",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                        )
+                        Icon(
+                            imageVector = Icons.Rounded.Delete,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(24.dp),
                         )
                     }
                 }
@@ -578,6 +604,8 @@ private fun RecentFileTile(
                                         if (isHorizontalDrag) {
                                             if (dragOffset > commitThresholdPx) {
                                                 onSwipePin()
+                                            } else if (dragOffset < -commitThresholdPx) {
+                                                onSwipeDelete()
                                             }
                                             scope.launch {
                                                 animate(
@@ -642,7 +670,7 @@ private fun RecentFileTile(
                                         change.consume()
                                         val newOffset = (
                                             dragOffset + change.positionChange().x
-                                            ).coerceIn(0f, maxDragPx)
+                                            ).coerceIn(-maxDragPx, maxDragPx)
                                         dragOffset = newOffset
                                     }
                                 }
