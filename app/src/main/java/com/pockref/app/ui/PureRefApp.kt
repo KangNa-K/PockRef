@@ -1044,6 +1044,39 @@ fun PockRefApp(
                         },
                 )
             }
+            // V_NOW (2026-06-10 unified popup parity):
+            // tap-outside scrim for the import popup
+            // — mirrors the recent-files scrim above
+            // (same `matchParentSize` + `clickable
+            // (indication=null)` pattern, same
+            // z-order before [TopToolbar] so the
+            // toolbar sibling renders on top). The
+            // import popup is a sibling
+            // [AnimatedVisibility] inside the toolbar
+            // Surface (just like the recent-files
+            // popup), so it has no built-in
+            // [Popup.onDismissRequest] — the scrim is
+            // the only way to dismiss it via tap-
+            // outside. The dispatch goes through
+            // [PockRefAction.SetImportSourceMenuOpen]
+            // to keep the visibility source of truth
+            // in [PockRefUiState] (the parent
+            // [TopToolbar] reads [state.importSourceMenuOpen]
+            // via its [importSourceMenuOpen] param).
+            if (state.importSourceMenuOpen) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .clickable(
+                            interactionSource = remember {
+                                androidx.compose.foundation.interaction.MutableInteractionSource()
+                            },
+                            indication = null,
+                        ) {
+                            onAction(PockRefAction.SetImportSourceMenuOpen(false))
+                        },
+                )
+            }
             // V_NOW (bug fix — "menu open 时点击 FAB 不收起 / 不执行自动排版"):
             // the [BottomRightActionPanel] used to live inside
             // [CanvasPanel] (which is the first child of this
@@ -1154,19 +1187,42 @@ fun PockRefApp(
                 // the state.
                 menuExpanded = menuExpanded,
                 onMenuExpandedChange = { menuExpanded = it },
+                // V_NOW (2026-06-10 unified popup parity):
+                // import popup state hoisted to [PockRefApp]
+                // mirroring the recent-files popup's
+                // [menuExpanded] / [onMenuExpandedChange]
+                // pattern. Drives (a) the parent scrim
+                // tap-outside dismiss, (b) the chrome-mutex
+                // (opening one popup closes the other) at
+                // the [TopToolbar] call site, and (c) the
+                // [ToolbarIconButton.active] highlight on
+                // the import button itself. State is sourced
+                // from [PockRefUiState.importSourceMenuOpen]
+                // (added when the import-source menu was
+                // first introduced) so the visibility
+                // survives recomposition and could be
+                // driven by another chrome element in the
+                // future if needed.
+                importSourceMenuOpen = state.importSourceMenuOpen,
+                onImportSourceMenuOpenChange = {
+                    onAction(PockRefAction.SetImportSourceMenuOpen(it))
+                },
                 // V_NOW (2026-06-10 #2 import popup user spec
                 // "顶栏 import 按钮 tap 后弹 3 选项 popup:
                 // 相册 / 剪贴板 / 文件"): the [+] import
-                // button now opens a transient
-                // [androidx.compose.material3.DropdownMenu]
-                // anchored under itself, instead of going
-                // straight to the SAF picker. Three options
-                // — gallery ([photoPickerLauncher] =
-                // Android 13+ PhotoPicker, auto-fallback to
-                // SAF on older), clipboard
-                // ([onImportFromClipboard] = ClipboardManager
-                // read), and files ([onImport] = the existing
-                // SAF [OpenMultipleDocuments] path). Empty-
+                // button now opens a transient in-toolbar
+                // popup (sibling [AnimatedVisibility] in
+                // the toolbar Surface, mirroring the
+                // recent-files popup) instead of going
+                // straight to the SAF picker. Three
+                // options — gallery
+                // ([photoPickerLauncher] = Android 13+
+                // PhotoPicker, auto-fallback to SAF on
+                // older), clipboard
+                // ([onImportFromClipboard] =
+                // ClipboardManager read), and files
+                // ([onImport] = the existing SAF
+                // [OpenMultipleDocuments] path). Empty-
                 // canvas state still has its own
                 // [EmptyCanvasState] import button that calls
                 // [onImport] directly (intentionally NOT
@@ -5010,15 +5066,32 @@ private fun TopToolbar(
     // [onMenuExpandedChange].
     menuExpanded: Boolean,
     onMenuExpandedChange: (Boolean) -> Unit,
+    // V_NOW (2026-06-10 unified popup parity user spec
+    // "import popup 跟最近文件 popup 样式、位置、动画一致"):
+    // the [+] import button now opens a transient
+    // [AnimatedVisibility] in the toolbar Surface itself
+    // (sibling of the recent-files popup, sharing the
+    // same Column), with the same expandVertically /
+    // shrinkVertically tween 200ms animation. To
+    // match the recent-files popup's chrome-mutex contract
+    // (tap-outside scrim, dismiss via parent), this state
+    // is hoisted to [PockRefApp] just like
+    // [menuExpanded] / [onMenuExpandedChange] — the
+    // scrim for tap-outside lives at the parent call
+    // site, and the parent also wires the action dispatch
+    // (e.g. [PockRefAction.SetImportSourceMenuOpen]) so
+    // the visibility survives recomposition consistently.
+    importSourceMenuOpen: Boolean,
+    onImportSourceMenuOpenChange: (Boolean) -> Unit,
     // V_NOW (2026-06-10 #2 import popup user spec
     // "顶栏 import 按钮 tap 后弹 3 选项 popup:
     // 相册 / 剪贴板 / 文件"): the [+] import button
-    // now opens a transient [DropdownMenu] anchored
-    // under itself with three items — gallery,
-    // clipboard, files. The dropdown lives in
-    // [TopToolbar] (so it anchors to the import
-    // button's exact bounds), but the launchers
-    // themselves live in [PockRefApp] (they need the
+    // now opens a transient in-toolbar popup with
+    // three items — gallery, clipboard, files. The
+    // popup itself lives in [TopToolbar] (so it
+    // anchors to the toolbar's Column and shares
+    // the Surface), but the launchers themselves
+    // live in [PockRefApp] (they need the
     // [rememberLauncherForActivityResult] handles +
     // LocalContext for ClipboardManager). The toolbar
     // just receives three no-arg callbacks wired to
@@ -5089,18 +5162,20 @@ private fun TopToolbar(
     // toolbar is always visible, so this happens before
     // the user can open the menu).
     var toolbarRowWidth by remember { mutableStateOf(0) }
-    // V_NOW (2026-06-10 #2 import popup): transient
-    // [DropdownMenu] visibility. Lives in [TopToolbar] (not
-    // hoisted to [PockRefApp] like [menuExpanded], the recent
-    // files popup) because (a) it's UI-only — there's no
-    // scenario where another chrome element needs to know
-    // whether the import dropdown is open, and (b) closing it
-    // is fully handled by [DropdownMenu]'s built-in
-    // onDismissRequest (tap-outside, back press, item tap)
-    // — no parent scrim needed. The [remember] slot is
-    // keyed to the TopToolbar's lifecycle; when the toolbar
-    // disappears (practice mode) the state resets cleanly.
-    var importSourceMenuExpanded by remember { mutableStateOf(false) }
+    // V_NOW (2026-06-10 unified popup parity): the import
+    // popup's visibility is now hoisted to [PockRefApp]
+    // (received as [importSourceMenuOpen] / mutated via
+    // [onImportSourceMenuOpenChange]) — the same pattern
+    // as [menuExpanded]. This lets the parent render a
+    // tap-outside scrim for the import popup, mirroring
+    // the recent-files scrim, and keeps the chrome-mutex
+    // contract (opening one popup closes the other)
+    // expressible at the call site in [PockRefApp]. The
+    // old local-var design only worked with
+    // [DropdownMenu]'s built-in onDismissRequest (a
+    // separate Popup window), but the unified in-Surface
+    // popup has no built-in dismiss — only the
+    // item-tap + chrome-mutex + scrim paths.
 
     // V_NOW: SoftwareKeyboardController for explicit IM show
     // when entering the title's rename mode. Compose's TextField
@@ -5687,166 +5762,80 @@ private fun TopToolbar(
                             // 40dp (~136px) brings it up to the
                             // standard Material tap-target
                             // minimum.
-                            // [Chevron] — recent files menu.
-                            ToolbarIconButton(
-                                imageVector = Icons.Rounded.KeyboardArrowDown,
-                                contentDescription = "最近文件",
-                                onClick = { onMenuExpandedChange(true) },
-                                active = menuExpanded,
-                            )
+// [Chevron] — recent files menu.
+// V_NOW (2026-06-10 unified popup parity):
+// tap toggles [menuExpanded] — opens the
+// recent files popup if closed, closes
+// it if open. Same toggle contract as the
+// import button below, mirroring the
+// user-spec "behave like a switch".
+//
+// V_NOW (chrome-mutex): when opening
+// the recent files popup (closed→open),
+// we also force-close the import popup
+// (dispatch [onImportSourceMenuOpenChange]
+// = false) so the two popups are never
+// visible at the same time. Closing the
+// recent files popup (open→closed) is a
+// no-op for the import popup — it stays
+// closed (it was already closed by the
+// previous open). The inverse mutex
+// (import popup open closes recent files)
+// lives in the import button's onClick
+// body below.
+ToolbarIconButton(
+    imageVector = Icons.Rounded.KeyboardArrowDown,
+    contentDescription = "最近文件",
+    onClick = {
+        val willOpen = !menuExpanded
+        if (willOpen) {
+            onImportSourceMenuOpenChange(false)
+        }
+        onMenuExpandedChange(willOpen)
+    },
+    active = menuExpanded,
+)
                             // V_NOW (2026-06-09 user spec "在最近
                             // 列表按钮右边新增导入图像按钮"):
-                            // [Import] — new sibling to the
-                            // chevron. Single tap dispatches
-                            // [onImport] (a SAF
-                            // OpenMultipleDocuments picker
-                            // for image/* MIME), no in-toolbar
-                            // dropdown. Uses the shared
-                            // [ToolbarIconButton] template
-                            // (40dp touch box + 20dp icon +
-                            // onSurfaceVariant tint), identical
-                            // chrome to the chevron / undo /
-                            // redo / close siblings per the
-                            // 2026-06-09 chrome unify spec —
-                            // "5 个按钮大小完全一致". The icon
-                            // vector is [Icons.Rounded.Add]
-                            // (the M3 plus-glyph) per the
-                            // user's 2026-06-09 spec — "导入
-                            // 按钮, 图标是 material3 里的 '+'
-                            // 图标".
+                            // [Import] — sibling to the chevron.
+                            // V_NOW (2026-06-10 unified popup parity):
+                            // tap toggles [importSourceMenuOpen] —
+                            // identical to the chevron's toggle
+                            // behavior. The popup itself lives in
+                            // [TopToolbar]'s Column directly below
+                            // the toolbar Row, sharing the toolbar
+                            // Surface (so the chrome expands as
+                            // one continuous block — see the
+                            // [AnimatedVisibility] for
+                            // [importSourceMenuOpen] below, mirrors
+                            // the recent-files popup). Three items
+                            // dispatch one of the three launchers
+                            // ([onPickGallery] / [onPickClipboard]
+                            // / [onPickFiles]) received from
+                            // [PockRefApp].
                             ToolbarIconButton(
                                 imageVector = Icons.Rounded.Add,
                                 contentDescription = "导入图像",
-                                // V_NOW (2026-06-10 #2 import
-                                // popup): tap opens the
-                                // import-source dropdown
-                                // below, not the SAF picker
-                                // directly. The dropdown's
-                                // onDismissRequest (tap-
-                                // outside, back press)
-                                // closes itself. Three
-                                // items then dispatch one
-                                // of the three launchers
-                                // ([onPickGallery] /
-                                // [onPickClipboard] /
-                                // [onPickFiles]) received
-                                // from [PockRefApp].
-                                onClick = { importSourceMenuExpanded = true },
+                                onClick = {
+                                    // V_NOW (chrome-mutex):
+                                    // symmetric to the
+                                    // chevron onClick above —
+                                    // when opening the import
+                                    // popup (closed→open), force-
+                                    // close the recent files
+                                    // popup so the two popups
+                                    // are never visible at the
+                                    // same time. Closing the
+                                    // import popup is a no-op
+                                    // for [menuExpanded].
+                                    val willOpen = !importSourceMenuOpen
+                                    if (willOpen) {
+                                        onMenuExpandedChange(false)
+                                    }
+                                    onImportSourceMenuOpenChange(willOpen)
+                                },
+                                active = importSourceMenuOpen,
                             )
-                            // V_NOW (2026-06-10 #2 import
-                            // popup): the [+] button's
-                            // sibling DropdownMenu. Wrapped
-                            // in a no-size Box so the menu
-                            // anchors to the import
-                            // button's bounds — [DropdownMenu]
-                            // is itself a [Popup] that floats
-                            // over all content, so the Box
-                            // takes 0dp of layout space and
-                            // the surrounding Row isn't
-                            // affected. The menu opens BELOW
-                            // the button by default (no
-                            // offset tweak) — the chevron /
-                            // [+] / undo / redo / close row
-                            // sits at the top of the toolbar,
-                            // so there's vertical room for a
-                            // 3-item list (~120dp) before it
-                            // hits the canvas surface. The
-                            // menu's right edge aligns with
-                            // the button's right edge via
-                            // [offset] = (-4dp) so a short
-                            // label like "相册" doesn't
-                            // visually snap to the button's
-                            // left edge and look orphaned.
-                            androidx.compose.foundation.layout.Box {
-                                androidx.compose.material3.DropdownMenu(
-                                    expanded = importSourceMenuExpanded,
-                                    onDismissRequest = {
-                                        importSourceMenuExpanded = false
-                                    },
-                                    offset = androidx.compose.ui.unit.DpOffset(
-                                        x = (-4).dp,
-                                        y = 0.dp,
-                                    ),
-                                ) {
-                                    // V_NOW: gallery option.
-                                    // [Icons.Rounded.PhotoLibrary]
-                                    // is the "stack of photos"
-                                    // glyph (Material 3 standard).
-                                    // Label is plain "相册" (no
-                                    // qualifier) — the dropdown
-                                    // itself is already scoped to
-                                    // "import images", so adding
-                                    // "图片" would be redundant.
-                                    // Active state is moot here —
-                                    // all three options are
-                                    // single-shot launchers, none
-                                    // toggle.
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { androidx.compose.material3.Text("相册") },
-                                        leadingIcon = {
-                                            androidx.compose.material3.Icon(
-                                                androidx.compose.material.icons.Icons.Rounded.PhotoLibrary,
-                                                contentDescription = null,
-                                            )
-                                        },
-                                        onClick = {
-                                            importSourceMenuExpanded = false
-                                            onPickGallery()
-                                        },
-                                    )
-                                    // V_NOW: clipboard option.
-                                    // [Icons.Rounded.ContentPaste]
-                                    // is the standard "paste from
-                                    // clipboard" glyph. Empty
-                                    // clipboard is handled
-                                    // silently inside
-                                    // [onPickClipboard] — the
-                                    // dropdown already closed
-                                    // itself, and showing a
-                                    // snackbar here would race
-                                    // the picker animation for
-                                    // the other two paths.
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { androidx.compose.material3.Text("剪贴板") },
-                                        leadingIcon = {
-                                            androidx.compose.material3.Icon(
-                                                androidx.compose.material.icons.Icons.Rounded.ContentPaste,
-                                                contentDescription = null,
-                                            )
-                                        },
-                                        onClick = {
-                                            importSourceMenuExpanded = false
-                                            onPickClipboard()
-                                        },
-                                    )
-                                    // V_NOW: files option. The
-                                    // existing SAF
-                                    // [OpenMultipleDocuments]
-                                    // path — kept as the "I want
-                                    // a specific file from my
-                                    // Downloads" option for power
-                                    // users. Some users store
-                                    // reference images outside
-                                    // the Photo roll (e.g. SD
-                                    // card, downloaded .zip
-                                    // extracts), and the system
-                                    // PhotoPicker doesn't reach
-                                    // those locations — SAF does.
-                                    androidx.compose.material3.DropdownMenuItem(
-                                        text = { androidx.compose.material3.Text("文件") },
-                                        leadingIcon = {
-                                            androidx.compose.material3.Icon(
-                                                androidx.compose.material.icons.Icons.Rounded.FileOpen,
-                                                contentDescription = null,
-                                            )
-                                        },
-                                        onClick = {
-                                            importSourceMenuExpanded = false
-                                            onPickFiles()
-                                        },
-                                    )
-                                }
-                            }
 
         // V_NOW: settings sheet rendered at [PockRefApp] level
         // (was inside [TopToolbar] before). Reads
@@ -6052,6 +6041,194 @@ private fun TopToolbar(
             }
         }
     }
+            // V_NOW (2026-06-10 unified popup parity):
+            // import popup — sibling of the recent-files
+            // popup above. Same animation tokens
+            // (expandVertically / shrinkVertically tween
+            // 200ms with FastOutSlowInEasing) so the two
+            // expand / collapse in the same time feel,
+            // and the toolbar's Surface height changes
+            // as a single coherent unit. Width also
+            // bound to [toolbarRowWidth] (captured via
+            // [onSizeChanged] on the toolbar Row), so a
+            // collapsed toolbar (title only) yields a
+            // narrow popup and an expanded toolbar (with
+            // action icons visible) yields a wider one —
+            // identical to the recent-files popup's
+            // behavior. Visibility driven by
+            // [importSourceMenuOpen] (hoisted to
+            // [PockRefApp] mirroring [menuExpanded]) so
+            // the parent can render a tap-outside scrim
+            // and the [TopToolbar]'s chrome-mutex (one
+            // popup open closes the other) lives at the
+            // onClick body.
+            AnimatedVisibility(
+                visible = importSourceMenuOpen,
+                enter = expandVertically(animationSpec = tween(200, easing = FastOutSlowInEasing)),
+                exit = shrinkVertically(animationSpec = tween(200, easing = FastOutSlowInEasing)),
+            ) {
+                Column(
+                    modifier = Modifier.width(popupWidthDp),
+                ) {
+                    // Three option rows. No section
+                    // header (unlike the recent-files
+                    // popup which has a "最近" anchor) —
+                    // the 3 options here are
+                    // self-explanatory (each carries its
+                    // own leading icon + label), and the
+                    // import button itself ("导入图像" +
+                    // + glyph) already scopes the popup
+                    // to "import images". The label-only
+                    // path (no trailing sub-text like the
+                    // recent files' timestamp) means each
+                    // row is just leading icon + bodyMedium
+                    // text, mirroring the recent-files
+                    // Row's modifier pattern
+                    // (clickable + 12h/10v padding +
+                    // onSurfaceVariant tint + 18dp icon
+                    // + bodyMedium text).
+                    //
+                    // [相册] — gallery. Tapping closes
+                    // the popup and dispatches
+                    // [onPickGallery] which launches
+                    // [photoPickerLauncher] (Android 13+
+                    // PhotoPicker, auto-fallback to SAF
+                    // on older). Icon:
+                    // [Icons.Rounded.PhotoLibrary]
+                    // (Material 3 "stack of photos"
+                    // glyph).
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember {
+                                    MutableInteractionSource()
+                                },
+                                indication = null,
+                            ) {
+                                onImportSourceMenuOpenChange(false)
+                                onPickGallery()
+                            }
+                            .padding(
+                                horizontal = 12.dp,
+                                vertical = 10.dp,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PhotoLibrary,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = "相册",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // [剪贴板] — clipboard. Tapping
+                    // closes the popup and dispatches
+                    // [onPickClipboard] which calls
+                    // [onImportFromClipboard] =
+                    // ClipboardManager read (the
+                    // user-added 23:31 hand modification
+                    // that landed in the 8fa2bf9 merge).
+                    // Empty clipboard is handled silently
+                    // inside [onPickClipboard] — the
+                    // popup already closed itself, and
+                    // showing a snackbar here would race
+                    // the picker animation for the other
+                    // two paths. Icon:
+                    // [Icons.Rounded.ContentPaste]
+                    // (Material 3 "paste from clipboard"
+                    // glyph).
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember {
+                                    MutableInteractionSource()
+                                },
+                                indication = null,
+                            ) {
+                                onImportSourceMenuOpenChange(false)
+                                onPickClipboard()
+                            }
+                            .padding(
+                                horizontal = 12.dp,
+                                vertical = 10.dp,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ContentPaste,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = "剪贴板",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // [文件] — files. Tapping closes
+                    // the popup and dispatches
+                    // [onPickFiles] which calls
+                    // [onImport] = the existing SAF
+                    // [OpenMultipleDocuments] path. Kept
+                    // as the "I want a specific file
+                    // from my Downloads" option for power
+                    // users — some users store reference
+                    // images outside the Photo roll
+                    // (e.g. SD card, downloaded .zip
+                    // extracts), and the system
+                    // PhotoPicker doesn't reach those
+                    // locations but SAF does. Icon:
+                    // [Icons.Rounded.FileOpen] (Material
+                    // 3 "open file" glyph).
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember {
+                                    MutableInteractionSource()
+                                },
+                                indication = null,
+                            ) {
+                                onImportSourceMenuOpenChange(false)
+                                onPickFiles()
+                            }
+                            .padding(
+                                horizontal = 12.dp,
+                                vertical = 10.dp,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.FileOpen,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = "文件",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
 
     // V_NOW: settings sheet rendering moved to [PockRefApp]
     // (was previously rendered here). The sheet now reads

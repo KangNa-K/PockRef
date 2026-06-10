@@ -120,3 +120,39 @@ fitted 状态下 (双击图 → canvas zoom-in) 拖 corner handle resize,松手�
 
 - `~/Desktop/pockref-v1.2.1-20260610-0537.apk` (含 #4)
 - 后续 polish APK 见 commit history 的 timestamp 命名
+
+***
+
+## 1.2.1 follow-up #1 — 顶栏 import popup 视觉/位置/动画统一
+
+user bug report: "#2 import popup 跟 chevron 的最近文件 popup 看起来是两种东西, 但功能上是一类 (都是顶栏的二级选项面板), 不一致很怪. 让我之前的 import popup 跟最近的最近文件 popup 样式、位置、动画一致".
+
+### 改了什么
+
+- **删 M3 `DropdownMenu`**: 旧的 import popup 是独立 Popup window (跟顶栏 Surface 不连续, 浮在 canvas 上方, 圆角/边框/背景跟顶栏脱节). 删掉.
+- **改 in-toolbar Surface**: 新的 import popup 是顶栏 Surface 内的 sibling `AnimatedVisibility` (跟 recent files popup 同一层), 共享 Surface 的圆角/边框/背景, 展开时顶栏 Surface 高度向下生长 = 一个连续 chrome 块.
+- **同款动画**: `expandVertically(tween 200, FastOutSlowInEasing)` + `shrinkVertically(tween 200, FastOutSlowInEasing)`, 跟 recent files popup 完全相同, 两者同开/同关时间感.
+- **同款 width 跟随**: popup 宽度绑定 `toolbarRowWidth` (跟 recent files popup 一样, 顶栏窄时 popup 窄, 顶栏宽时 popup 宽).
+- **toggle 行为**: import 按钮再点一次 = 关闭 (跟 chevron 一致), 不依赖 `DropdownMenu` 内置的 `onDismissRequest`.
+- **chrome-mutex**: 打开 import popup 时 force-close recent files popup (反之亦然), 两者不会同时显示.
+- **scrim**: parent level 加 tap-outside dismiss (跟 recent files popup 的 scrim 一样, `matchParentSize` + `clickable(indication=null)`).
+- **state hoist**: `importSourceMenuOpen` 跟 `menuExpanded` 一样 hoist 到 [PockRefApp] (经 `PockRefAction.SetImportSourceMenuOpen` 走 ViewModel reducer), 不是 `TopToolbar` 内的 local var — 让 parent scrim 跟 chrome-mutex 跟 state 一致.
+
+### 行为
+
+- 单击 import 按钮 → 弹出 3 选项 popup (相册/剪贴板/文件), 顶栏 Surface 高度增加, 视觉上一个连续 chrome 块
+- 单击 popup 内某项 → 关闭 popup + 触发对应 launcher
+- 单击 popup 外部 (canvas / 其它区域) → 关闭 popup (scrim)
+- 再单击 import 按钮 → 关闭 popup (toggle)
+- 单击 chevron 打开 recent files popup 时 → 自动 force-close import popup
+- 3 选项的 visual: leading 18dp icon (PhotoLibrary/ContentPaste/FileOpen, onSurfaceVariant tint) + bodyMedium Text (onSurface), clickable + 12h/10v padding, 跟 recent files Row 视觉一致
+
+### 测试
+
+- 291 unit tests 全过 (没新增 test 因为 UI 改动不涉及 ViewModel 行为, state wire 沿用 #2 加的 `SetImportSourceMenuOpen`)
+- Build 干净: 0 Duplicate label warnings, 0 unclosed comment warnings
+- `onPickGallery` / `onPickClipboard` / `onPickFiles` 参数 `never used` warning 消失 (新 popup 在用)
+
+### Build artifacts
+
+- `~/Desktop/pockref-v1.2.1-20260610-1019.apk` (本次)
