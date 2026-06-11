@@ -655,10 +655,22 @@ enum class MinimapSliderOrientation { ADAPTIVE, HORIZONTAL, VERTICAL }
 
 
 data class CropRect(
-    val left: Float = 0.05f,
-    val top: Float = 0.05f,
-    val right: Float = 0.95f,
-    val bottom: Float = 0.95f,
+    // V_NOW (2026-06-11, user spec "最开始裁切框是和图片大小
+    // 一致的"): default to the full image rect (0, 0, 1, 1).
+    // The previous 0.05..0.95 inset was a design-time
+    // placeholder that left a visible "edge band" of the
+    // image uncovered by the crop selection on first open
+    // — the user saw "the crop box doesn't start at the
+    // image edge" and had to drag every handle out to the
+    // corners. With this change, the first frame after
+    // [EnterCropMode] shows the selection matching the
+    // image bounds exactly; the four corner handles
+    // (rendered outside the rect by the [CropOverlay]
+    // canvas) are the visible affordance to shrink it.
+    val left: Float = 0f,
+    val top: Float = 0f,
+    val right: Float = 1f,
+    val bottom: Float = 1f,
 ) {
     val cropWidth: Float get() = right - left
     val cropHeight: Float get() = bottom - top
