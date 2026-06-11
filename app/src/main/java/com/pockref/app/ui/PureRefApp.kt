@@ -7296,6 +7296,26 @@ private fun PockRefCanvas(
                     val edgeAutoScrollThresholdPx = with(density) { EDGE_AUTO_SCROLL_THRESHOLD_DP.dp.toPx() }
 
                     var activeDragImageId: String? = null
+                    // V_NOW (2026-06-11): separate the
+                    // "image the user tapped" identity from
+                    // [activeDragImageId] so the
+                    // pointer-move path can detect
+                    // image-drag vs canvas-pan independently
+                    // of double-tap detection. In global
+                    // lock mode the user must be able to
+                    // single-finger drag ON an image to
+                    // pan the canvas (matching the
+                    // "view-only" contract) but a
+                    // quick-tap-then-second-tap must still
+                    // fire double-tap-to-focus on that
+                    // image. We can't reuse
+                    // [activeDragImageId] for both
+                    // because the pointer-move branch
+                    // (`if (dragId != null)`) would steal
+                    // the gesture and dispatch
+                    // [BeginImageDrag] before the canvas-
+                    // pan branch could ever run.
+                    var tapTargetImageId: String? = null
                     var dragCanvas = false
                     var lassoActive = false
                     var lassoStart: Offset? = null
@@ -7690,29 +7710,32 @@ private fun PockRefCanvas(
                         // whether to arm the drag or just
                         // record the hit for double-tap.
                         if (s.globalImageLock) {
-                            // Global lock: don't arm the drag,
-                            // but record [activeDragImageId]
-                            // so double-tap detection works.
-                            // Also set [dragCanvas = true] so
-                            // single-finger drag on the image
-                            // pans the canvas (matching the
-                            // user's expectation that locked
-                            // images are "view-only").
+                            // V_NOW (2026-06-11): in global
+                            // lock mode the image is
+                            // "view-only" — the user must
+                            // be able to single-finger drag
+                            // ON the image to pan the
+                            // canvas (matching the
+                            // "view-only" contract).
                             //
-                            // V_NOW (2026-06-11): unconditionally
-                            // arm canvas pan in global lock mode
-                            // even if the [MOVE_IMAGE] gesture
-                            // toggle is off. The toggle is named
-                            // "move image" — it has no meaning
-                            // when global lock is on because the
-                            // user has explicitly disabled
-                            // image-moving. Gating the fallback
-                            // canvas pan behind MOVE_IMAGE made
-                            // single-finger drag completely
-                            // dead in global lock mode when the
-                            // toggle was off, leaving the user
-                            // with no way to pan.
-                            activeDragImageId = hitId
+                            // We do NOT set
+                            // [activeDragImageId] here. That
+                            // variable is what the
+                            // pointer-move branch checks to
+                            // decide whether to dispatch
+                            // [BeginImageDrag]; setting it
+                            // would steal the gesture from
+                            // the canvas-pan branch and
+                            // cause the very bug we're
+                            // fixing (locked image blocks
+                            // canvas pan).
+                            //
+                            // We DO set [tapTargetImageId]
+                            // so pointer-up double-tap
+                            // detection can still fire
+                            // [FitImageToScreen] on the
+                            // hit image.
+                            tapTargetImageId = hitId
                             dragCanvas = true
                         } else if (s.boxSelectMode && hitId !in s.selectedImageIds && groupCornerDrag == null) {
                             currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
@@ -7893,6 +7916,7 @@ private fun PockRefCanvas(
                                 currentOnAction(PockRefAction.CancelImageDrag)
                             }
                             activeDragImageId = null
+                            tapTargetImageId = null
                             dragCanvas = false
                             lassoActive = false
 
@@ -8534,11 +8558,25 @@ private fun PockRefCanvas(
                         lassoStart = null
                     }
 
-                    if (activeDragImageId != null) {
-                        if (dragStarted) {
+                    // V_NOW (2026-06-11): combine
+                    // [activeDragImageId] (the normal
+                    // "image drag" tap) and
+                    // [tapTargetImageId] (the global-lock
+                    // "image is view-only but tap should
+                    // still double-tap focus" tap) into a
+                    // single [tappedId] so the
+                    // double-tap-detection / fit-on-screen
+                    // block below runs for both cases.
+                    val effectiveTapId: String? = when {
+                        activeDragImageId != null -> activeDragImageId
+                        tapTargetImageId != null -> tapTargetImageId
+                        else -> null
+                    }
+                    if (effectiveTapId != null) {
+                        if (activeDragImageId != null && dragStarted) {
                             currentOnAction(PockRefAction.CommitImageDrag)
                         } else if (isTap) {
-                            val tappedId = activeDragImageId
+                            val tappedId = effectiveTapId
                             // V_NOW: use [lastTapImageId] instead
                             // of [curState.selectedImageIds] for
                             // double-tap detection. The first tap
