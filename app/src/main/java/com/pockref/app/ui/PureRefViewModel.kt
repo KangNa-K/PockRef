@@ -704,6 +704,11 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 action.pivotX,
                 action.pivotY,
             )
+            is PockRefAction.SetSingleImageCornerScale -> batchController.setSingleImageCornerScale(
+                action.imageId,
+                action.newScale,
+                action.newCenter,
+            )
             is PockRefAction.SetColorAdjust -> transformController.updateColorAdjust(action.brightness, action.contrast, action.saturation)
             PockRefAction.RotateLeft -> transformController.rotateSelected(-90f)
             PockRefAction.RotateRight -> transformController.rotateSelected(90f)

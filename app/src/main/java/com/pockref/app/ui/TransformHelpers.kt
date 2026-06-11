@@ -746,48 +746,33 @@ internal fun hitTestCornerHandle(
  * happening.
  */
 internal fun computeCornerDragResult(
-    // V_NOW (2026-06-10 user feedback "对角锚点放大时会动"):
-    // The corner-drag algorithm now operates ENTIRELY in
-    // world coordinates. The previous version returned a
-    // screen-space center `(currentMove + initialAnchor) / 2`
-    // combined with a `newDiag/initialDiag` scale, then
-    // expected the pointer handler to convert that center
-    // back to world. That geometry only pins the anchor
-    // corner when the image is axis-aligned AND the user's
-    // finger moves exactly along the (initialMove -
-    // initialAnchor) diagonal. The moment the image is
-    // rotated (so its 4 corners are no longer on the
-    // axis-aligned diagonals) OR the user drags off-axis,
-    // the rendered TL lands at
-    //   newCenter + R(rot) * (-displaySize*scale/2)
-    //   ≠ initialAnchorWorld
-    // and the opposite handle visibly drifts. The drift
-    // grows linearly with `displaySize * scale`, which is
-    // exactly the "drift gets worse when zooming in" the
-    // user reported.
+    // V_NOW (2026-06-11 "旋转图片角点缩放跳位置" fix):
+    // added [anchorSignX] / [anchorSignY] so the center
+    // formula works for ALL 4 anchor corners, not just BR.
     //
-    // The new geometry inverts the image-transform equation
-    // `corner_world = image.center + R(rot) * (corner_local * scale)`
-    // so the anchor corner is GUARANTEED to land at
-    // [initialAnchorWorld] for ANY rotation and ANY drag
-    // direction:
-    //   image.center = initialAnchorWorld
-    //                + R(rot) * (displaySize * scale / 2)
-    // The move corner then lands at
-    //   move_rendered = initialAnchorWorld
-    //                + R(rot) * (displaySize * scale)
-    // which is the AABB diagonal extended by the
-    // diagonal scale. Along the original (M - A) direction
-    // the move corner tracks the finger; off-axis
-    // components project onto the diagonal. This is the
-    // same anchor-pinned behavior Figma / Sketch use for
-    // bounding-box corner handles.
+    // The image transform is
+    //   corner_world = image.center
+    //                + R(rot) * (anchor_local - (dW/2, dH/2))
+    // where anchor_local is the anchor's position in the
+    // image's local coordinate system. The offset from
+    // center depends on which corner is the anchor:
+    //   TL(0,0):    (-dW/2, -dH/2)  → signX=-1, signY=-1
+    //   TR(dW,0):   (+dW/2, -dH/2)  → signX=+1, signY=-1
+    //   BL(0,dH):   (-dW/2, +dH/2)  → signX=-1, signY=+1
+    //   BR(dW,dH):  (+dW/2, +dH/2)  → signX=+1, signY=+1
+    // Solving for image.center:
+    //   center = anchor - R(rot) * (signX*halfW, signY*halfH)
+    // The previous version hardcoded signX=+1, signY=+1
+    // (BR anchor only), so dragging any corner other than
+    // TL (whose anchor IS BR) caused the image to jump.
     initialMoveWorld: Offset,
     initialAnchorWorld: Offset,
     currentMoveWorld: Offset,
     worldWidth: Float,
     worldHeight: Float,
     rotationDegrees: Float,
+    anchorSignX: Int = 1,
+    anchorSignY: Int = 1,
 ): Pair<Float, Offset> {
     val initialDiag = hypot(
         initialMoveWorld.x - initialAnchorWorld.x,
@@ -811,39 +796,12 @@ internal fun computeCornerDragResult(
     val sinR = sin(rad).toFloat()
     val halfNewW = worldWidth * scaleFactor / 2f
     val halfNewH = worldHeight * scaleFactor / 2f
-    // V_NOW (2026-06-10 sign-fix follow-up): the
-    // previous version of this formula was
-    //   newCenter = anchor + R(rot) * (dW*s/2, dH*s/2)
-    // which produced image.center = anchor + half-diagonal
-    // — so the rendered anchor corner landed at
-    // `center + R(rot) * (dW*s/2, dH*s/2) = anchor + R(rot)
-    // * (dW*s, dH*s)`, which is the MOVE corner's diagonal
-    // mirror, NOT the pinned anchor. The result was that
-    // every corner drag pinned the BR corner regardless of
-    // which handle the user actually grabbed.
-    //
-    // The image transform is
-    //   corner_world = image.center
-    //                + R(rot) * ((local - (dW/2, dH/2)) * scale)
-    // so for the local corner at (dW, dH) (the BR corner
-    // when scale > 0, which is the anchor for the TL-move
-    // case):
-    //   anchor_world = image.center
-    //                + R(rot) * ((dW, dH) - (dW/2, dH/2)) * scale
-    //                = image.center + R(rot) * (dW*s/2, dH*s/2)
-    // Solving for image.center:
-    //   image.center = anchor_world - R(rot) * (dW*s/2, dH*s/2)
-    // The move corner is at the diagonal mirror, so its
-    // rendered position is:
-    //   move_world = anchor - R(rot) * (dW*s/2, dH*s/2)
-    //              + R(rot) * (-dW*s/2, -dH*s/2)
-    //              = anchor - R(rot) * (dW*s, dH*s)
-    // i.e. it tracks the finger along the original
-    // diagonal direction (and the off-axis component
-    // projects onto that diagonal).
+    // center = anchor - R(rot) * (signX*halfNewW, signY*halfNewH)
+    val offsetX = anchorSignX * halfNewW
+    val offsetY = anchorSignY * halfNewH
     val newCenterWorld = Offset(
-        initialAnchorWorld.x - (halfNewW * cosR - halfNewH * sinR),
-        initialAnchorWorld.y - (halfNewW * sinR + halfNewH * cosR),
+        initialAnchorWorld.x - (offsetX * cosR - offsetY * sinR),
+        initialAnchorWorld.y - (offsetX * sinR + offsetY * cosR),
     )
     return Pair(scaleFactor, newCenterWorld)
 }

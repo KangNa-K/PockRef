@@ -7548,34 +7548,59 @@ private fun PockRefCanvas(
                                     !cs2.isImageLocked(it.id)
                                 }
                             if (anyUnlocked) {
-                                // Compute the union AABB
-                                // over the candidate
-                                // images.
-                                val cornerAabb =
-                                    if (hasSingleSelection) {
-                                        // SINGLE shortcut:
-                                        // the "group AABB"
-                                        // IS the image's
-                                        // rotated footprint
-                                        // AABB.
-                                        val ct =
-                                            cornerImages.first()
-                                        rotatedFootprintAabb(
-                                            center = ct.center,
-                                            displayW = ct.displaySize.width.toFloat(),
-                                            displayH = ct.displaySize.height.toFloat(),
-                                            scale = ct.scale,
-                                            rotationDegrees = ct.rotationDegrees,
-                                        )
-                                    } else {
-                                        groupSelectionAabb(cornerImages).rect
-                                    }
-                                if (cornerAabb.width > 1f && cornerAabb.height > 1f) {
-                                    // Project the AABB
-                                    // 4 corners to
-                                    // screen, hit-test
-                                    // the pointer
-                                    // against them.
+                                // V_NOW (2026-06-11 "旋转图片
+                                // 无法用角点缩放" fix):
+                                // for SINGLE, project the
+                                // IMAGE's actual 4 rotated
+                                // corners (not the AABB
+                                // corners). The corner handles
+                                // are rendered at the image's
+                                // rotated corners (inside the
+                                // translate+rotate block in
+                                // [drawSceneImage]), so the
+                                // hit-test must match those
+                                // positions. The previous code
+                                // used [rotatedFootprintAabb]
+                                // + [projectGroupAabbCornersToScreen]
+                                // which projects the AXIS-ALIGNED
+                                // bounding box corners — those
+                                // only coincide with the image's
+                                // actual corners when
+                                // rotationDegrees == 0.
+                                // MULTI/BOX still uses the
+                                // group AABB (the group chrome
+                                // IS the AABB box).
+                                val gHitIdx: Int
+                                val gProjected: List<Offset>
+                                val cornerAabb: Rect
+                                if (hasSingleSelection) {
+                                    val ct = cornerImages.first()
+                                    val imgW = ct.displaySize.width.toFloat() * ct.scale
+                                    val imgH = ct.displaySize.height.toFloat() * ct.scale
+                                    gProjected = projectImageCornersToScreen(
+                                        imageCenter = ct.center,
+                                        imageWidth = imgW,
+                                        imageHeight = imgH,
+                                        rotationDegrees = ct.rotationDegrees,
+                                        canvasScale = cs2.canvasScale,
+                                        canvasOffset = cs2.canvasOffset,
+                                        viewportWidth = size.width.toFloat(),
+                                        viewportHeight = size.height.toFloat(),
+                                    )
+                                    gHitIdx = hitTestCornerHandle(
+                                        projectedCorners = gProjected,
+                                        screenPoint = downPos,
+                                        hitRadiusPx = cornerHitRadiusPx,
+                                    )
+                                    cornerAabb = rotatedFootprintAabb(
+                                        center = ct.center,
+                                        displayW = ct.displaySize.width.toFloat(),
+                                        displayH = ct.displaySize.height.toFloat(),
+                                        scale = ct.scale,
+                                        rotationDegrees = ct.rotationDegrees,
+                                    )
+                                } else {
+                                    cornerAabb = groupSelectionAabb(cornerImages).rect
                                     val gaabbObj = GroupAabb(
                                         rect = cornerAabb,
                                         center = Offset(
@@ -7585,95 +7610,130 @@ private fun PockRefCanvas(
                                         width = cornerAabb.width,
                                         height = cornerAabb.height,
                                     )
-                                    val gProjected =
-                                        projectGroupAabbCornersToScreen(
-                                            groupAabb = gaabbObj,
-                                            canvasScale = cs2.canvasScale,
-                                            canvasOffset = cs2.canvasOffset,
-                                            viewportWidth = size.width.toFloat(),
-                                            viewportHeight = size.height.toFloat(),
-                                        )
-                                    val gHitIdx = hitTestCornerHandle(
+                                    gProjected = projectGroupAabbCornersToScreen(
+                                        groupAabb = gaabbObj,
+                                        canvasScale = cs2.canvasScale,
+                                        canvasOffset = cs2.canvasOffset,
+                                        viewportWidth = size.width.toFloat(),
+                                        viewportHeight = size.height.toFloat(),
+                                    )
+                                    gHitIdx = hitTestCornerHandle(
                                         projectedCorners = gProjected,
                                         screenPoint = downPos,
                                         hitRadiusPx = cornerHitRadiusPx,
                                     )
-                                    if (gHitIdx >= 0) {
-                                        val gAnchorScreen = gProjected[3 - gHitIdx]
-                                        val gDiag = kotlin.math.hypot(
-                                            gProjected[gHitIdx].x - gAnchorScreen.x,
-                                            gProjected[gHitIdx].y - gAnchorScreen.y,
+                                }
+                                if (gHitIdx >= 0 && cornerAabb.width > 1f && cornerAabb.height > 1f) {
+                                    val gAnchorScreen = gProjected[3 - gHitIdx]
+                                    val gDiag = kotlin.math.hypot(
+                                        gProjected[gHitIdx].x - gAnchorScreen.x,
+                                        gProjected[gHitIdx].y - gAnchorScreen.y,
+                                    )
+                                    if (gDiag > 1f) {
+                                        val gRect = cornerAabb
+                                        val gPivotX = when (gHitIdx) {
+                                            0, 2 -> gRect.right
+                                            else -> gRect.left
+                                        }
+                                        val gPivotY = when (gHitIdx) {
+                                            0, 1 -> gRect.bottom
+                                            else -> gRect.top
+                                        }
+                                        val gImageAabbs =
+                                            cornerImages
+                                                .associate { img ->
+                                                    img.id to
+                                                        rotatedFootprintAabb(
+                                                            center = img.center,
+                                                            displayW = img.displaySize.width.toFloat(),
+                                                            displayH = img.displaySize.height.toFloat(),
+                                                            scale = img.scale,
+                                                            rotationDegrees = img.rotationDegrees,
+                                                        )
+                                                }
+                                        val gAnchorWorld = Offset(gPivotX, gPivotY)
+                                        val gMoveWorld = Offset(
+                                            (gProjected[gHitIdx].x - cs2Center.x) / cs2.canvasScale,
+                                            (gProjected[gHitIdx].y - cs2Center.y) / cs2.canvasScale,
                                         )
-                                        if (gDiag > 1f) {
-                                            val gRect = cornerAabb
-                                            val gPivotX = when (gHitIdx) {
-                                                0, 2 -> gRect.right
-                                                else -> gRect.left
-                                            }
-                                            val gPivotY = when (gHitIdx) {
-                                                0, 1 -> gRect.bottom
-                                                else -> gRect.top
-                                            }
-                                            val gImageAabbs =
-                                                cornerImages
-                                                    .associate { img ->
-                                                        img.id to
-                                                            rotatedFootprintAabb(
-                                                                center = img.center,
-                                                                displayW = img.displaySize.width.toFloat(),
-                                                                displayH = img.displaySize.height.toFloat(),
-                                                                scale = img.scale,
-                                                                rotationDegrees = img.rotationDegrees,
-                                                            )
-                                                    }
-                                            val gAnchorWorld = Offset(gPivotX, gPivotY)
-                                            val gMoveWorld = Offset(
+                                        val gGroupCenterWorld = Offset(
+                                            (gRect.left + gRect.right) / 2f,
+                                            (gRect.top + gRect.bottom) / 2f,
+                                        )
+                                        // V_NOW (2026-06-11 "旋转图片角点缩放" fix):
+                                        // for SINGLE, compute the image's ACTUAL
+                                        // anchor corner world position (not the
+                                        // AABB corner). The anchor is the opposite
+                                        // corner from the one the user grabbed.
+                                        val singleAnchor: Offset?
+                                        val singleMove: Offset?
+                                        val singleRot: Float
+                                        val singleW: Float
+                                        val singleH: Float
+                                        val singleInitScale: Float
+                                        val singleASignX: Int
+                                        val singleASignY: Int
+                                        if (hasSingleSelection) {
+                                            val ct = cornerImages.first()
+                                            singleRot = ct.rotationDegrees
+                                            singleW = ct.displaySize.width.toFloat() * ct.scale
+                                            singleH = ct.displaySize.height.toFloat() * ct.scale
+                                            singleInitScale = ct.scale
+                                            // gProjected contains the image's actual
+                                            // rotated corners (from projectImageCornersToScreen).
+                                            // Anchor is the opposite corner.
+                                            singleAnchor = Offset(
+                                                (gProjected[3 - gHitIdx].x - cs2Center.x) / cs2.canvasScale,
+                                                (gProjected[3 - gHitIdx].y - cs2Center.y) / cs2.canvasScale,
+                                            )
+                                            singleMove = Offset(
                                                 (gProjected[gHitIdx].x - cs2Center.x) / cs2.canvasScale,
                                                 (gProjected[gHitIdx].y - cs2Center.y) / cs2.canvasScale,
                                             )
-                                            groupCornerDrag = GroupCornerDragState(
-                                                imageIds = cornerImages.map { it.id }.toSet(),
-                                                initialScales = cornerImages
-                                                    .associate { it.id to it.scale },
-                                                initialGroupDiagonalScreen = gDiag,
-                                                initialMoveScreen = gProjected[gHitIdx],
-                                                initialAnchorScreen = gAnchorScreen,
-                                                initialGroupCenterWorld = gaabbObj.center,
-                                                initialCenters = cornerImages
-                                                    .associate { it.id to it.center },
-                                                initialGroupAabb = gRect,
-                                                initialImageAabbs = gImageAabbs,
-                                                initialAnchorWorld = gAnchorWorld,
-                                                initialMoveWorld = gMoveWorld,
-                                                pivotX = gPivotX,
-                                                pivotY = gPivotY,
-                                            )
-                                            // V_NOW (2026-06-10
-                                            // #3 corner-handle
-                                            // undo/redo
-                                            // atomicity):
-                                            // see the
-                                            // SINGLE-path
-                                            // comment above.
-                                            // The
-                                            // [BeginSceneGesture]
-                                            // here wraps
-                                            // every move-
-                                            // frame into
-                                            // one undo
-                                            // entry. The
-                                            // release
-                                            // branch
-                                            // below calls
-                                            // [PockRefAction.EndSceneGesture]
-                                            // to close
-                                            // the gesture
-                                            // and flush
-                                            // a single
-                                            // diff.
-                                            currentOnAction(PockRefAction.BeginSceneGesture)
-                                            cornerDragActive = true
+                                            // Anchor corner's offset-from-center sign
+                                            // in local image space:
+                                            //   TL(0)→(-1,-1), TR(1)→(+1,-1),
+                                            //   BL(2)→(-1,+1), BR(3)→(+1,+1)
+                                            val anchorIdx = 3 - gHitIdx
+                                            singleASignX = if (anchorIdx == 1 || anchorIdx == 3) 1 else -1
+                                            singleASignY = if (anchorIdx == 2 || anchorIdx == 3) 1 else -1
+                                        } else {
+                                            singleAnchor = null
+                                            singleMove = null
+                                            singleRot = 0f
+                                            singleW = 0f
+                                            singleH = 0f
+                                            singleInitScale = 0f
+                                            singleASignX = 1
+                                            singleASignY = 1
                                         }
+                                        groupCornerDrag = GroupCornerDragState(
+                                            imageIds = cornerImages.map { it.id }.toSet(),
+                                            initialScales = cornerImages
+                                                .associate { it.id to it.scale },
+                                            initialGroupDiagonalScreen = gDiag,
+                                            initialMoveScreen = gProjected[gHitIdx],
+                                            initialAnchorScreen = gAnchorScreen,
+                                            initialGroupCenterWorld = gGroupCenterWorld,
+                                            initialCenters = cornerImages
+                                                .associate { it.id to it.center },
+                                            initialGroupAabb = gRect,
+                                            initialImageAabbs = gImageAabbs,
+                                            initialAnchorWorld = gAnchorWorld,
+                                            initialMoveWorld = gMoveWorld,
+                                            pivotX = gPivotX,
+                                            pivotY = gPivotY,
+                                            singleAnchorWorld = singleAnchor,
+                                            singleMoveWorld = singleMove,
+                                            singleRotationDegrees = singleRot,
+                                            singleWorldWidth = singleW,
+                                            singleWorldHeight = singleH,
+                                            singleInitialScale = singleInitScale,
+                                            singleAnchorSignX = singleASignX,
+                                            singleAnchorSignY = singleASignY,
+                                        )
+                                        currentOnAction(PockRefAction.BeginSceneGesture)
+                                        cornerDragActive = true
                                     }
                                 }
                             }
@@ -7736,7 +7796,25 @@ private fun PockRefCanvas(
                             // [FitImageToScreen] on the
                             // hit image.
                             tapTargetImageId = hitId
-                            dragCanvas = true
+                            // V_NOW (2026-06-11 "全局锁定下双击
+                            // 取消聚焦失败" fix): when the
+                            // tapped image IS the currently
+                            // focused image, do NOT set
+                            // [dragCanvas = true]. The user's
+                            // intent is double-tap to unfocus,
+                            // not pan the canvas. If we arm
+                            // canvas pan, the first tap's
+                            // micro-movement dispatches
+                            // [PanCanvas] which clears
+                            // [fittedImageId] before the
+                            // second tap's [FitImageToScreen]
+                            // can detect the "already focused
+                            // → unfocus" condition — the
+                            // unfocus silently no-ops because
+                            // [fittedImageId] is already null.
+                            if (s.fittedImageId != hitId) {
+                                dragCanvas = true
+                            }
                         } else if (s.boxSelectMode && hitId !in s.selectedImageIds && groupCornerDrag == null) {
                             currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                             boxSelectStart = downPos
@@ -8262,68 +8340,71 @@ private fun PockRefCanvas(
                                     size.width.toFloat() / 2f + cs2.canvasOffset.x,
                                     size.height.toFloat() / 2f + cs2.canvasOffset.y,
                                 )
-                                // V_NOW (2026-06-10 group
-                                // corner-handle anchor fix v2):
-                                // compute [factor] in WORLD
-                                // space (|N-A| / |M-A|) and
-                                // re-derive the new group AABB
-                                // corner N in world space, but
-                                // pass the per-AABB payload to
-                                // the reducer — the reducer
-                                // applies
-                                //   newImageAabb = pivot
-                                //     + (initialAabb - pivot) * factor
-                                // for each member, so the group
-                                // AABB chrome stays pinned at
-                                // A regardless of rotation /
-                                // offsets. The previous
-                                // payload (`worldCenter +
-                                // absoluteScales`) only worked
-                                // for axis-aligned members
-                                // whose center matched the
-                                // group AABB center — for
-                                // rotated members the union
-                                // of new per-image AABBs
-                                // drifted off the spec'd
-                                // `newGroupCenter ±
-                                // initialAABB.size/2 * factor`
-                                // and the diagonal anchor
-                                // "walked" as the user
-                                // dragged.
-                                val anchorWorld = gcorner.initialAnchorWorld
-                                val moveWorld = gcorner.initialMoveWorld
-                                val initialDiagWorld = kotlin.math.hypot(
-                                    moveWorld.x - anchorWorld.x,
-                                    moveWorld.y - anchorWorld.y,
-                                )
                                 val currentMoveWorld = Offset(
                                     (change.position.x - cs2Center.x) / cs2.canvasScale,
                                     (change.position.y - cs2Center.y) / cs2.canvasScale,
                                 )
-                                val newDiagWorld = kotlin.math.hypot(
-                                    currentMoveWorld.x - anchorWorld.x,
-                                    currentMoveWorld.y - anchorWorld.y,
-                                )
-                                val rawRatio = if (initialDiagWorld > 0.0001f) {
-                                    newDiagWorld / initialDiagWorld
+                                // V_NOW (2026-06-11 "旋转图片角点缩放" fix):
+                                // for SINGLE, use [computeCornerDragResult]
+                                // which inverts the rotation transform to
+                                // pin the image's ACTUAL anchor corner.
+                                // The AABB-scaling path only pins the AABB
+                                // corner, which diverges from the image's
+                                // actual corner when rotationDegrees != 0.
+                                val singleAnchor = gcorner.singleAnchorWorld
+                                if (singleAnchor != null && gcorner.singleMoveWorld != null) {
+                                    val (scaleFactor, newCenterWorld) = computeCornerDragResult(
+                                        initialMoveWorld = gcorner.singleMoveWorld,
+                                        initialAnchorWorld = singleAnchor,
+                                        currentMoveWorld = currentMoveWorld,
+                                        worldWidth = gcorner.singleWorldWidth,
+                                        worldHeight = gcorner.singleWorldHeight,
+                                        rotationDegrees = gcorner.singleRotationDegrees,
+                                        anchorSignX = gcorner.singleAnchorSignX,
+                                        anchorSignY = gcorner.singleAnchorSignY,
+                                    )
+                                    val newScale = (gcorner.singleInitialScale * scaleFactor)
+                                        .coerceIn(0.1f, 8.0f)
+                                    currentOnAction(
+                                        PockRefAction.SetSingleImageCornerScale(
+                                            imageId = gcorner.imageIds.first(),
+                                            newScale = newScale,
+                                            newCenter = newCenterWorld,
+                                        ),
+                                    )
                                 } else {
-                                    1f
+                                    // MULTI/BOX: AABB-scaling path
+                                    val anchorWorld = gcorner.initialAnchorWorld
+                                    val moveWorld = gcorner.initialMoveWorld
+                                    val initialDiagWorld = kotlin.math.hypot(
+                                        moveWorld.x - anchorWorld.x,
+                                        moveWorld.y - anchorWorld.y,
+                                    )
+                                    val newDiagWorld = kotlin.math.hypot(
+                                        currentMoveWorld.x - anchorWorld.x,
+                                        currentMoveWorld.y - anchorWorld.y,
+                                    )
+                                    val rawRatio = if (initialDiagWorld > 0.0001f) {
+                                        newDiagWorld / initialDiagWorld
+                                    } else {
+                                        1f
+                                    }
+                                    val factor = if (kotlin.math.abs(rawRatio - 1f) <= 0.03f) {
+                                        1f
+                                    } else {
+                                        rawRatio.coerceIn(0.1f, 8.0f)
+                                    }
+                                    currentOnAction(
+                                        PockRefAction.SetSelectedImagesScale(
+                                            factor = factor,
+                                            initialGroupAabb = gcorner.initialGroupAabb,
+                                            initialImageAabbs = gcorner.initialImageAabbs,
+                                            initialScales = gcorner.initialScales,
+                                            pivotX = gcorner.pivotX,
+                                            pivotY = gcorner.pivotY,
+                                        ),
+                                    )
                                 }
-                                val factor = if (kotlin.math.abs(rawRatio - 1f) <= 0.03f) {
-                                    1f
-                                } else {
-                                    rawRatio.coerceIn(0.1f, 8.0f)
-                                }
-                                currentOnAction(
-                                    PockRefAction.SetSelectedImagesScale(
-                                        factor = factor,
-                                        initialGroupAabb = gcorner.initialGroupAabb,
-                                        initialImageAabbs = gcorner.initialImageAabbs,
-                                        initialScales = gcorner.initialScales,
-                                        pivotX = gcorner.pivotX,
-                                        pivotY = gcorner.pivotY,
-                                    ),
-                                )
                                 change.consume()
                                 lastPointerPosState.value = change.position
                                 autoScrollEligibleState.value = false
@@ -9578,6 +9659,29 @@ private data class GroupCornerDragState(
     // [gHitIdx] in the down handler.
     val pivotX: Float,
     val pivotY: Float,
+    // V_NOW (2026-06-11 "旋转图片角点缩放" fix):
+    // for SINGLE mode, the image's ACTUAL
+    // anchor corner in world coords (not the
+    // AABB corner). When non-null, the move
+    // handler uses [computeCornerDragResult]
+    // which inverts the rotation transform to
+    // pin the actual corner, instead of the
+    // AABB-scaling path. Null for MULTI/BOX
+    // (group AABB chrome IS the AABB).
+    val singleAnchorWorld: Offset? = null,
+    val singleMoveWorld: Offset? = null,
+    val singleRotationDegrees: Float = 0f,
+    val singleWorldWidth: Float = 0f,
+    val singleWorldHeight: Float = 0f,
+    val singleInitialScale: Float = 0f,
+    // V_NOW (2026-06-11 "旋转图片角点缩放跳位置" fix):
+    // the anchor corner's offset-from-center sign
+    // in local image space. TL→(-1,-1), TR→(+1,-1),
+    // BL→(-1,+1), BR→(+1,+1). Passed to
+    // [computeCornerDragResult] so the center formula
+    // works for all 4 corners, not just BR.
+    val singleAnchorSignX: Int = 1,
+    val singleAnchorSignY: Int = 1,
 )
 
 /**
@@ -11090,17 +11194,25 @@ private fun BoxScope.BottomRightActionPanel(
             Box(
                 modifier = Modifier
                     .size(Dimens.BottomPanelChromeSize)
-                    // V_NOW (2026-06-08): 1dp outlineVariant@40%
-                    // border matching the bottom-sheet chrome.
-                    // Placed first (after .size) so the two
-                    // .background() layers (frosted surface + state
-                    // layer) all paint INSIDE the rounded border.
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant
-                            .copy(alpha = 0.4f),
-                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-                    )
+                    // V_NOW (2026-06-11 user feedback "右下角
+                    // 一键排版展开后为什么一键排版按钮还会有
+                    // 一个浅灰色的边框"): the FAB's own 1dp
+                    // outlineVariant@40% border is removed.
+                    // The outer [Surface] (rendered by
+                    // [BottomRightActionPanel] above) already
+                    // draws the single 1dp outlineVariant@40%
+                    // ring around the WHOLE 5-cell column, so
+                    // the FAB painting a second inner border
+                    // makes it look "boxed out" of the panel
+                    // (an extra horizontal line at the FAB's
+                    // top edge) instead of being the bottom
+                    // cell of the same column. This matches
+                    // the per-item-border removal on the 4
+                    // [BottomPanelListItem]s above (see
+                    // V_NOW 2026-06-08 comment at
+                    // [BottomPanelListItem]) — "only the
+                    // OUTER ring" on the whole panel, no
+                    // internal grid lines.
                     .background(
                         color = MaterialTheme.colorScheme.surface
                             .copy(alpha = Dimens.ChromeSurfaceAlpha),

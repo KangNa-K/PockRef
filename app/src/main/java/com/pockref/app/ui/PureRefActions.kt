@@ -491,6 +491,24 @@ sealed interface PockRefAction {
     data class BatchScale(val scaleFactor: Float) : PockRefAction
     data object BatchFlipHorizontal : PockRefAction
     data object ConvertToGrayscale : PockRefAction
+    /**
+     * V_NOW (2026-06-11 "旋转图片角点缩放" fix):
+     * single-image corner-drag that uses the
+     * CORRECT rotated geometry. The anchor
+     * corner's world position is inverted
+     * through the image's rotation transform to
+     * derive the new center, so the anchor
+     * stays pinned for ANY rotation angle.
+     * [SetSelectedImagesScale] uses AABB
+     * scaling which only pins the AABB corner,
+     * not the image's actual rotated corner —
+     * for rotated images the two diverge.
+     */
+    data class SetSingleImageCornerScale(
+        val imageId: String,
+        val newScale: Float,
+        val newCenter: Offset,
+    ) : PockRefAction
     data class LassoSelect(val rect: RectF) : PockRefAction
     data object ToggleBoxSelectMode : PockRefAction
  data object BeginBoxSelect : PockRefAction

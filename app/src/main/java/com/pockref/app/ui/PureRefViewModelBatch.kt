@@ -534,30 +534,66 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
                         val initialScale = initialScales[img.id] ?: img.scale
                         val newScale = (initialScale * factor)
                             .coerceIn(0.1f, 8.0f)
-                        // Per-image new AABB = pivot + (initialAabb - pivot) * factor.
-                        // This is the "each image's rotated footprint
-                        // AABB grows by [factor] around the same pivot
-                        // the group AABB uses" geometry. It guarantees
-                        // the rendered group AABB is exactly the
-                        // union of the per-image new AABBs, so the
-                        // chrome's anchor corner A stays pinned at
-                        // [pivotX, pivotY] (the down-time value).
+                        // V_NOW (2026-06-11 "放大时对角锚点漂移" fix):
+                        // when [newScale] is clamped
+                        // (e.g. initialScale * factor > 8.0),
+                        // the AABB must be scaled by the
+                        // CLAMPED factor [newScale /
+                        // initialScale], not the raw
+                        // [factor]. Otherwise the center
+                        // overshoots the actual rendered
+                        // footprint and the diagonal
+                        // anchor visibly drifts — the
+                        // drift grows with |factor -
+                        // effectiveFactor|, which is why
+                        // it was only noticeable when
+                        // zooming IN (factor > 1) and not
+                        // when zooming out (factor ≈ 1,
+                        // clamp rarely fires).
+                        val effectiveFactor = newScale / initialScale
                         val initialAabb = initialImageAabbs[img.id] ?: Rect(
                             left = img.center.x - 1f,
                             top = img.center.y - 1f,
                             right = img.center.x + 1f,
                             bottom = img.center.y + 1f,
                         )
-                        val newLeft = pivotX + (initialAabb.left - pivotX) * factor
-                        val newTop = pivotY + (initialAabb.top - pivotY) * factor
-                        val newRight = pivotX + (initialAabb.right - pivotX) * factor
-                        val newBottom = pivotY + (initialAabb.bottom - pivotY) * factor
+                        val newLeft = pivotX + (initialAabb.left - pivotX) * effectiveFactor
+                        val newTop = pivotY + (initialAabb.top - pivotY) * effectiveFactor
+                        val newRight = pivotX + (initialAabb.right - pivotX) * effectiveFactor
+                        val newBottom = pivotY + (initialAabb.bottom - pivotY) * effectiveFactor
                         val newCenter = Offset(
                             (newLeft + newRight) / 2f,
                             (newTop + newBottom) / 2f,
                         )
                         img.copy(
                             scale = newScale,
+                            center = newCenter,
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    /**
+     * V_NOW (2026-06-11 "旋转图片角点缩放" fix):
+     * single-image corner-drag using the correct
+     * rotated geometry. [newCenter] is computed by
+     * [computeCornerDragResult] which inverts the
+     * image's rotation transform to pin the anchor
+     * corner, so this works for ANY rotation angle.
+     */
+    internal fun setSingleImageCornerScale(
+        imageId: String,
+        newScale: Float,
+        newCenter: Offset,
+    ) {
+        mainVm.updateSceneForGesture {
+            copy(
+                images = images.map { img ->
+                    if (img.id != imageId) img else {
+                        img.copy(
+                            scale = newScale.coerceIn(0.1f, 8.0f),
                             center = newCenter,
                         )
                     }
