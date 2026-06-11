@@ -37,6 +37,12 @@ a701a31 Settings panel: '背景颜色' label + HSV color wheel
 
 **应急回滚**:`git tag -l "backup*"` 有 `backup-pre-merge-c327081-8d9d74e` 在 a100580,merge 前的状态。
 
+## 版本号管理 (2026-06-11)
+
+- **项目不打 `v*` git tag** — `git tag -l "v*"` 永远空。版本号完全在 `app/build.gradle.kts` 的 `versionCode` (int) + `versionName` (string) 两个字段里。`1.2.1` 是在 commit `ed824f7` (docs+build) 里 bump 的(versionCode 4→5)。
+- **发版的 commit 习惯**:`docs+build: <ver> polish — append CHANGELOG section, bump versionCode N→M`,包含 CHANGELOG_1.x.x.md 增量 + versionCode bump + 一般还包含一个 APK artifact 在 `~/Desktop/`(由 `~/.mavis/bin/build-apk.sh` 自动加 timestamp + latest 软链)。
+- **不要**走 `git tag v1.2.2` 这种流程 — 跟项目的 release 节奏不匹配,1.2.1 / 1.2.0 / 1.1.0 都没打过 v tag。版本发布用 CHANGELOG + gradle bump 即可。
+
 ## 8d9d74e 已知 bug 修复
 
 `AlignMode` enum 在 8d9d74e 文件里**缺** ALIGN_TOP / BOTTOM / LEFT / RIGHT 4 个 case,但 `SelectionFloatingToolbar` 已经在 dispatch 这 4 个 enum 值。修复在 `ce5f3d5` commit 里(enum 补齐 + `PockRefViewModelBatch.batchAlign` 加 4 个 when 分支)。

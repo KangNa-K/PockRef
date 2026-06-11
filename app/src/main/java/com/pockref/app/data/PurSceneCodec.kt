@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import com.pockref.app.model.ColorAdjust
+import com.pockref.app.model.CropRect
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
@@ -53,6 +54,16 @@ class PurSceneCodec {
             output.writeBooleanByte(image.flipX)
             output.writeBooleanByte(image.flipY)
             output.writeIntLe(image.zIndex)
+            // V2 fields: locked + cropRect
+            output.writeBooleanByte(image.locked)
+            val crop = image.cropRect
+            output.writeBooleanByte(crop != null)
+            if (crop != null) {
+                output.writeFloatLe(crop.left)
+                output.writeFloatLe(crop.top)
+                output.writeFloatLe(crop.right)
+                output.writeFloatLe(crop.bottom)
+            }
         }
     }
 
@@ -487,28 +498,44 @@ class PurSceneCodec {
         val imageCount = data.readIntLe()
         val images = buildList(imageCount) {
             repeat(imageCount) {
-                add(
-                    SceneImage(
-                        id = data.readStringUtf8(),
-                        name = data.readStringUtf8(),
-                        mimeType = data.readStringUtf8(),
-                        imageBytes = data.readByteArray(),
-                        intrinsicWidth = data.readIntLe(),
-                        intrinsicHeight = data.readIntLe(),
-                        center = Offset(data.readFloatLe(), data.readFloatLe()),
-                        displaySize = Size2D(data.readFloatLe(), data.readFloatLe()),
-                        colorAdjust = ColorAdjust(
-                            brightness = data.readFloatLe(),
-                            contrast = data.readFloatLe(),
-                            saturation = data.readFloatLe(),
-                        ),
-                        rotationDegrees = data.readFloatLe(),
-                        scale = data.readFloatLe(),
-                        flipX = data.readBooleanByte(),
-                        flipY = data.readBooleanByte(),
-                        zIndex = data.readIntLe(),
-                    )
+                val base = SceneImage(
+                    id = data.readStringUtf8(),
+                    name = data.readStringUtf8(),
+                    mimeType = data.readStringUtf8(),
+                    imageBytes = data.readByteArray(),
+                    intrinsicWidth = data.readIntLe(),
+                    intrinsicHeight = data.readIntLe(),
+                    center = Offset(data.readFloatLe(), data.readFloatLe()),
+                    displaySize = Size2D(data.readFloatLe(), data.readFloatLe()),
+                    colorAdjust = ColorAdjust(
+                        brightness = data.readFloatLe(),
+                        contrast = data.readFloatLe(),
+                        saturation = data.readFloatLe(),
+                    ),
+                    rotationDegrees = data.readFloatLe(),
+                    scale = data.readFloatLe(),
+                    flipX = data.readBooleanByte(),
+                    flipY = data.readBooleanByte(),
+                    zIndex = data.readIntLe(),
                 )
+                // V2 fields: locked + cropRect. Version 1 files
+                // don't have these — they default to false / null.
+                val img = if (version >= 2) {
+                    val locked = data.readBooleanByte()
+                    val hasCrop = data.readBooleanByte()
+                    val cropRect = if (hasCrop) {
+                        CropRect(
+                            left = data.readFloatLe(),
+                            top = data.readFloatLe(),
+                            right = data.readFloatLe(),
+                            bottom = data.readFloatLe(),
+                        )
+                    } else null
+                    base.copy(locked = locked, cropRect = cropRect)
+                } else {
+                    base
+                }
+                add(img)
             }
         }
         return PockRefScene(version = version, name = name, backgroundColor = backgroundColor, images = images)

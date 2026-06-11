@@ -8,6 +8,7 @@
 
 package com.pockref.app.ui
 
+import android.graphics.Bitmap
 import android.net.Uri
 import com.pockref.app.data.PurSceneCodec
 import androidx.compose.animation.core.CubicBezierEasing
@@ -257,7 +258,26 @@ private fun RecentFileTile(
                     )
                     if (targetImage != null) {
                         codec.imageDecoder.setSourceFile(tempFile)
-                        codec.imageDecoder.decodeThumbnail(targetImage)?.bitmap?.asImageBitmap()
+                        val decoded = codec.imageDecoder.decodeThumbnail(targetImage)?.bitmap
+                        if (decoded != null) {
+                            // V_NOW (2026-06-11): apply the
+                            // non-destructive cropRect to the
+                            // cover thumbnail so the tile shows
+                            // the cropped view, not the full
+                            // original image.
+                            val crop = targetImage.cropRect
+                            if (crop != null) {
+                                val cx = (crop.left * decoded.width).toInt().coerceIn(0, decoded.width - 1)
+                                val cy = (crop.top * decoded.height).toInt().coerceIn(0, decoded.height - 1)
+                                val cw = ((crop.right - crop.left) * decoded.width).toInt().coerceIn(1, decoded.width - cx)
+                                val ch = ((crop.bottom - crop.top) * decoded.height).toInt().coerceIn(1, decoded.height - cy)
+                                Bitmap.createBitmap(decoded, cx, cy, cw, ch).asImageBitmap()
+                            } else {
+                                decoded.asImageBitmap()
+                            }
+                        } else {
+                            null
+                        }
                     } else {
                         null
                     }
@@ -398,14 +418,15 @@ private fun RecentFileTile(
                                 .align(Alignment.TopEnd)
                                 .padding(4.dp)
                                 .size(24.dp)
-                                // P2 (2026-06-11 chrome unify):
-                                // match the pinned / cover badges
-                                // in the same file (lines ~427,
-                                // ~445) — all three corner
-                                // affordances now share
-                                // [CircleShape] instead of
-                                // mixing 3dp / CircleShape.
-                                .clip(CircleShape)
+                                // V_NOW (2026-06-11): the
+                                // check indicator background is a
+                                // rounded square (4dp radius),
+                                // not a circle. The user asked
+                                // for a square white plate under
+                                // the checkbox glyph; a small
+                                // radius keeps the corners from
+                                // looking like a raw hard edge.
+                                .clip(RoundedCornerShape(4.dp))
                                 .background(Color.White.copy(alpha = 0.85f)),
                             contentAlignment = Alignment.Center,
                         ) {

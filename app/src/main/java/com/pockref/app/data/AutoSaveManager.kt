@@ -171,7 +171,12 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
         val backupFile = File(autoSaveDir, backupFileName)
 
         FileOutputStream(backupFile).use { output ->
-            codec.writeLegacyStreaming(scene, output, appContext.cacheDir)
+            // V_NOW (2026-06-11): use the custom format (write)
+            // instead of legacy format (writeLegacyStreaming) so
+            // that cropRect and locked are persisted. See
+            // PureRefViewModelScene.writeSceneToFile for the same
+            // change and rationale.
+            codec.write(scene, output)
         }
 
         return backupFile

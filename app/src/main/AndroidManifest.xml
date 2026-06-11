@@ -20,6 +20,13 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- Camera: used by the "拍照" import option. Declaring
+         this permission makes the app installable on devices
+         without a camera (uses-feature is NOT required), but
+         allows requesting camera access at runtime when the
+         user taps the "拍照" button. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <!--
         V_NOW: SYSTEM_ALERT_WINDOW removed. The previous S Pen
         button detection used a TYPE_APPLICATION_OVERLAY window
@@ -66,6 +73,10 @@
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="*/*" />
         </intent>
+        <!-- 允许调用系统相机拍照 -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
         <!-- V_NOW (2026-06-10 user spec "启动页 pockref 字体"):
              Downloadable Fonts 通过 GMS Core 的 fonts provider
              异步拉取。Android 11+ (API 30+) Package Visibility
@@ -89,6 +100,21 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.PockRef"
         tools:targetApi="34">
+
+        <!-- FileProvider for sharing camera photo URIs with the
+             system camera app (ACTION_IMAGE_CAPTURE). The camera
+             writes the full-res JPEG to the content URI we supply
+             via FileProvider.getUriForFile(). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

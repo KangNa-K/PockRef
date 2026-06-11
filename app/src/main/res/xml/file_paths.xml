@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Temp camera photos written by the system camera app.
+         V_NOW (2026-06-11): both external-files-path and
+         cache-path are declared so FileProvider can resolve
+         URIs regardless of which directory createTempFile
+         actually uses. external-files-path is preferred
+         (not subject to auto-eviction), cache-path is the
+         fallback when getExternalFilesDir returns null. -->
+    <external-files-path
+        name="camera_photos_ext"
+        path="Pictures/" />
+    <cache-path
+        name="camera_photos_cache"
+        path="." />
+</paths>

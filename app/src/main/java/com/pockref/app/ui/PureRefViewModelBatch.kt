@@ -71,6 +71,34 @@ internal fun imageBaseFootprint(image: SceneImage): RotatedFootprint {
 
 internal data class RotatedFootprint(val width: Float, val height: Float)
 
+/**
+ * Compute the axis-aligned bounding box (in scene coordinates)
+ * of a list of images, using their rotated AABBs. Returns null
+ * if the list is empty. The returned rect covers [minX, minY] to
+ * [maxX, maxY] inclusive.
+ */
+internal fun imagesBounds(images: List<SceneImage>): android.graphics.RectF? {
+    if (images.isEmpty()) return null
+    var minX = Float.MAX_VALUE
+    var minY = Float.MAX_VALUE
+    var maxX = -Float.MAX_VALUE
+    var maxY = -Float.MAX_VALUE
+    for (img in images) {
+        val fp = imageRotatedFootprint(img)
+        val halfW = fp.width / 2f
+        val halfH = fp.height / 2f
+        val left = img.center.x - halfW
+        val right = img.center.x + halfW
+        val top = img.center.y - halfH
+        val bottom = img.center.y + halfH
+        if (left < minX) minX = left
+        if (right > maxX) maxX = right
+        if (top < minY) minY = top
+        if (bottom > maxY) maxY = bottom
+    }
+    return android.graphics.RectF(minX, minY, maxX, maxY)
+}
+
 class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
 
     fun resetView() {
@@ -606,11 +634,26 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
             val scaleX = if (baseFp.width > 0f) availW / baseFp.width else 1f
             val scaleY = if (baseFp.height > 0f) availH / baseFp.height else 1f
             val scale = min(scaleX, scaleY)
+            // When in selection mode, offset the single image below
+            // non-selected images to avoid overlap.
+            val singleOffset = if (isSelectionMode && selectedIds.size >= 2) {
+                val nonSelected = allImages.filter { it.id !in selectedIds }
+                val existingBounds = imagesBounds(nonSelected)
+                val newFp = imageBaseFootprint(img)
+                val newHalfH = newFp.height * scale / 2f
+                if (existingBounds != null) {
+                    Offset(0f, existingBounds.bottom + gap + newHalfH)
+                } else {
+                    Offset.Zero
+                }
+            } else {
+                Offset.Zero
+            }
             mainVm.mutateScene {
                 copy(
                     images = images.map {
                         if (it.id != img.id) it
-                        else it.copy(center = Offset.Zero, scale = scale)
+                        else it.copy(center = singleOffset, scale = scale)
                     },
                 )
             }
@@ -678,14 +721,36 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
         val totalGridH = rows.sumOf { it.height.toDouble() }.toFloat() + (rows.size - 1) * gap
         val globalScale = if (totalGridH > availH) availH / totalGridH else 1f
 
+        // When laying out only selected images (multi-select mode),
+        // offset the grid so it doesn't overlap with non-selected
+        // images. Compute the AABB of non-selected images and place
+        // the grid below them with a gap.
+        val offsetX: Float
+        val offsetY: Float
+        if (isSelectionMode && selectedIds.size >= 2) {
+            val nonSelected = allImages.filter { it.id !in selectedIds }
+            val existingBounds = imagesBounds(nonSelected)
+            if (existingBounds != null) {
+                // Place the grid below the existing images' AABB.
+                val scaledGridH = totalGridH * globalScale
+                offsetY = existingBounds.bottom + gap + scaledGridH / 2f
+                offsetX = 0f
+            } else {
+                offsetX = 0f
+                offsetY = -totalGridH * globalScale / 2f
+            }
+        } else {
+            offsetX = 0f
+            offsetY = -totalGridH * globalScale / 2f
+        }
+
         val result = mutableListOf<com.pockref.app.model.SceneImage>()
-        val originY = -totalGridH * globalScale / 2f
-        var curY = originY
+        var curY = offsetY
         for (row in rows) {
             val scaledRowH = row.height * globalScale
             val scaledGap = gap * globalScale
             val rowWidth = row.items.sumOf { it.aspect.toDouble() * row.height }.toFloat() * globalScale + (row.items.size - 1) * scaledGap
-            var curX = -rowWidth / 2f
+            var curX = offsetX - rowWidth / 2f
             for (item in row.items) {
                 val img = sorted[item.imageIndex]
                 val baseFp = baseFootprints[item.imageIndex]
@@ -714,12 +779,8 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
                 images = allImages.map { img -> laidOutMap[img.id] ?: img },
             )
         }
-        // In selection mode, fit only the laid-out (selected) images;
-        // otherwise fit all images.
-        if (isSelectionMode && selectedIds.size >= 2) {
-            fitToScreen(laidOutMap.values.toList())
-        } else {
-            fitToScreen()
-        }
+        // Always fit all images to screen so the user can see
+        // the complete layout including non-selected images.
+        fitToScreen()
     }
 }

@@ -742,6 +742,15 @@ sealed interface PockRefAction {
     data class SetImportSourceMenuOpen(val open: Boolean) : PockRefAction
 
     /**
+     * User tapped the "拍照" (camera) option in the import
+     * dropdown menu. The UI layer should launch the system
+     * camera intent (ACTION_IMAGE_CAPTURE) with a temp URI
+     * for the full-res output. On success the resulting URI
+     * is fed to [ImportImages].
+     */
+    data object TakePhoto : PockRefAction
+
+    /**
      * Switch to a different tab in the in-app settings sheet
      * (V_NOW: tabbed settings — 通用 / 外观 / 手势). Only
      * meaningful while [SetSettingsSheetOpen] is true; the

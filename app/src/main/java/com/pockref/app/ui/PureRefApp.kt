@@ -83,6 +83,7 @@ import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.automirrored.rounded.Redo
 import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
@@ -515,6 +516,10 @@ fun PockRefApp(
     val importLauncher = rememberLauncherForActivityResult(OpenMultipleDocuments()) { uris ->
         onAction(PockRefAction.ImportImages(uris))
     }
+    // Hoisted context: needed by the camera launcher to
+    // resolve content URIs and clean up orphan temp files
+    // when the user cancels the camera.
+    val context = androidx.compose.ui.platform.LocalContext.current
     // V_NOW (L2 empty-canvas revamp 2026-06-10): the new
     // single-launcher import path. The launcher accepts the
     // union of image/* and PockRef scene MIME / octet-stream
@@ -544,6 +549,60 @@ fun PockRefApp(
         PickMultipleVisualMedia(maxItems = 32),
     ) { uris ->
         if (uris.isNotEmpty()) onAction(PockRefAction.ImportImages(uris))
+    }
+
+    // Camera capture launcher. Uses ACTION_IMAGE_CAPTURE with a
+    // content URI pointing to a temp file in the cache dir. The
+    // camera app writes the full-res JPEG to that URI; on
+    // success we feed it to the existing [ImportImages] flow.
+    //
+    // V_NOW (2026-06-11): switched from TakePicture() to
+    // StartActivityForResult() because TakePicture() does NOT
+    // add FLAG_GRANT_WRITE_URI_PERMISSION or ClipData to the
+    // intent — on Samsung devices the camera app then can't
+    // write to the content URI and crashes, taking the host
+    // app down with it. By building the intent manually we
+    // ensure the camera receives both read + write grants via
+    // ClipData + flags.
+    val cameraPhotoUri = remember { mutableStateOf<Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.TakePicture(),
+    ) { success ->
+        val uri = cameraPhotoUri.value
+        android.util.Log.d(
+            "PockRefCamera",
+            "TakePicture result: success=$success uri=$uri",
+        )
+        if (success && uri != null) {
+            onAction(PockRefAction.ImportImages(listOf(uri)))
+        }
+        cameraPhotoUri.value = null
+    }
+    // V_NOW (2026-06-11): runtime CAMERA permission
+    // request. Samsung OneUI 6 (Android 14) enforces
+    // that the CALLING app holds CAMERA permission
+    // before it will resolve ACTION_IMAGE_CAPTURE —
+    // even though the system camera app is the one
+    // actually accessing the hardware. Without this
+    // runtime request the system throws
+    // SecurityException "revoked permission
+    // android.permission.CAMERA" and the camera
+    // silently fails to launch.
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            val uri = cameraPhotoUri.value
+            if (uri != null) {
+                cameraLauncher.launch(uri)
+            }
+        } else {
+            cameraPhotoUri.value = null
+            android.util.Log.w(
+                "PockRefCamera",
+                "CAMERA permission denied by user",
+            )
+        }
     }
 // V_NOW (2026-06-10 user hand-modification from 23:31 APK, merged
     // with #2 chrome unify): the dropdown's "剪贴板" item dispatches
@@ -837,7 +896,8 @@ fun PockRefApp(
     // some providers don't support persistable grants at all — the
     // per-task grant is still good for the lifetime of the process,
     // which is enough for an in-session batch export.
-    val context = androidx.compose.ui.platform.LocalContext.current
+    // (context is hoisted to the top of the composable
+    // for use by the camera launcher's cleanup path.)
     // Build an initial URI pointing at the Download folder so the
     // system folder picker opens there instead of the storage root.
     // On Samsung devices the root is read-only; opening Download
@@ -1484,6 +1544,48 @@ fun PockRefApp(
                 },
                 onPickClipboard = onImportFromClipboard,
                 onPickFiles = onImport,
+                onTakePhoto = {
+                    try {
+                        val photoDir = context.getExternalFilesDir(
+                            android.os.Environment.DIRECTORY_PICTURES,
+                        ) ?: context.cacheDir
+                        photoDir.mkdirs()
+                        val photoFile = java.io.File.createTempFile(
+                            "pockref_camera_", ".jpg", photoDir,
+                        )
+                        val uri = androidx.core.content.FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            photoFile,
+                        )
+                        cameraPhotoUri.value = uri
+                        // V_NOW (2026-06-11): Samsung OneUI 6
+                        // requires the CALLING app to hold
+                        // CAMERA runtime permission before
+                        // resolving ACTION_IMAGE_CAPTURE. Check
+                        // first; if not granted, request via
+                        // the permission launcher and defer
+                        // cameraLauncher.launch() to the
+                        // permission callback.
+                        val hasCameraPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                            context,
+                            android.Manifest.permission.CAMERA,
+                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                        if (hasCameraPermission) {
+                            cameraLauncher.launch(uri)
+                        } else {
+                            cameraPermissionLauncher.launch(
+                                android.Manifest.permission.CAMERA,
+                            )
+                        }
+                    } catch (t: Throwable) {
+                        android.util.Log.e(
+                            "PockRefCamera",
+                            "takePhoto failed",
+                            t,
+                        )
+                    }
+                },
                 // V_NOW: parent container's max width, captured by
                 // the [BoxWithConstraints] wrapper at the call site
                 // (was [Box] before). The toolbar uses this to cap
@@ -5377,6 +5479,7 @@ private fun TopToolbar(
     onPickGallery: () -> Unit = {},
     onPickClipboard: () -> Unit = {},
     onPickFiles: () -> Unit = {},
+    onTakePhoto: () -> Unit = {},
     // V_NOW: parent container's max width, captured by the
     // [BoxWithConstraints] wrapper at the [PockRefApp] call
     // site. The toolbar uses this to cap its Surface width
@@ -6436,6 +6539,40 @@ ToolbarIconButton(
                         )
                         Text(
                             text = "打开文件",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // [拍照] — camera capture.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember {
+                                    MutableInteractionSource()
+                                },
+                                indication = null,
+                            ) {
+                                onImportSourceMenuOpenChange(false)
+                                onTakePhoto()
+                            }
+                            .padding(
+                                horizontal = 12.dp,
+                                vertical = 10.dp,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PhotoCamera,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = "拍照",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,

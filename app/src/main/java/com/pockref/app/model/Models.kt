@@ -1477,6 +1477,7 @@ data class BatchOptimizeState(
 }
 
 fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
+    version = 2,
     name = sceneName,
     backgroundColor = backgroundColor,
     images = images.sortedBy { it.zIndex },

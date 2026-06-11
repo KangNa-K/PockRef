@@ -34,6 +34,20 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
     )
     private val supportedExtensions = setOf("jpg", "jpeg", "png", "webp", "gif")
 
+    /**
+     * Compute a placement origin for new images that avoids
+     * overlapping with existing images. Returns the top-left
+     * corner (in scene coordinates) where new images should
+     * start being placed. Uses the AABB of existing images
+     * and places new content below them with a gap.
+     */
+    private fun computePlacementOrigin(existingImages: List<SceneImage>, gap: Float = 8f): Offset {
+        if (existingImages.isEmpty()) return Offset.Zero
+        val bounds = imagesBounds(existingImages) ?: return Offset.Zero
+        // Place new images below the existing images' bounding box.
+        return Offset(bounds.left, bounds.bottom + gap)
+    }
+
     fun dropImages(uris: List<Uri>, dragPermission: android.view.DragAndDropPermissions? = null) {
         if (uris.isEmpty()) return
         mainVm.viewModelScope.launch {
@@ -98,11 +112,12 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         val displayW = columnWidth
                         val displayH = targetH * displayScale
 
+                        val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
                         val totalIndex = existingCount + index
                         val col = totalIndex % columns
                         val row = totalIndex / columns
-                        val centerX = containerPadding + col * (columnWidth + imageSpacing) + columnWidth / 2f
-                        val centerY = containerPadding + row * (displayH + imageSpacing) + displayH / 2f
+                        val centerX = placementOrigin.x + col * (columnWidth + imageSpacing) + columnWidth / 2f
+                        val centerY = placementOrigin.y + row * (displayH + imageSpacing) + displayH / 2f
 
                         SceneImage(
                             name = mainVm.queryDisplayName(uri) ?: "image_${totalIndex + 1}",
@@ -219,7 +234,10 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.setBusy(true)
             val imported = try {
                 withContext(Dispatchers.IO) {
-                    val existingCount = mainVm._uiState.value.images.size
+                    val existingImages = mainVm._uiState.value.images
+                    val existingCount = existingImages.size
+                    val imageSpacing = 8f
+                    val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
                     uris.mapIndexedNotNull { index, uri ->
                         val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@mapIndexedNotNull null
                         val originalMime = mainVm.contentResolver.getType(uri) ?: "application/octet-stream"
@@ -228,13 +246,20 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         val baseWidth = result.width.toFloat().coerceAtMost(720f)
                         val scale = baseWidth / result.width.toFloat()
                         val baseHeight = result.height * scale
+                        // Grid layout: 4 columns max, placed below
+                        // existing images.
+                        val maxColumns = 4
+                        val col = index % maxColumns
+                        val row = index / maxColumns
+                        val centerX = placementOrigin.x + col * (baseWidth + imageSpacing) + baseWidth / 2f
+                        val centerY = placementOrigin.y + row * (baseHeight + imageSpacing) + baseHeight / 2f
                         SceneImage(
                             name = mainVm.queryDisplayName(uri) ?: "image_${existingCount + index + 1}",
                             mimeType = result.mimeType,
                             imageBytes = result.bytes,
                             intrinsicWidth = result.width,
                             intrinsicHeight = result.height,
-                            center = Offset(120f + (existingCount + index) * 72f, 120f + (existingCount + index) * 56f),
+                            center = Offset(centerX, centerY),
                             displaySize = Size2D(baseWidth, baseHeight),
                             zIndex = existingCount + index,
                         )
@@ -272,7 +297,10 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.setBusy(true)
             val imported = try {
                 withContext(Dispatchers.IO) {
-                    val existingCount = mainVm._uiState.value.images.size
+                    val existingImages = mainVm._uiState.value.images
+                    val existingCount = existingImages.size
+                    val imageSpacing = 8f
+                    val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
                     val app = mainVm.getApplication<Application>()
                     val clipboard = app.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                         as? android.content.ClipboardManager
@@ -325,7 +353,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             imageBytes = result.bytes,
                             intrinsicWidth = result.width,
                             intrinsicHeight = result.height,
-                            center = Offset(120f + existingCount * 72f, 120f + existingCount * 56f),
+                            center = Offset(placementOrigin.x + baseWidth / 2f, placementOrigin.y + baseHeight / 2f),
                             displaySize = Size2D(baseWidth, baseHeight),
                             zIndex = existingCount,
                         )
@@ -722,7 +750,19 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 try {
                     val bufferedOut = java.io.BufferedOutputStream(FileOutputStream(tempOutput), 256 * 1024)
                     bufferedOut.use { tempFileOutput ->
-                        mainVm.codec.writeLegacyStreaming(scene, tempFileOutput, cacheDir)
+                        // V_NOW (2026-06-11): use the custom format
+                        // (write) instead of legacy format
+                        // (writeLegacyStreaming). The custom format
+                        // persists cropRect and locked fields that
+                        // the legacy format silently drops. When a
+                        // cropped image is saved in legacy format
+                        // and reloaded, cropRect is lost (defaults
+                        // to null) but displaySize retains the
+                        // cropped dimensions, so drawSceneImage
+                        // renders the full uncropped bitmap into the
+                        // cropped-aspect box, producing a stretched
+                        // image.
+                        mainVm.codec.write(scene, tempFileOutput)
                     }
 
                     val t1 = System.nanoTime()
@@ -1409,7 +1449,23 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         // cropped aspect ratio.
         val oldDisplayW = image.displaySize.width
         val oldDisplayH = image.displaySize.height
-        val cropAspect = cropRect.cropWidth / cropRect.cropHeight
+        // V_NOW (2026-06-11): use the PIXEL-SPACE aspect
+        // ratio of the crop, not the normalized
+        // cropWidth/cropHeight ratio. [cropWidth] and
+        // [cropHeight] are in 0..1 normalized space, so
+        // their ratio is NOT the visual aspect ratio of
+        // the cropped pixels. For a 1:1 crop on a 16:9
+        // image, [withAspect] returns a normalized rect
+        // whose cropWidth/cropHeight ratio is 0.5625 (a
+        // vertical letterbox column) — the pixel-space
+        // aspect is 1.0. Using 0.5625 here caused the
+        // new displaySize to be 0.5625:1 instead of 1:1,
+        // so [drawSceneImage] would non-uniformly stretch
+        // the square crop into a tall narrow box.
+        val imgAspect = if (image.intrinsicHeight > 0)
+            image.intrinsicWidth.toFloat() / image.intrinsicHeight.toFloat()
+        else 1f
+        val cropAspect = (cropRect.cropWidth / cropRect.cropHeight) * imgAspect
         val newDisplayW: Float
         val newDisplayH: Float
         if (oldDisplayW / oldDisplayH > cropAspect) {

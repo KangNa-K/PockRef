@@ -391,20 +391,23 @@ internal fun computeSceneDiff(oldState: PockRefUiState, newState: PockRefUiState
  */
 private fun buildImageUpdate(oldImg: SceneImage, newImg: SceneImage): SceneDiff.UpdateImage? {
     // V_NOW: pixel-level fields (imageBytes, intrinsicWidth/Height,
-    // imageByteOffset/Length, mimeType, name, locked, zIndex) are NOT
-    // tracked by UpdateImage. If any of them changed (e.g. after a crop
-    // operation), the field-level diff would lose those changes on undo —
-    // the user would see a stretched image because displaySize reverts
-    // but the bitmap bytes / intrinsic dimensions stay at the cropped
-    // values. Return null so computeSceneDiff falls through to
-    // ReplaceImages, which preserves the full SceneImage on both sides.
+    // imageByteOffset/Length, mimeType, name, locked, zIndex) AND the
+    // non-destructive cropRect are NOT tracked by UpdateImage. If any
+    // of them changed (e.g. after a crop operation), the field-level
+    // diff would lose those changes on undo — the user would see a
+    // stretched image because displaySize reverts but the cropRect
+    // stays at the cropped values, so drawSceneImage renders the
+    // square crop into the original 16:9 box. Return null so
+    // computeSceneDiff falls through to ReplaceImages, which
+    // preserves the full SceneImage on both sides.
     if (oldImg.intrinsicWidth != newImg.intrinsicWidth ||
         oldImg.intrinsicHeight != newImg.intrinsicHeight ||
         oldImg.imageByteOffset != newImg.imageByteOffset ||
         oldImg.imageByteLength != newImg.imageByteLength ||
         oldImg.mimeType != newImg.mimeType ||
         oldImg.locked != newImg.locked ||
-        oldImg.zIndex != newImg.zIndex
+        oldImg.zIndex != newImg.zIndex ||
+        oldImg.cropRect != newImg.cropRect
     ) {
         return null
     }
@@ -1892,6 +1895,14 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                         scale = 1f,
                         flipX = false,
                         flipY = false,
+                        // V_NOW (2026-06-11): clear the non-destructive
+                        // crop when resetting transform. The
+                        // initialDisplaySize was set at import time
+                        // (before any crop), so keeping a cropRect
+                        // would cause drawSceneImage to render the
+                        // cropped region into the original-aspect
+                        // displaySize box, producing a stretched image.
+                        cropRect = null,
                     )
                 },
             )

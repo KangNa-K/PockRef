@@ -977,6 +977,11 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.DismissPracticeConfigSheet -> _uiState.update {
                 it.copy(practiceConfigSheetOpen = false)
             }
+            // V_NOW (2026-06-11): TakePhoto is handled
+            // entirely by the UI layer (camera launcher +
+            // FileProvider). The result comes back as
+            // [ImportImages] via the launcher callback.
+            PockRefAction.TakePhoto -> { /* no-op: UI layer */ }
         }
     }
 
