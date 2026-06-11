@@ -11,10 +11,12 @@ import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import com.pockref.app.model.SpeedSample
 import com.pockref.app.model.isImageLocked
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Metadata-only snapshot of a scene at a point in time. The image list is
@@ -1635,8 +1637,8 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
             stateBefore.selectedImageId?.let(::setOf).orEmpty()
         }
         if (selectedIds.isEmpty()) return
+        val originals = stateBefore.images.filter { it.id in selectedIds }
         mainVm.mutateScene {
-            val originals = images.filter { it.id in selectedIds }
             val maxZ = (images.maxOfOrNull { it.zIndex } ?: 0) + 1
             val newImages = originals.mapIndexed { i, original ->
                 val clone = original.copy(
@@ -1655,6 +1657,69 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                 selectedImageIds = newImages.map { it.id }.toSet(),
                 selectedImageId = newImages.last().id,
             )
+        }
+        // Also copy the first selected image to the system
+        // clipboard so the user can paste it into other apps.
+        val firstOriginal = originals.firstOrNull() ?: return
+        mainVm.viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val bytes = mainVm.resolveImageBytes(firstOriginal)
+                    val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        ?: return@withContext
+                    // Apply non-destructive crop if present.
+                    val crop = firstOriginal.cropRect
+                    val croppedBitmap = if (crop != null) {
+                        val cx = (crop.left * bitmap.width).toInt().coerceIn(0, bitmap.width - 1)
+                        val cy = (crop.top * bitmap.height).toInt().coerceIn(0, bitmap.height - 1)
+                        val cw = ((crop.right - crop.left) * bitmap.width).toInt().coerceIn(1, bitmap.width - cx)
+                        val ch = ((crop.bottom - crop.top) * bitmap.height).toInt().coerceIn(1, bitmap.height - cy)
+                        android.graphics.Bitmap.createBitmap(bitmap, cx, cy, cw, ch)
+                            .also { if (it !== bitmap) bitmap.recycle() }
+                    } else {
+                        bitmap
+                    }
+                    val app = mainVm.getApplication<android.app.Application>()
+                    // Insert into MediaStore to get a content:// URI
+                    // that other apps can read from the clipboard.
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, firstOriginal.name)
+                        put(android.provider.MediaStore.Images.Media.MIME_TYPE, firstOriginal.mimeType.ifEmpty { "image/png" })
+                    }
+                    val collection = android.provider.MediaStore.Images.Media.getContentUri(
+                        android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY
+                    )
+                    val contentUri = app.contentResolver.insert(collection, values)
+                    if (contentUri != null) {
+                        app.contentResolver.openOutputStream(contentUri)?.use { out ->
+                            val mime = firstOriginal.mimeType.ifEmpty { "image/png" }
+                            val compressFormat = when {
+                                mime.equals("image/jpeg", true) || mime.equals("image/jpg", true) ->
+                                    android.graphics.Bitmap.CompressFormat.JPEG
+                                mime.equals("image/webp", true) ->
+                                    if (android.os.Build.VERSION.SDK_INT >= 30)
+                                        android.graphics.Bitmap.CompressFormat.WEBP_LOSSY
+                                    else @Suppress("DEPRECATION") android.graphics.Bitmap.CompressFormat.WEBP
+                                else -> android.graphics.Bitmap.CompressFormat.PNG
+                            }
+                            croppedBitmap.compress(compressFormat, 95, out)
+                        }
+                        val clipboard = app.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as? android.content.ClipboardManager
+                        clipboard?.setPrimaryClip(
+                            android.content.ClipData.newUri(
+                                app.contentResolver,
+                                "Image",
+                                contentUri,
+                            )
+                        )
+                    }
+                    croppedBitmap.recycle()
+                }
+            } catch (_: Exception) {
+                // Non-critical: clipboard copy failure should not
+                // affect the in-app duplicate operation.
+            }
         }
     }
 
