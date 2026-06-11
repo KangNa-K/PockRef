@@ -23,6 +23,7 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -401,7 +402,26 @@ private fun RecentFileTile(
             .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
+            // V_NOW (2026-06-11, swipe v6 position fix):
+            // we use [BoxWithConstraints] so [maxWidth]
+            // is in scope. The button's modifier chain
+            // (see below) anchors the button at the
+            // tile center (via [fillMaxSize +
+            // wrapContentSize(Center)]) and then
+            // translates it horizontally with
+            // [graphicsLayer] to land on the
+            // revealed-strip midpoint. We pass the
+            // tile half-width into the button as a
+            // captured local of the SwipeActionButton
+            // call site; this avoids relying on
+            // [GraphicsLayerScope.size.width] which is
+            // unreliable in the nested graphicsLayer
+            // lambda + the surrounding
+            // [fillMaxSize+wrapContentSize+graphicsLayer]
+            // modifier chain in this compose-bom
+            // configuration.
+            val tileHalfWidthPx = with(density) { maxWidth.toPx() / 2f }
             // 1. Delete button — DEAD CODE in v6 (the
             //    v5 full-tile replace surface is
             //    removed; the v6 path uses
