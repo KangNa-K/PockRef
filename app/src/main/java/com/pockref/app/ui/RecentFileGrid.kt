@@ -718,15 +718,93 @@ private fun RecentFileTile(
                         // directly and centers the
                         // button in the parent Box.
                         // See [androidx.compose.foundation.layout.wrapContentSize].
+                        //
+                        // V_NOW (2026-06-11, swipe v6
+                        // position fix): the
+                        // [graphicsLayer.translationX]
+                        // below is in pixels measured
+                        // from the [wrapContentSize]-
+                        // anchored position (the tile
+                        // center). To place the button
+                        // center on the revealed-strip
+                        // midpoint we need
+                        //   translationX = tile_w/2
+                        //     + dragOffset/2
+                        // because the strip midpoint
+                        // (left-swipe) is at
+                        //   tile_w + dragOffset/2
+                        // and the anchor is at tile_w/2,
+                        // so the delta is tile_w/2 +
+                        // dragOffset/2. The
+                        // [tileHalfWidthPx] constant
+                        // here is the tile width in
+                        // pixels captured at the top of
+                        // the composable; the previous
+                        // attempts that just used
+                        // [buttonHalfWidthPx] (no tile
+                        // term) or [Alignment.CenterEnd]
+                        // (which the compose-bom 1.7+
+                        // align overload rejects) ended
+                        // up placing the button ~button_w
+                        // away from the strip midpoint.
                         .fillMaxSize()
                         .wrapContentSize(Alignment.Center)
                         .graphicsLayer {
-                            // See the long derivation
-                            // comment above. Net effect:
-                            // button center tracks the
-                            // revealed-strip midpoint.
-                            translationX = dragOffset / 2f +
-                                if (goingLeft) buttonHalfWidthPx else -buttonHalfWidthPx
+                            // Net effect: button center
+                            // lands on the revealed-strip
+                            // midpoint, which is at
+                            //   tile_w + dragOffset/2 (left)
+                            //   dragOffset/2            (right)
+                            // measured from the outer
+                            // Box's 0..tile_w origin.
+                            // Anchor is at tile_w/2 (from
+                            // [wrapContentSize(Center)]),
+                            // so the offset from anchor to
+                            // target is
+                            //   target - tile_w/2
+                            //   = tile_w/2 + dragOffset/2
+                            // for left-swipe, and
+                            //   dragOffset/2 - tile_w/2
+                            // for right-swipe (negative,
+                            // pulling the button to the
+                            // left of the tile center).
+                            // The factor is direction-
+                            // independent because the
+                            // [goingLeft] condition flips
+                            // the sign of the whole term.
+                            // The graphicsLayer lambda
+                            // is a [GraphicsLayerScope]
+                            // receiver block; the outer
+                            // BoxWithConstraintsScope
+                            // captured val
+                            // [tileHalfWidthPx] is not
+                            // visible from inside this
+                            // nested lambda in some
+                            // compose-bom 1.7+ build
+                            // configurations (compiler
+                            // resolves the receiver
+                            // shadowing chain but
+                            // doesn't always chain
+                            // through the captured
+                            // locals). Recompute the
+                            // half-tile-width from
+                            // [size.width] inside the
+                            // lambda, which is the
+                            // GraphicsLayerScope's
+                            // current measured size of
+                            // the button's wrapper
+                            // Box (after
+                            // [wrapContentSize] and
+                            // [fillMaxSize] constraints
+                            // resolve, [size.width] is
+                            // the tile's full width
+                            // because we filled max).
+                            val tileHalf = size.width / 2f
+                            translationX = if (goingLeft) {
+                                tileHalf + dragOffset / 2f
+                            } else {
+                                dragOffset / 2f - tileHalf
+                            }
                         },
                 )
             }
