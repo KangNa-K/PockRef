@@ -8602,7 +8602,7 @@ private fun PockRefCanvas(
                         //     doesn't end up with a selection that
                         //     "stuck" through the reset.
                         val isDoubleTapOnEmpty = (upTime - lastEmptyTapTime) < 400L &&
-                            (lastEmptyTapPos - downPos).getDistance() < 20f
+                            (lastEmptyTapPos - downPos).getDistance() < doubleTapMaxDistPx
                         if (isDoubleTapOnEmpty && isGestureEnabled(currentState.gestureToggles, GestureId.DOUBLE_TAP_EMPTY)) {
                             // V5: was ResetView (force 100%
                             // zoom / 0 offset — "go home"). User
@@ -9532,11 +9532,38 @@ private fun DrawScope.drawSceneImage(
                 scaleY = if (image.flipY) -1f else 1f,
                 pivot = Offset(width / 2f, height / 2f),
             ) {
-                drawImage(
-                    image = bitmap,
-                    dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
-                    colorFilter = buildColorFilter(image.colorAdjust),
-                )
+                // Non-destructive crop: when cropRect is set,
+                // only draw the cropped portion of the bitmap.
+                // The display size has already been adjusted
+                // to the crop's aspect ratio (see commitCrop),
+                // so the cropped region fills the display
+                // rect exactly.
+                val crop = image.cropRect
+                if (crop != null) {
+                    val srcW = bitmap.width
+                    val srcH = bitmap.height
+                    val srcOffset = androidx.compose.ui.unit.IntOffset(
+                        (crop.left * srcW).toInt().coerceIn(0, srcW - 1),
+                        (crop.top * srcH).toInt().coerceIn(0, srcH - 1),
+                    )
+                    val srcSize = androidx.compose.ui.unit.IntSize(
+                        ((crop.right - crop.left) * srcW).toInt().coerceIn(1, srcW - srcOffset.x),
+                        ((crop.bottom - crop.top) * srcH).toInt().coerceIn(1, srcH - srcOffset.y),
+                    )
+                    drawImage(
+                        image = bitmap,
+                        srcOffset = srcOffset,
+                        srcSize = srcSize,
+                        dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
+                        colorFilter = buildColorFilter(image.colorAdjust),
+                    )
+                } else {
+                    drawImage(
+                        image = bitmap,
+                        dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
+                        colorFilter = buildColorFilter(image.colorAdjust),
+                    )
+                }
                 if (isBoxSelectPreview && !isSelected) {
                     drawRect(
                         color = Color(0x554FC3F7),

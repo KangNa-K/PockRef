@@ -32,6 +32,12 @@ data class SceneImage(
     // can be tapped to select (so the user can still lock / unlock it
     // or inspect it). Toggled via the long-press menu's lock button.
     val locked: Boolean = false,
+    // Non-destructive crop: stores the crop region as a 0..1
+    // normalized rect. Null means no crop (full image visible).
+    // The original pixel data is never modified — only the
+    // display is masked. The user can re-enter crop mode at
+    // any time to adjust or remove the crop.
+    val cropRect: CropRect? = null,
 )
 
 data class Size2D(

@@ -804,7 +804,11 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         // pixel-level change despite the user's lock intent.
         val selectedImage = state.images.firstOrNull { it.id == selectedId }
         if (selectedImage?.locked == true) return
-        mainVm._uiState.update { it.copy(cropImageId = selectedId, cropRect = CropRect(), cropAspect = CropAspect.FREE, cropRotation = 0f) }
+        // Restore the image's existing crop rect (if any)
+        // so the user can adjust a previous crop. If no
+        // crop exists, start with the full-image default.
+        val existingCrop = selectedImage?.cropRect ?: CropRect()
+        mainVm._uiState.update { it.copy(cropImageId = selectedId, cropRect = existingCrop, cropAspect = CropAspect.FREE, cropRotation = 0f) }
     }
 
     fun cancelCrop() {
@@ -956,8 +960,22 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             try {
                 withContext(Dispatchers.IO) {
                     val bytes = mainVm.resolveImageBytes(image)
-                    val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    var source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                         ?: error("无法解码图片数据")
+                    // Apply non-destructive crop before transforms.
+                    // The crop rect is stored as 0..1 normalized
+                    // coordinates on the original image.
+                    val crop = image.cropRect
+                    val croppedSource = if (crop != null) {
+                        val cx = (crop.left * source.width).toInt().coerceIn(0, source.width - 1)
+                        val cy = (crop.top * source.height).toInt().coerceIn(0, source.height - 1)
+                        val cw = ((crop.right - crop.left) * source.width).toInt().coerceIn(1, source.width - cx)
+                        val ch = ((crop.bottom - crop.top) * source.height).toInt().coerceIn(1, source.height - cy)
+                        Bitmap.createBitmap(source, cx, cy, cw, ch)
+                            .also { if (it !== source) source.recycle() }
+                    } else {
+                        source
+                    }
                     // Apply transforms in canvas-render order:
                     // scale first, then rotation, then both
                     // flips. The matrix's pre-/post- semantics
@@ -968,18 +986,18 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     if (image.rotationDegrees != 0f) {
                         matrix.postRotate(
                             image.rotationDegrees,
-                            source.width / 2f,
-                            source.height / 2f,
+                            croppedSource.width / 2f,
+                            croppedSource.height / 2f,
                         )
                     }
                     if (image.flipX || image.flipY) {
                         val sx = if (image.flipX) -1f else 1f
                         val sy = if (image.flipY) -1f else 1f
-                        matrix.postScale(sx, sy, source.width / 2f, source.height / 2f)
+                        matrix.postScale(sx, sy, croppedSource.width / 2f, croppedSource.height / 2f)
                     }
-                    val rendered = if (matrix.isIdentity) source
-                    else Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
-                        .also { if (it !== source) source.recycle() }
+                    val rendered = if (matrix.isIdentity) croppedSource
+                    else Bitmap.createBitmap(croppedSource, 0, 0, croppedSource.width, croppedSource.height, matrix, true)
+                        .also { if (it !== croppedSource) croppedSource.recycle() }
                     try {
                         val resolver = mainVm.contentResolver
                         val outputStream = resolver.openOutputStream(uri)
@@ -1283,25 +1301,37 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                 continue
                             }
                             val bytes = mainVm.resolveImageBytes(image)
-                            val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            var source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                                 ?: error("无法解码图片数据")
+                            // Apply non-destructive crop before transforms.
+                            val crop = image.cropRect
+                            val croppedSource = if (crop != null) {
+                                val cx = (crop.left * source.width).toInt().coerceIn(0, source.width - 1)
+                                val cy = (crop.top * source.height).toInt().coerceIn(0, source.height - 1)
+                                val cw = ((crop.right - crop.left) * source.width).toInt().coerceIn(1, source.width - cx)
+                                val ch = ((crop.bottom - crop.top) * source.height).toInt().coerceIn(1, source.height - cy)
+                                Bitmap.createBitmap(source, cx, cy, cw, ch)
+                                    .also { if (it !== source) source.recycle() }
+                            } else {
+                                source
+                            }
                             val matrix = android.graphics.Matrix()
                             matrix.postScale(image.scale, image.scale)
                             if (image.rotationDegrees != 0f) {
                                 matrix.postRotate(
                                     image.rotationDegrees,
-                                    source.width / 2f,
-                                    source.height / 2f,
+                                    croppedSource.width / 2f,
+                                    croppedSource.height / 2f,
                                 )
                             }
                             if (image.flipX || image.flipY) {
                                 val sx = if (image.flipX) -1f else 1f
                                 val sy = if (image.flipY) -1f else 1f
-                                matrix.postScale(sx, sy, source.width / 2f, source.height / 2f)
+                                matrix.postScale(sx, sy, croppedSource.width / 2f, croppedSource.height / 2f)
                             }
-                            val rendered = if (matrix.isIdentity) source
-                            else Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
-                                .also { if (it !== source) source.recycle() }
+                            val rendered = if (matrix.isIdentity) croppedSource
+                            else Bitmap.createBitmap(croppedSource, 0, 0, croppedSource.width, croppedSource.height, matrix, true)
+                                .also { if (it !== croppedSource) croppedSource.recycle() }
                             try {
                                 val outputStream = resolver.openOutputStream(documentUri)
                                     ?: error("无法打开目标 URI 的输出流")
@@ -1363,90 +1393,51 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         val cropId = state.cropImageId ?: return
         val cropRect = state.cropRect
         if (!cropRect.isValid()) { cancelCrop(); return }
-        val cropRotation = state.cropRotation
         val image = state.images.find { it.id == cropId } ?: return
 
         val cropPixelW = (cropRect.cropWidth * image.intrinsicWidth).toInt()
         val cropPixelH = (cropRect.cropHeight * image.intrinsicHeight).toInt()
         if (cropPixelW <= 0 || cropPixelH <= 0) { cancelCrop(); return }
 
-        mainVm.viewModelScope.launch {
-            mainVm.setBusy(true)
-            val newBytes = try {
-                withContext(Dispatchers.IO) {
-                    val imgBytes = mainVm.resolveImageBytes(image)
-                    val bitmap = BitmapFactory.decodeByteArray(imgBytes, 0, imgBytes.size) ?: error("Decode failed")
-                    val rotated = if (cropRotation != 0f) {
-                        val matrix = android.graphics.Matrix()
-                        matrix.postRotate(cropRotation, bitmap.width / 2f, bitmap.height / 2f)
-                        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true).also { if (it !== bitmap) bitmap.recycle() }
-                    } else {
-                        bitmap
-                    }
-                    val cropLeft = (cropRect.left * rotated.width).toInt().coerceIn(0, rotated.width - 1)
-                    val cropTop = (cropRect.top * rotated.height).toInt().coerceIn(0, rotated.height - 1)
-                    val cropRight = (cropRect.right * rotated.width).toInt().coerceIn(cropLeft + 1, rotated.width)
-                    val cropBottom = (cropRect.bottom * rotated.height).toInt().coerceIn(cropTop + 1, rotated.height)
-                    val cropped = Bitmap.createBitmap(rotated, cropLeft, cropTop, cropRight - cropLeft, cropBottom - cropTop)
-                    val stream = ByteArrayOutputStream()
-                    val format = if (image.mimeType.contains("png", ignoreCase = true)) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
-                    cropped.compress(format, 95, stream)
-                    cropped.recycle()
-                    if (rotated !== bitmap) rotated.recycle() else bitmap.recycle()
-                    stream.toByteArray()
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (error: Throwable) {
-                mainVm.reportError("裁剪图片失败: ${error.message ?: error.javaClass.simpleName}", error)
-                mainVm._uiState.update { s -> s.copy(cropImageId = null, cropRect = CropRect(), cropAspect = CropAspect.FREE, cropRotation = 0f) }
-                mainVm.setBusy(false)
-                return@launch
-            }
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(newBytes, 0, newBytes.size, bounds)
-            val oldDisplayW = image.displaySize.width
-            val oldDisplayH = image.displaySize.height
-            val aspect = bounds.outWidth.toFloat() / bounds.outHeight.toFloat()
-            val newDisplayW: Float
-            val newDisplayH: Float
-            if (oldDisplayW / oldDisplayH > aspect) {
-                newDisplayH = oldDisplayH
-                newDisplayW = oldDisplayH * aspect
-            } else {
-                newDisplayW = oldDisplayW
-                newDisplayH = oldDisplayW / aspect
-            }
-            mainVm.mutateScene {
-                copy(
-                    images = images.map { img ->
-                        if (img.id != cropId) img else img.copy(
-                            imageBytes = newBytes,
-                            intrinsicWidth = bounds.outWidth,
-                            intrinsicHeight = bounds.outHeight,
-                            displaySize = Size2D(newDisplayW, newDisplayH),
-                            // V_NOW: do NOT add cropRotation to
-                            // rotationDegrees. The pixel rotation
-                            // (matrix.postRotate above) has already
-                            // baked cropRotation into the bitmap
-                            // pixels. Adding it again here would
-                            // double-rotate: once in the pixels,
-                            // once at render time via
-                            // [drawSceneImage]'s rotate() call.
-                            // The user's on-canvas rotation
-                            // (image.rotationDegrees) is preserved
-                            // as-is — the crop tool's rotation is
-                            // purely a pixel-level transform.
-                            rotationDegrees = image.rotationDegrees,
-                        )
-                    },
-                    cropImageId = null,
-                    cropRect = CropRect(),
-                    cropAspect = CropAspect.FREE,
-                    cropRotation = 0f,
-                )
-            }
-            mainVm.setBusy(false)
+        // Non-destructive crop: instead of modifying the
+        // bitmap pixels, store the crop rect on the
+        // SceneImage. The original pixel data is preserved
+        // so the user can re-adjust or remove the crop
+        // later. The display renderer (drawSceneImage)
+        // applies the crop rect as a clip/mask at draw
+        // time. The display size is adjusted to match the
+        // cropped aspect ratio.
+        val oldDisplayW = image.displaySize.width
+        val oldDisplayH = image.displaySize.height
+        val cropAspect = cropRect.cropWidth / cropRect.cropHeight
+        val newDisplayW: Float
+        val newDisplayH: Float
+        if (oldDisplayW / oldDisplayH > cropAspect) {
+            newDisplayH = oldDisplayH
+            newDisplayW = oldDisplayH * cropAspect
+        } else {
+            newDisplayW = oldDisplayW
+            newDisplayH = oldDisplayW / cropAspect
+        }
+        // If cropRect covers the full image (0,0,1,1),
+        // store null to indicate "no crop" — this lets
+        // the user remove a previous crop by dragging
+        // the handles back to the edges.
+        val storedCrop = if (cropRect.left <= 0.001f && cropRect.top <= 0.001f &&
+            cropRect.right >= 0.999f && cropRect.bottom >= 0.999f) null else cropRect
+        mainVm.mutateScene {
+            copy(
+                images = images.map { img ->
+                    if (img.id != cropId) img else img.copy(
+                        cropRect = storedCrop,
+                        displaySize = Size2D(newDisplayW, newDisplayH),
+                    )
+                },
+                cropImageId = null,
+                cropRect = CropRect(),
+                cropAspect = CropAspect.FREE,
+                cropRotation = 0f,
+            )
         }
     }
 
@@ -2066,7 +2057,18 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         val canvasCenterY = (image.center.y - minY) * exportDensity * scale
         val dstW = image.displaySize.width * image.scale * exportDensity * scale
         val dstH = image.displaySize.height * image.scale * exportDensity * scale
-        val srcRect = android.graphics.Rect(0, 0, source.width, source.height)
+        // Apply non-destructive crop: only draw the cropped
+        // region of the source bitmap, not the full image.
+        val crop = image.cropRect
+        val srcRect = if (crop != null) {
+            val cx = (crop.left * source.width).toInt().coerceIn(0, source.width - 1)
+            val cy = (crop.top * source.height).toInt().coerceIn(0, source.height - 1)
+            val cw = ((crop.right - crop.left) * source.width).toInt().coerceIn(1, source.width - cx)
+            val ch = ((crop.bottom - crop.top) * source.height).toInt().coerceIn(1, source.height - cy)
+            android.graphics.Rect(cx, cy, cx + cw, cy + ch)
+        } else {
+            android.graphics.Rect(0, 0, source.width, source.height)
+        }
         val dstRect = android.graphics.RectF(
             -dstW / 2f, -dstH / 2f, dstW / 2f, dstH / 2f,
         )
