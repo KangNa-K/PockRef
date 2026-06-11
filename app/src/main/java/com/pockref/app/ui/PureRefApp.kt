@@ -7698,10 +7698,22 @@ private fun PockRefCanvas(
                             // pans the canvas (matching the
                             // user's expectation that locked
                             // images are "view-only").
+                            //
+                            // V_NOW (2026-06-11): unconditionally
+                            // arm canvas pan in global lock mode
+                            // even if the [MOVE_IMAGE] gesture
+                            // toggle is off. The toggle is named
+                            // "move image" — it has no meaning
+                            // when global lock is on because the
+                            // user has explicitly disabled
+                            // image-moving. Gating the fallback
+                            // canvas pan behind MOVE_IMAGE made
+                            // single-finger drag completely
+                            // dead in global lock mode when the
+                            // toggle was off, leaving the user
+                            // with no way to pan.
                             activeDragImageId = hitId
-                            if (isGestureEnabled(s.gestureToggles, GestureId.MOVE_IMAGE)) {
-                                dragCanvas = true
-                            }
+                            dragCanvas = true
                         } else if (s.boxSelectMode && hitId !in s.selectedImageIds && groupCornerDrag == null) {
                             currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                             boxSelectStart = downPos
