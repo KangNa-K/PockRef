@@ -2212,7 +2212,12 @@ fun PockRefApp(
                 contentAlignment = Alignment.Center,
             ) {
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    // P1 (2026-06-11 chrome unify): same
+                    // tier as the floating chrome (toolbar /
+                    // minimap / FAB) so the "drop here" hint
+                    // reads as a brief overlay, not a new
+                    // visual family.
+                    shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
                     color = Color(0xDD111111),
                     tonalElevation = 4.dp,
                 ) {
@@ -2742,7 +2747,12 @@ private fun SheetActionButton(
             // the label to a second line and the button
             // grows asymmetrically.
             .defaultMinSize(minHeight = 48.dp)
-            .clip(RoundedCornerShape(10.dp))
+            // P2 (2026-06-11 chrome unify): bumped from
+            // 10dp outlier to [Dimens.ChromeCornerRadius]
+            // (12dp) so the selection-toolbar item reads
+            // as the same visual family as the chrome
+            // surfaces (toolbar / minimap / FAB / lock).
+            .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
             // V_NOW (S-04): combinedClickable when
             // onLongClick is provided, plain clickable
             // otherwise. combinedClickable is the
@@ -3888,7 +3898,14 @@ private fun BoxScope.CropOverlay(
             .align(Alignment.CenterHorizontally),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        // P0 (2026-06-11 chrome unify): route through
+        // [Dimens.SheetCornerRadius] so this toolbar
+        // stays in lockstep with [SelectionBottomSheet]
+        // if the sheet corner tier ever changes.
+        shape = RoundedCornerShape(
+            topStart = Dimens.SheetCornerRadius,
+            topEnd = Dimens.SheetCornerRadius,
+        ),
     ) {
         Column(
             modifier = Modifier
@@ -5097,7 +5114,9 @@ private fun EmptyCanvasState(
 ) {
     Surface(
         modifier = modifier.widthIn(max = 520.dp),
-        shape = RoundedCornerShape(16.dp),
+        // P1 (2026-06-11 chrome unify): mid-size card
+        // tier (sits between 12dp chrome and 24dp dialog).
+        shape = RoundedCornerShape(Dimens.CardCornerRadius),
         tonalElevation = 2.dp,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
     ) {
@@ -5144,7 +5163,12 @@ private fun EmptyCanvasState(
             ExtendedFloatingActionButton(
                 onClick = onImportMixed,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                shape = RoundedCornerShape(12.dp),
+                // P1 (2026-06-11 chrome unify): match the
+                // chrome surface tier so the EFAB inside
+                // the empty-state card reads as the same
+                // visual family as the corner-anchored
+                // chrome (toolbar / minimap / FAB / lock).
+                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 elevation = FloatingActionButtonDefaults.elevation(0.dp, 0.dp),
@@ -10333,7 +10357,9 @@ private fun BatchOptimizeProgressOverlay(
             modifier = Modifier
                 .padding(24.dp)
                 .widthIn(max = 360.dp),
-            shape = RoundedCornerShape(16.dp),
+            // P1 (2026-06-11 chrome unify): mid-size
+            // card tier.
+            shape = RoundedCornerShape(Dimens.CardCornerRadius),
         ) {
             Column(
                 modifier = Modifier.padding(24.dp),
@@ -10540,7 +10566,10 @@ private fun ExportDialogHost(
                 // the right-bottom action panel and uses a
                 // distinct icon + label.
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
+                    // P1 (2026-06-11 chrome unify): chip tier
+                    // — same as Recent-file-grid tile / HSV
+                    // swatch / Settings title-edit field.
+                    shape = RoundedCornerShape(Dimens.ChipCornerRadius),
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
                     tonalElevation = 0.dp,
                 ) {

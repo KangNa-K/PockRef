@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Pause
@@ -57,6 +58,7 @@ import com.pockref.app.model.PracticePhase
 import com.pockref.app.model.PracticeState
 import com.pockref.app.model.PracticeStatus
 import com.pockref.app.model.SceneImage
+import com.pockref.app.ui.theme.Dimens
 import kotlinx.coroutines.delay
 
 /**
@@ -561,7 +563,14 @@ private fun PracticeFinishedOverlay(
         ) {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                shape = MaterialTheme.shapes.extraLarge,
+                // P1 (2026-06-11 chrome unify): dialog
+                // tier (24dp). 4dp tighter than the M3
+                // default [MaterialTheme.shapes.extraLarge]
+                // (28dp) so an in-canvas modal reads as
+                // a tighter overlay than the screen-edge
+                // bottom sheets — they keep their
+                // [Dimens.SheetCornerRadius] = 28dp.
+                shape = RoundedCornerShape(Dimens.DialogCornerRadius),
                 tonalElevation = 6.dp,
                 shadowElevation = 8.dp,
             ) {
@@ -641,10 +650,11 @@ private fun CountdownBadge(
     Surface(
         color = MaterialTheme.colorScheme.inverseSurface,
         contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-        // M3 large shape (16dp) — the canonical chip / badge
-        // shape. extraLarge (28dp) would be too rounded
-        // for a small inline badge.
-        shape = MaterialTheme.shapes.large,
+        // P1 (2026-06-11 chrome unify): card tier (16dp).
+        // 4dp tighter than the dialog tier so the
+        // small inline badge doesn't visually compete
+        // with the completion dialog it sits inside of.
+        shape = RoundedCornerShape(Dimens.CardCornerRadius),
         modifier = modifier,
     ) {
         Text(

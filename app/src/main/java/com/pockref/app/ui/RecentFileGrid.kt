@@ -398,7 +398,14 @@ private fun RecentFileTile(
                                 .align(Alignment.TopEnd)
                                 .padding(4.dp)
                                 .size(24.dp)
-                                .clip(RoundedCornerShape(3.dp))
+                                // P2 (2026-06-11 chrome unify):
+                                // match the pinned / cover badges
+                                // in the same file (lines ~427,
+                                // ~445) — all three corner
+                                // affordances now share
+                                // [CircleShape] instead of
+                                // mixing 3dp / CircleShape.
+                                .clip(CircleShape)
                                 .background(Color.White.copy(alpha = 0.85f)),
                             contentAlignment = Alignment.Center,
                         ) {

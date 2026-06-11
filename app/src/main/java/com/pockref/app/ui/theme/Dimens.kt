@@ -125,4 +125,47 @@ object Dimens {
     val SheetMaxWidth = 560.dp
     val SheetHandleWidth = 32.dp
     val SheetHandleHeight = 4.dp
+
+    // ── Card / dialog / chip corner-radius tier ─────────────────────
+    //
+    // 5-tier corner-radius scale (P0 chrome unify, 2026-06-11):
+    //
+    //   PillCornerRadius (pill / 999dp)
+    //     └─ fully-rounded stadium shape for status tags, the
+    //        SelectionModeToggle chip row, drag handles, the
+    //        "锁定" badge in the selection sheet header
+    //   DialogCornerRadius (24dp)
+    //     └─ fullscreen modal dialogs / completion overlays
+    //        (Practice "练习完成" Surface, the 360dp optimization
+    //        Card). 4dp less than [SheetCornerRadius] so an
+    //        in-canvas dialog reads slightly "tighter" than a
+    //        bottom sheet pinned to the screen edge.
+    //   SheetCornerRadius (28dp) ← existing
+    //     └─ bottom sheet top corners (SelectionBottomSheet,
+    //        CropOverlay toolbar). M3 spec for large component
+    //        bottom sheets.
+    //   CardCornerRadius (16dp)
+    //     └─ mid-size embedded cards / dialog cards (EmptyCanvas
+    //        State hero card, the "优化中 / 已暂停" 360dp Card).
+    //        Sits between the 12dp chrome and the 24dp dialog
+    //        tiers so the visual hierarchy reads as
+    //        chrome < card < sheet ≈ dialog.
+    //   ChromeCornerRadius (12dp) ← existing
+    //     └─ every floating chrome surface (top toolbar, minimap
+    //        panel, FAB, global lock button, the long-press
+    //        minimap slider). M3 medium shape.
+    //   ChipCornerRadius (8dp)
+    //     └─ inline chips / list-item tiles / HSV swatches /
+    //        Settings title-edit field. The "smallest" surface
+    //        tier; pairs naturally with M3 small shape.
+    //
+    // Callers must pick the tier that matches the SURFACE'S
+    // VISUAL ROLE, not its size. A 30dp HSV swatch and a 64dp
+    // Recent-file-grid tile both live in the [ChipCornerRadius]
+    // tier because they read as "list item / picker", not
+    // "chrome / dialog".
+    const val PillCornerRadius = 999
+    val DialogCornerRadius = 24.dp
+    val CardCornerRadius = 16.dp
+    val ChipCornerRadius = 8.dp
 }
