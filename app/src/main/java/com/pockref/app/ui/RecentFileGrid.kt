@@ -72,6 +72,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
@@ -276,6 +277,21 @@ private fun RecentFileTile(
     val emphasizedAccelerate = CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)
 
     var dragOffset by remember { mutableFloatStateOf(0f) }
+    // V_NOW (2026-06-11, swipe v6 position fix #3):
+    // the outer tile Box's measured width in pixels.
+    // Set by [Modifier.onSizeChanged] on the thumbnail
+    // Box; read by the SwipeActionButton's
+    // [graphicsLayer] lambda to compute the half-tile
+    // offset. We use [onSizeChanged] (state) rather
+    // than [BoxWithConstraints.maxWidth] (val) because
+    // a captured outer-lambda val inside the modifier
+    // chain's [graphicsLayer] lambda is not always
+    // visible from the SwipeActionButton's nested
+    // receiver scope in this compose-bom 1.7+ build
+    // (the receiver shadowing chain stops one level
+    // deep). A state read through the snapshot system
+    // sidesteps the capture ambiguity entirely.
+    var tileWidthPx by remember { mutableFloatStateOf(0f) }
     // V_NOW (2026-06-11, swipe v6): locked-at-commit
     // state. When non-null, the revealed action button
     // stays at full size waiting for a tap. Null =
@@ -375,6 +391,21 @@ private fun RecentFileTile(
     val tileModifier = Modifier
         .fillMaxWidth()
         .aspectRatio(1f)
+        // V_NOW (2026-06-11, swipe v6 position fix #3):
+        // record the tile's actual measured width
+        // into [tileWidthPx] (a state in the outer
+        // [RecentFileTile] body). The
+        // SwipeActionButton's [graphicsLayer] lambda
+        // reads this state to compute its half-tile
+        // offset. We can't just capture a val from
+        // [BoxWithConstraints.maxWidth] because the
+        // captured outer-lambda val is not visible
+        // from inside the SwipeActionButton's nested
+        // receiver scope in this compose-bom 1.7+
+        // build (the receiver shadowing chain stops
+        // one level deep). A state read sidesteps
+        // the capture ambiguity.
+        .onSizeChanged { size -> tileWidthPx = size.width.toFloat() }
         .clip(RoundedCornerShape(8.dp))
         .background(tileBaseColor)
         .then(
@@ -422,6 +453,17 @@ private fun RecentFileTile(
             // modifier chain in this compose-bom
             // configuration.
             val tileHalfWidthPx = with(density) { maxWidth.toPx() / 2f }
+            // (We tried using this val directly in
+            // the [graphicsLayer] lambda below, but
+            // a captured outer-lambda val inside the
+            // nested receiver scope is not visible
+            // in this compose-bom 1.7+ build. The
+            // [tileWidthPx] state set by
+            // [Modifier.onSizeChanged] on the
+            // thumbnail Box is used instead; see
+            // the comments at the [tileWidthPx]
+            // declaration and the
+            // [graphicsLayer] block below.)
             // 1. Delete button — DEAD CODE in v6 (the
             //    v5 full-tile replace surface is
             //    removed; the v6 path uses
@@ -819,7 +861,37 @@ private fun RecentFileTile(
                             // resolve, [size.width] is
                             // the tile's full width
                             // because we filled max).
-                            val tileHalf = size.width / 2f
+                            // V_NOW (2026-06-11, swipe v6
+                            // position fix #3): the prior
+                            // attempt used [size.width] here
+                            // (the GraphicsLayerScope's
+                            // measured size of the wrapper
+                            // Box, which collapses to the
+                            // button's own size after
+                            // [wrapContentSize] resolves —
+                            // NOT the tile width). That
+                            // landed the button at
+                            // button_w/2 offset from the
+                            // tile center, i.e. ~button_w
+                            // away from the strip midpoint.
+                            //
+                            // We now read [tileWidthPx] (a
+                            // state in the outer
+                            // [RecentFileTile] body, set
+                            // by [Modifier.onSizeChanged]
+                            // on the thumbnail Box). The
+                            // snapshot system makes the
+                            // state value visible from
+                            // inside the nested
+                            // [graphicsLayer] lambda
+                            // without needing the
+                            // outer-lambda val to be in
+                            // direct lexical scope (the
+                            // compose-bom 1.7+ receiver
+                            // shadowing chain stops one
+                            // level deep for captured
+                            // outer vals).
+                            val tileHalf = tileWidthPx / 2f
                             translationX = if (goingLeft) {
                                 tileHalf + dragOffset / 2f
                             } else {
