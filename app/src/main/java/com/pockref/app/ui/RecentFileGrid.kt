@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -266,33 +267,49 @@ private fun RecentFileTile(
     //   - M3 motion: emphasizedDecelerate for settle,
     //     emphasizedAccelerate for snap-back.
     val density = LocalDensity.current
-    val commitThresholdPx = with(density) { 56.dp.toPx() }
-    val maxDragPx = with(density) { 96.dp.toPx() }
+    val commitThresholdPx = with(density) { SwipeDimens.commitThreshold.toPx() }
+    val visualRevealStartPx = with(density) { SwipeDimens.visualRevealStart.toPx() }
+    val maxDragPx = with(density) { SwipeDimens.maxDrag.toPx() }
+    val buttonHalfWidthPx = with(density) { (SwipeDimens.buttonSizeExpanded / 2).toPx() }
     val emphasizedDecelerate = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
     val emphasizedAccelerate = CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)
 
     var dragOffset by remember { mutableFloatStateOf(0f) }
-    var deleteRevealed by remember { mutableStateOf(false) }
+    // V_NOW (2026-06-11, swipe v6): locked-at-commit
+    // state. When non-null, the revealed action button
+    // stays at full size waiting for a tap. Null =
+    // not locked, no button shown.
+    var swipeLocked by remember { mutableStateOf<SwipeActionKind?>(null) }
     val scope = rememberCoroutineScope()
-    // Auto-dismiss delete reveal after 3 seconds
-    LaunchedEffect(deleteRevealed) {
-        if (deleteRevealed) {
-            kotlinx.coroutines.delay(3000L)
-            deleteRevealed = false
-            scope.launch {
-                animate(
-                    initialValue = dragOffset,
-                    targetValue = 0f,
-                    animationSpec = tween(
-                        durationMillis = 250,
-                        easing = emphasizedAccelerate,
-                    ),
-                ) { value, _ ->
-                    dragOffset = value
-                }
+    // Auto-dismiss: when locked, start a 3 s timer; if
+    // the user does not tap the button in that window,
+    // unlock and slide the thumb back home.
+    LaunchedEffect(swipeLocked) {
+        val locked = swipeLocked ?: return@LaunchedEffect
+        kotlinx.coroutines.delay(SwipeDimens.autoDismissMs)
+        swipeLocked = null
+        scope.launch {
+            animate(
+                initialValue = dragOffset,
+                targetValue = 0f,
+                animationSpec = tween(
+                    durationMillis = 250,
+                    easing = emphasizedAccelerate,
+                ),
+            ) { value, _ ->
+                dragOffset = value
             }
         }
+        @Suppress("UNUSED_EXPRESSION") locked
     }
+    // V_NOW (2026-06-11, swipe v6): confirmation gate
+    // for the v6 delete path. v5 went straight to
+    // [onSwipeDelete] on tile tap; v6 splits the
+    // gesture (swipe to reveal, tap to intend) and
+    // adds an M3 [AlertDialog] so the user has one
+    // more chance to cancel a destructive action.
+    // Pin is reversible and skips this gate.
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val draggableState = rememberDraggableState { delta ->
         // Allow both directions: negative = left-swipe (delete),
@@ -385,11 +402,18 @@ private fun RecentFileTile(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
-            // 1. Delete button — matches the sheet's
-            //    SheetActionButton style (icon + label,
-            //    error tint) but scaled up for the tile
-            //    context. M3 error color scheme.
-            if (deleteRevealed) {
+            // 1. Delete button — DEAD CODE in v6 (the
+            //    v5 full-tile replace surface is
+            //    removed; the v6 path uses
+            //    [SwipeActionButton] layered on top
+            //    of the thumbnail below). Gated on
+            //    [false] so the composable tree
+            //    still compiles but the branch never
+            //    renders. Future cleanup: delete
+            //    the entire block; kept here for
+            //    diff readability against the v5
+            //    history.
+            if (false) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
@@ -414,38 +438,95 @@ private fun RecentFileTile(
             }
 
             // 2. Foreground (thumbnail) — slides left
-            //    on swipe, hidden when deleteRevealed.
-            if (!deleteRevealed) {
-                Box(
-                    modifier = tileModifier
-                        .then(
-                            if (!multiSelectMode) {
-                                Modifier.draggable(
-                                    state = draggableState,
-                                    orientation = Orientation.Horizontal,
+            //    on swipe. In v6 the thumbnail is
+            //    always visible (the SwipeActionButton
+            //    layered on top of it handles the
+            //    locked-state visual).
+            Box(
+                modifier = tileModifier
+                    .then(
+                        if (!multiSelectMode) {
+                            Modifier.draggable(
+                                state = draggableState,
+                                orientation = Orientation.Horizontal,
                                     onDragStopped = {
-                                        if (dragOffset > commitThresholdPx) {
-                                            // Right swipe past threshold → auto-pin
-                                            onSwipePin()
-                                        } else if (dragOffset < -commitThresholdPx) {
-                                            // Left swipe past threshold → reveal delete
-                                            deleteRevealed = true
-                                        }
-                                        val target = if (deleteRevealed) {
-                                            -maxDragPx
-                                        } else {
-                                            0f
-                                        }
-                                        scope.launch {
-                                            animate(
-                                                initialValue = dragOffset,
-                                                targetValue = target,
-                                                animationSpec = tween(
-                                                    durationMillis = 300,
-                                                    easing = emphasizedDecelerate,
-                                                ),
-                                            ) { value, _ ->
-                                                dragOffset = value
+                                        // V_NOW (2026-06-11, swipe v6):
+                                        // distance-based routing at
+                                        // release. The v5
+                                        // "auto-execute on commit"
+                                        // path is removed; the v6
+                                        // flow locks the action
+                                        // button at full size and
+                                        // waits for a tap.
+                                        val goingLeft = dragOffset < 0f
+                                        val goingRight = dragOffset > 0f
+                                        val pastCommit = kotlin.math.abs(dragOffset) >= commitThresholdPx
+                                        val pastReveal = kotlin.math.abs(dragOffset) >= visualRevealStartPx
+                                        when {
+                                            pastCommit && goingLeft -> {
+                                                swipeLocked = SwipeActionKind.Delete
+                                                scope.launch {
+                                                    animate(
+                                                        initialValue = dragOffset,
+                                                        targetValue = -commitThresholdPx,
+                                                        animationSpec = tween(
+                                                            durationMillis = SwipeDimens.settleMs.toInt(),
+                                                            easing = emphasizedDecelerate,
+                                                        ),
+                                                    ) { value, _ -> dragOffset = value }
+                                                }
+                                            }
+                                            pastCommit && goingRight -> {
+                                                swipeLocked = SwipeActionKind.Pin
+                                                scope.launch {
+                                                    animate(
+                                                        initialValue = dragOffset,
+                                                        targetValue = commitThresholdPx,
+                                                        animationSpec = tween(
+                                                            durationMillis = SwipeDimens.settleMs.toInt(),
+                                                            easing = emphasizedDecelerate,
+                                                        ),
+                                                    ) { value, _ -> dragOffset = value }
+                                                }
+                                            }
+                                            pastReveal && goingLeft -> {
+                                                swipeLocked = SwipeActionKind.Delete
+                                                scope.launch {
+                                                    animate(
+                                                        initialValue = dragOffset,
+                                                        targetValue = -commitThresholdPx,
+                                                        animationSpec = tween(
+                                                            durationMillis = SwipeDimens.settleMs.toInt(),
+                                                            easing = emphasizedDecelerate,
+                                                        ),
+                                                    ) { value, _ -> dragOffset = value }
+                                                }
+                                            }
+                                            pastReveal && goingRight -> {
+                                                swipeLocked = SwipeActionKind.Pin
+                                                scope.launch {
+                                                    animate(
+                                                        initialValue = dragOffset,
+                                                        targetValue = commitThresholdPx,
+                                                        animationSpec = tween(
+                                                            durationMillis = SwipeDimens.settleMs.toInt(),
+                                                            easing = emphasizedDecelerate,
+                                                        ),
+                                                    ) { value, _ -> dragOffset = value }
+                                                }
+                                            }
+                                            else -> {
+                                                swipeLocked = null
+                                                scope.launch {
+                                                    animate(
+                                                        initialValue = dragOffset,
+                                                        targetValue = 0f,
+                                                        animationSpec = tween(
+                                                            durationMillis = 250,
+                                                            easing = emphasizedAccelerate,
+                                                        ),
+                                                    ) { value, _ -> dragOffset = value }
+                                                }
                                             }
                                         }
                                     },
@@ -552,7 +633,103 @@ private fun RecentFileTile(
                     }
                 }
             }
-        }
+            // 3. v6 progressive action button (layered
+            //    ABOVE the thumbnail). Rendered inside
+            //    the outer tile Box (403) so it shares
+            //    the tile's coordinate frame, and after
+            //    the thumbnail so it draws on top.
+            //
+            //    Geometry: thumbnail is full tile width
+            //    with translationX = dragOffset.
+            //    Revealed strip spans
+            //    [tile_w + dragOffset, tile_w] (left)
+            //    or [0, dragOffset] (right); its
+            //    midpoint is at
+            //    tile_w + dragOffset/2 (left) or
+            //    dragOffset/2 (right). We anchor the
+            //    button at Alignment.Center (tile_w/2)
+            //    and translate by
+            //    dragOffset/2 + button_w/2 (sign by
+            //    direction) so the center lands on the
+            //    strip midpoint. The constant
+            //    [buttonHalfWidthPx] is in pixels (the
+            //    unit graphicsLayer.translationX
+            //    operates in).
+            if (kotlin.math.abs(dragOffset) >= visualRevealStartPx) {
+                val revealProgressRaw = (
+                    (kotlin.math.abs(dragOffset) - visualRevealStartPx) /
+                        (commitThresholdPx - visualRevealStartPx)
+                    ).coerceIn(0f, 1f)
+                val goingLeft = dragOffset < 0f
+                val lockedKind = swipeLocked
+                val kind = lockedKind
+                    ?: if (goingLeft) SwipeActionKind.Delete else SwipeActionKind.Pin
+                val isLocked = lockedKind != null
+                SwipeActionButton(
+                    kind = kind,
+                    progress = revealProgressRaw,
+                    locked = isLocked,
+                    onClick = {
+                        // V_NOW (2026-06-11, swipe v6):
+                        // tap-on-locked-button handler.
+                        // Pin is reversible so it executes
+                        // immediately and resets. Delete
+                        // is destructive and shows the
+                        // M3 confirmation dialog; the
+                        // actual [onSwipeDelete] fires
+                        // only if the user confirms.
+                        when (kind) {
+                            SwipeActionKind.Pin -> {
+                                onSwipePin()
+                                swipeLocked = null
+                                scope.launch {
+                                    animate(
+                                        initialValue = dragOffset,
+                                        targetValue = 0f,
+                                        animationSpec = tween(
+                                            durationMillis = 250,
+                                            easing = emphasizedAccelerate,
+                                        ),
+                                    ) { value, _ -> dragOffset = value }
+                                }
+                            }
+                            SwipeActionKind.Delete -> {
+                                showDeleteConfirm = true
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        // V_NOW (2026-06-11, swipe v6):
+                        // anchor the button by using
+                        // [fillMaxSize] + [wrapContentSize]
+                        // rather than [BoxScope.align]. In
+                        // compose-bom 1.7+ the
+                        // [BoxScope.align] overload
+                        // resolution prefers the
+                        // [Alignment.Horizontal]-typed
+                        // 1-D variant, which would reject
+                        // the 2-D [Alignment] constants
+                        // like [Alignment.Center] or
+                        // [Alignment.TopCenter] we want
+                        // here. [wrapContentSize] (a
+                        // general [Modifier] function,
+                        // not a [BoxScope] extension)
+                        // takes the 2-D [Alignment]
+                        // directly and centers the
+                        // button in the parent Box.
+                        // See [androidx.compose.foundation.layout.wrapContentSize].
+                        .fillMaxSize()
+                        .wrapContentSize(Alignment.Center)
+                        .graphicsLayer {
+                            // See the long derivation
+                            // comment above. Net effect:
+                            // button center tracks the
+                            // revealed-strip midpoint.
+                            translationX = dragOffset / 2f +
+                                if (goingLeft) buttonHalfWidthPx else -buttonHalfWidthPx
+                        },
+                )
+            }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = displayLabel(entry.label),
@@ -565,14 +742,16 @@ private fun RecentFileTile(
                 .fillMaxWidth()
                 .combinedClickable(
                     onClick = {
-                        if (deleteRevealed) {
-                            // Click on label area while delete
-                            // is revealed → cancel
-                            deleteRevealed = false
-                            dragOffset = 0f
-                        } else {
-                            onTap()
-                        }
+                        // V_NOW (2026-06-11, swipe v6 only):
+                        // the v5 cancel-on-label-tap branch
+                        // is gone; the label just routes to
+                        // [onTap] like before. To cancel a
+                        // v6 swipe, the user taps the
+                        // thumbnail itself (which goes
+                        // through [onTap] and resets the
+                        // tile state via the host screen's
+                        // tap handler).
+                        onTap()
                     },
                     onLongClick = if (multiSelectMode) {
                         { /* no-op in multi-select */ }
@@ -608,6 +787,79 @@ private fun RecentFileTile(
             },
             dismissButton = {
                 Button(onClick = { showRenameDialog = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+    // V_NOW (2026-06-11, swipe v6): delete confirmation
+    // dialog. M3 [AlertDialog] with an error-tinted
+    // confirm button, matching the project's existing
+    // rename dialog style. The dialog lives on the
+    // tile so a multi-tile lock state can show one
+    // dialog per affected tile if needed; in practice
+    // only one tile is locked at a time because
+    // tapping elsewhere cancels.
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = {
+                showDeleteConfirm = false
+                swipeLocked = null
+                scope.launch {
+                    animate(
+                        initialValue = dragOffset,
+                        targetValue = 0f,
+                        animationSpec = tween(
+                            durationMillis = 250,
+                            easing = emphasizedAccelerate,
+                        ),
+                    ) { value, _ -> dragOffset = value }
+                }
+            },
+            icon = {
+                Icon(
+                    imageVector = Icons.Rounded.Delete,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            },
+            title = { Text("删除这个场景?") },
+            text = {
+                Text(
+                    "「${displayLabel(entry.label)}」将移到回收站,30 天后自动清除。",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        swipeLocked = null
+                        onSwipeDelete()
+                    },
+                ) {
+                    Text(
+                        "删除",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        swipeLocked = null
+                        scope.launch {
+                            animate(
+                                initialValue = dragOffset,
+                                targetValue = 0f,
+                                animationSpec = tween(
+                                    durationMillis = 250,
+                                    easing = emphasizedAccelerate,
+                                ),
+                            ) { value, _ -> dragOffset = value }
+                        }
+                    },
+                ) {
                     Text("取消")
                 }
             },
