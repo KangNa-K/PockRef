@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PockRef v1.2.2 更新说明</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      /* ── Material 3 DARK scheme (mirrors PockRef Theme.kt DarkColors) ── */
+      /* surface tier */
+      --surface:           #17181C;
+      --surface-dim:       #0D0E11;
+      --surface-bright:    #2A2C30;
+      --surface-container-lowest: #0D0E11;
+      --surface-container-low:    #1A1C20;
+      --surface-container:        #1E2024;
+      --surface-container-high:   #292B2F;
+      --surface-container-highest:#34363A;
+
+      /* on-surface (text) */
+      --on-surface:         #E2E2E5;
+      --on-surface-variant: #C1C7CE;
+      --outline:            #8B9198;
+      --outline-variant:    #41484D;
+
+      /* PockRef brand (DARK scheme — primary lightens to cyan for contrast) */
+      --primary:            #6AD6FF;     /* light cyan */
+      --on-primary:         #003547;
+      --primary-container:  #004D6A;     /* deep teal container */
+      --on-primary-container: #B5E9FF;
+      --secondary:          #82CFFA;
+      --on-secondary:       #003547;
+      --secondary-container:#004C6A;
+      --on-secondary-container: #CDE5FF;
+      --tertiary:           #8BE28B;
+      --on-tertiary:        #003910;
+      --tertiary-container: #005319;
+      --on-tertiary-container: #A8F5A8;
+      --error:              #FFB4AB;
+      --on-error:           #690005;
+      --error-container:    #93000A;
+      --on-error-container: #FFDAD6;
+
+      /* M3 elevation shadows (M3 dark uses stronger shadows for contrast) */
+      --elev-1: 0 1px 2px 0 rgba(0,0,0,.30), 0 1px 3px 1px rgba(0,0,0,.20);
+      --elev-2: 0 1px 2px 0 rgba(0,0,0,.40), 0 2px 6px 2px rgba(0,0,0,.30);
+      --elev-3: 0 1px 3px 0 rgba(0,0,0,.50), 0 4px 8px 3px rgba(0,0,0,.40);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Outfit', 'Noto Sans SC', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: var(--surface-dim);
+      color: var(--on-surface);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 56px 56px 80px;
+    }
+
+    /* ── HERO (filled card, primary container) ── */
+    header.hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 32px;
+      padding: 36px 40px;
+      margin-bottom: 40px;
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+      border-radius: 28px;          /* M3 extraLarge */
+      box-shadow: var(--elev-1);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-left { flex: 1; min-width: 0; }
+    .brand-row {
+      display: inline-flex; align-items: center; gap: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; font-weight: 700;
+      color: var(--on-primary-container);
+      opacity: 0.7;
+      letter-spacing: 0.18em; text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+    .brand-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--primary);
+    }
+    h1 {
+      font-family: 'Outfit', 'Noto Sans SC', sans-serif;
+      font-size: 56px; font-weight: 700;
+      margin: 0 0 4px; line-height: 1.05;
+      letter-spacing: -0.025em;
+      color: var(--on-primary-container);
+    }
+    h1 .v {
+      color: var(--primary);
+      font-weight: 800;
+    }
+
+    /* Filled FAB-style badge (M3 standard FAB color: primary + onPrimary) */
+    .hero-right { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+    .release-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 20px;
+      background: var(--primary);
+      color: var(--on-primary);
+      border-radius: 999px;          /* M3 FAB: full pill */
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; font-weight: 700;
+      letter-spacing: 0.14em;
+      box-shadow: var(--elev-2);
+    }
+    .release-date {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; color: var(--on-primary-container);
+      opacity: 0.7; letter-spacing: 0.06em;
+    }
+
+    /* ── SECTION ── */
+    section.cat {
+      margin-bottom: 32px;
+    }
+    .cat-head {
+      display: flex; align-items: center; gap: 16px;
+      margin-bottom: 16px;
+      padding: 0 4px;
+    }
+    /* FilledTonalIconButton style 56dp rounded square */
+    .cat-icon {
+      width: 56px; height: 56px; border-radius: 16px;     /* M3 large */
+      display: inline-flex; align-items: center; justify-content: center;
+      background: var(--cat-container, var(--primary-container));
+      color: var(--cat-on-container, var(--on-primary-container));
+      box-shadow: var(--elev-1);
+    }
+    .cat-icon svg { width: 28px; height: 28px; }
+    .cat-title {
+      font-family: 'Outfit', 'Noto Sans SC', sans-serif;
+      font-size: 28px; font-weight: 700;
+      color: var(--on-surface);
+      letter-spacing: -0.01em;
+      line-height: 1.1;
+    }
+    .cat-title small {
+      display: block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px; color: var(--on-surface-variant);
+      font-weight: 600;
+      margin-top: 4px; letter-spacing: 0.10em;
+    }
+    .cat-bar {
+      flex: 1; height: 0;
+      border-top: 1px dashed var(--outline-variant);
+      margin-left: 4px;
+    }
+
+    /* ── ENTRY GRID (filled cards, M3 Card variant) ── */
+    .entries {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .entry {
+      background: var(--surface-container-low);
+      color: var(--on-surface);
+      border-radius: 12px;            /* M3 medium */
+      padding: 14px 18px;
+      display: flex; align-items: flex-start; gap: 12px;
+      font-size: 14.5px;
+      line-height: 1.45;
+      box-shadow: var(--elev-1);
+      transition: box-shadow .2s, transform .2s;
+    }
+    .entry:hover {
+      box-shadow: var(--elev-2);
+      transform: translateY(-1px);
+    }
+    .entry.full { grid-column: 1 / -1; }
+
+    /* M3 state layer for the leading bullet */
+    .entry-marker {
+      flex-shrink: 0;
+      width: 24px; height: 24px;
+      border-radius: 8px;            /* M3 small */
+      display: inline-flex; align-items: center; justify-content: center;
+      background: var(--cat-container, var(--primary-container));
+      color: var(--cat-on-container, var(--on-primary-container));
+      margin-top: 1px;
+    }
+    .entry-marker::after {
+      content: ""; width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--cat-color, var(--primary));
+    }
+    .entry-text { flex: 1; min-width: 0; }
+    .entry-text em {
+      font-style: normal;
+      color: var(--cat-on-container, var(--on-primary-container));
+      font-weight: 700;
+      background: var(--cat-container, var(--primary-container));
+      padding: 0 4px;
+      border-radius: 4px;
+    }
+
+    /* ── FOOTER ── */
+    footer.foot {
+      margin-top: 48px;
+      padding: 20px 24px;
+      background: var(--surface-container);
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 20px;
+      color: var(--on-surface-variant);
+      font-size: 12px;
+    }
+    .foot-brand {
+      display: inline-flex; align-items: center; gap: 8px;
+    }
+    .foot-brand svg { width: 18px; height: 18px; color: var(--primary); }
+    .foot-meta {
+      display: flex; align-items: center; gap: 18px;
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.04em;
+    }
+    .foot-meta span strong { color: var(--on-surface); font-weight: 600; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="hero-left">
+      <div class="brand-row">
+        <span class="brand-dot"></span>
+        PockRef · 创作者参考图板
+      </div>
+      <h1>v1.2.2 <span class="v">更新说明</span></h1>
+    </div>
+    <div class="hero-right">
+      <span class="release-badge">RELEASED</span>
+      <span class="release-date">2026 · 06 · 11</span>
+    </div>
+  </header>
+
+  <!-- 新增 (primary container) -->
+  <section class="cat" style="--cat-color: var(--primary); --cat-container: var(--primary-container); --cat-on-container: var(--on-primary-container);">
+    <div class="cat-head">
+      <span class="cat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+      </span>
+      <h2 class="cat-title">新增 <small>FEATURES · 4 项</small></h2>
+      <div class="cat-bar"></div>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text"><em>四角圆点缩放</em>(选中后拖角)</div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text"><em>导入按钮搬到顶栏</em></div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text"><em>复制图片到剪贴板</em></div>
+      </div>
+      <div class="entry full">
+        <span class="entry-marker"></span>
+        <div class="entry-text"><em>冻结模式</em>:长按锁定按钮,画布和图片全部锁死</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 优化 (tertiary container = M3 forest green) -->
+  <section class="cat" style="--cat-color: var(--tertiary); --cat-container: var(--tertiary-container); --cat-on-container: var(--on-tertiary-container);">
+    <div class="cat-head">
+      <span class="cat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12h4l3-9 4 18 3-9h4"/>
+        </svg>
+      </span>
+      <h2 class="cat-title">优化 <small>IMPROVEMENTS · 8 项</small></h2>
+      <div class="cat-bar"></div>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text">双指捏合 = 缩放画布</div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text">锁定时<em>只保留锁定按钮</em>,其他全部隐藏</div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text">框选图片也能<em>直接拖角缩放</em></div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text"><em>顶栏常驻</em>,不再自动收起</div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text"><em>一键对齐</em>选中图片</div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text">导入图片<em>自动排版</em></div>
+      </div>
+      <div class="entry full">
+        <span class="entry-marker"></span>
+        <div class="entry-text"><em>裁切升级</em>:四角拖拽,不破坏原图,可重切</div>
+      </div>
+      <div class="entry full">
+        <span class="entry-marker"></span>
+        <div class="entry-text"><em>启动页升级</em>:长按重命名 / 文件可置顶 / 自定义封面 / 左滑删 / 右滑顶</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 修复 (error container = M3 red) -->
+  <section class="cat" style="--cat-color: var(--error); --cat-container: var(--error-container); --cat-on-container: var(--on-error-container);">
+    <div class="cat-head">
+      <span class="cat-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+        </svg>
+      </span>
+      <h2 class="cat-title">修复 <small>FIXES · 4 项</small></h2>
+      <div class="cat-bar"></div>
+    </div>
+    <div class="entries">
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text">修复锁定模式下还能框选的 bug</div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text">修复导出画布排版错位</div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text">修复双击聚焦后旋转显示不全</div>
+      </div>
+      <div class="entry">
+        <span class="entry-marker"></span>
+        <div class="entry-text">修复底部菜单下滑关不掉</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="foot">
+    <div class="foot-brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+        <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+      </svg>
+      <span><strong style="color: var(--on-surface)">PockRef</strong> · Android · Galaxy Tab S10+</span>
+    </div>
+    <div class="foot-meta">
+      <span><strong>34</strong> commits</span>
+      <span><strong>1.2.1</strong> → <strong>1.2.2</strong></span>
+      <span>2026-06-11</span>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
