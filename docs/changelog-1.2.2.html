@@ -9,45 +9,41 @@
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      /* ── Material 3 DARK scheme (mirrors PockRef Theme.kt DarkColors) ── */
-      /* surface tier */
-      --surface:           #17181C;
-      --surface-dim:       #0D0E11;
-      --surface-bright:    #2A2C30;
-      --surface-container-lowest: #0D0E11;
-      --surface-container-low:    #1A1C20;
-      --surface-container:        #1E2024;
-      --surface-container-high:   #292B2F;
-      --surface-container-highest:#34363A;
+      /* ── Material 3 LIGHT scheme (mirrors PockRef Theme.kt LightColors) ── */
+      --surface:           #FCFCFF;
+      --surface-dim:       #F4F4F8;
+      --surface-bright:    #FCFCFF;
+      --surface-container-lowest: #FFFFFF;
+      --surface-container-low:    #F5F5F9;
+      --surface-container:        #EFEFF4;
+      --surface-container-high:   #E9E9EE;
+      --surface-container-highest:#E3E3E8;
 
-      /* on-surface (text) */
-      --on-surface:         #E2E2E5;
-      --on-surface-variant: #C1C7CE;
-      --outline:            #8B9198;
-      --outline-variant:    #41484D;
+      --on-surface:         #1A1C1E;
+      --on-surface-variant: #41484D;
+      --outline:            #71787E;
+      --outline-variant:    #C1C7CE;
 
-      /* PockRef brand (DARK scheme — primary lightens to cyan for contrast) */
-      --primary:            #6AD6FF;     /* light cyan */
-      --on-primary:         #003547;
-      --primary-container:  #004D6A;     /* deep teal container */
-      --on-primary-container: #B5E9FF;
-      --secondary:          #82CFFA;
-      --on-secondary:       #003547;
-      --secondary-container:#004C6A;
-      --on-secondary-container: #CDE5FF;
-      --tertiary:           #8BE28B;
-      --on-tertiary:        #003910;
-      --tertiary-container: #005319;
-      --on-tertiary-container: #A8F5A8;
-      --error:              #FFB4AB;
-      --on-error:           #690005;
-      --error-container:    #93000A;
-      --on-error-container: #FFDAD6;
+      --primary:            #005E7A;
+      --on-primary:         #FFFFFF;
+      --primary-container:  #B5E9FF;
+      --on-primary-container: #001E2A;
+      --secondary:          #006590;
+      --on-secondary:       #FFFFFF;
+      --secondary-container:#CDE5FF;
+      --on-secondary-container: #001E2A;
+      --tertiary:           #1E6B2A;
+      --on-tertiary:        #FFFFFF;
+      --tertiary-container: #A8F5A8;
+      --on-tertiary-container: #002106;
+      --error:              #BA1A1A;
+      --on-error:           #FFFFFF;
+      --error-container:    #FFDAD6;
+      --on-error-container: #410002;
 
-      /* M3 elevation shadows (M3 dark uses stronger shadows for contrast) */
-      --elev-1: 0 1px 2px 0 rgba(0,0,0,.30), 0 1px 3px 1px rgba(0,0,0,.20);
-      --elev-2: 0 1px 2px 0 rgba(0,0,0,.40), 0 2px 6px 2px rgba(0,0,0,.30);
-      --elev-3: 0 1px 3px 0 rgba(0,0,0,.50), 0 4px 8px 3px rgba(0,0,0,.40);
+      --elev-1: 0 1px 2px 0 rgba(0,0,0,.05), 0 1px 3px 1px rgba(0,0,0,.08);
+      --elev-2: 0 1px 2px 0 rgba(0,0,0,.06), 0 2px 6px 2px rgba(0,0,0,.10);
+      --elev-3: 0 1px 3px 0 rgba(0,0,0,.08), 0 4px 8px 3px rgba(0,0,0,.10);
     }
 
     *, *::before, *::after { box-sizing: border-box; }
@@ -64,22 +60,23 @@
     }
 
     .wrap {
-      max-width: 1080px;
+      max-width: 1200px;
       margin: 0 auto;
-      padding: 56px 56px 80px;
+      padding: 56px 56px 72px;
     }
 
+    /* Senior-friendly density: tighter spacing to fit 1200×1800 with 20px text */
     /* ── HERO (filled card, primary container) ── */
     header.hero {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 32px;
-      padding: 36px 40px;
-      margin-bottom: 40px;
+      padding: 36px 44px;
+      margin-bottom: 36px;
       background: var(--primary-container);
       color: var(--on-primary-container);
-      border-radius: 28px;          /* M3 extraLarge */
+      border-radius: 32px;          /* M3 extraLarge */
       box-shadow: var(--elev-1);
       position: relative;
       overflow: hidden;
@@ -88,19 +85,19 @@
     .brand-row {
       display: inline-flex; align-items: center; gap: 10px;
       font-family: 'JetBrains Mono', monospace;
-      font-size: 12px; font-weight: 700;
+      font-size: 14px; font-weight: 700;
       color: var(--on-primary-container);
       opacity: 0.7;
       letter-spacing: 0.18em; text-transform: uppercase;
       margin-bottom: 14px;
     }
     .brand-dot {
-      width: 10px; height: 10px; border-radius: 50%;
+      width: 11px; height: 11px; border-radius: 50%;
       background: var(--primary);
     }
     h1 {
       font-family: 'Outfit', 'Noto Sans SC', sans-serif;
-      font-size: 56px; font-weight: 700;
+      font-size: 64px; font-weight: 700;
       margin: 0 0 4px; line-height: 1.05;
       letter-spacing: -0.025em;
       color: var(--on-primary-container);
@@ -111,45 +108,44 @@
     }
 
     /* Filled FAB-style badge (M3 standard FAB color: primary + onPrimary) */
-    .hero-right { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+    .hero-right { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
     .release-badge {
-      display: inline-flex; align-items: center; gap: 8px;
-      padding: 10px 20px;
+      display: inline-flex; align-items: center; gap: 9px;
+      padding: 12px 22px;
       background: var(--primary);
       color: var(--on-primary);
-      border-radius: 999px;          /* M3 FAB: full pill */
+      border-radius: 999px;
       font-family: 'JetBrains Mono', monospace;
-      font-size: 12px; font-weight: 700;
+      font-size: 14px; font-weight: 700;
       letter-spacing: 0.14em;
       box-shadow: var(--elev-2);
     }
     .release-date {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 12px; color: var(--on-primary-container);
+      font-size: 14px; color: var(--on-primary-container);
       opacity: 0.7; letter-spacing: 0.06em;
     }
 
     /* ── SECTION ── */
     section.cat {
-      margin-bottom: 32px;
+      margin-bottom: 24px;
     }
     .cat-head {
       display: flex; align-items: center; gap: 16px;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
       padding: 0 4px;
     }
-    /* FilledTonalIconButton style 56dp rounded square */
     .cat-icon {
-      width: 56px; height: 56px; border-radius: 16px;     /* M3 large */
+      width: 60px; height: 60px; border-radius: 18px;     /* M3 large */
       display: inline-flex; align-items: center; justify-content: center;
       background: var(--cat-container, var(--primary-container));
       color: var(--cat-on-container, var(--on-primary-container));
       box-shadow: var(--elev-1);
     }
-    .cat-icon svg { width: 28px; height: 28px; }
+    .cat-icon svg { width: 30px; height: 30px; }
     .cat-title {
       font-family: 'Outfit', 'Noto Sans SC', sans-serif;
-      font-size: 28px; font-weight: 700;
+      font-size: 32px; font-weight: 700;
       color: var(--on-surface);
       letter-spacing: -0.01em;
       line-height: 1.1;
@@ -157,7 +153,7 @@
     .cat-title small {
       display: block;
       font-family: 'JetBrains Mono', monospace;
-      font-size: 11px; color: var(--on-surface-variant);
+      font-size: 12px; color: var(--on-surface-variant);
       font-weight: 600;
       margin-top: 4px; letter-spacing: 0.10em;
     }
@@ -171,16 +167,16 @@
     .entries {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 12px;
+      gap: 14px;
     }
     .entry {
       background: var(--surface-container-low);
       color: var(--on-surface);
-      border-radius: 12px;            /* M3 medium */
-      padding: 14px 18px;
-      display: flex; align-items: flex-start; gap: 12px;
-      font-size: 14.5px;
-      line-height: 1.45;
+      border-radius: 16px;            /* M3 medium */
+      padding: 20px 26px;
+      display: flex; align-items: flex-start; gap: 18px;
+      font-size: 20px;                /* senior / far-read mode, fits 1200×1800 */
+      line-height: 1.5;
       box-shadow: var(--elev-1);
       transition: box-shadow .2s, transform .2s;
     }
@@ -190,18 +186,17 @@
     }
     .entry.full { grid-column: 1 / -1; }
 
-    /* M3 state layer for the leading bullet */
     .entry-marker {
       flex-shrink: 0;
-      width: 24px; height: 24px;
-      border-radius: 8px;            /* M3 small */
+      width: 36px; height: 36px;
+      border-radius: 11px;            /* M3 medium */
       display: inline-flex; align-items: center; justify-content: center;
       background: var(--cat-container, var(--primary-container));
       color: var(--cat-on-container, var(--on-primary-container));
-      margin-top: 1px;
+      margin-top: 2px;
     }
     .entry-marker::after {
-      content: ""; width: 6px; height: 6px;
+      content: ""; width: 9px; height: 9px;
       border-radius: 50%;
       background: var(--cat-color, var(--primary));
     }
@@ -211,25 +206,25 @@
       color: var(--cat-on-container, var(--on-primary-container));
       font-weight: 700;
       background: var(--cat-container, var(--primary-container));
-      padding: 0 4px;
-      border-radius: 4px;
+      padding: 0 6px;
+      border-radius: 5px;
     }
 
     /* ── FOOTER ── */
     footer.foot {
-      margin-top: 48px;
-      padding: 20px 24px;
+      margin-top: 36px;
+      padding: 22px 28px;
       background: var(--surface-container);
-      border-radius: 12px;
+      border-radius: 14px;
       display: flex; align-items: center; justify-content: space-between;
       gap: 20px;
       color: var(--on-surface-variant);
-      font-size: 12px;
+      font-size: 16px;
     }
     .foot-brand {
-      display: inline-flex; align-items: center; gap: 8px;
+      display: inline-flex; align-items: center; gap: 12px;
     }
-    .foot-brand svg { width: 18px; height: 18px; color: var(--primary); }
+    .foot-brand svg { width: 22px; height: 22px; color: var(--primary); }
     .foot-meta {
       display: flex; align-items: center; gap: 18px;
       font-family: 'JetBrains Mono', monospace;
@@ -280,7 +275,7 @@
         <span class="entry-marker"></span>
         <div class="entry-text"><em>复制图片到剪贴板</em></div>
       </div>
-      <div class="entry full">
+      <div class="entry">
         <span class="entry-marker"></span>
         <div class="entry-text"><em>冻结模式</em>:长按锁定按钮,画布和图片全部锁死</div>
       </div>
@@ -365,21 +360,21 @@
     </div>
   </section>
 
-  <!-- FOOTER -->
+  <!-- FOOTER (left brand watermark only) -->
   <footer class="foot">
     <div class="foot-brand">
+      <!--
+        PockRef app icon's "p" glyph in pure line-art form (no fill,
+        stroke = currentColor) to match the line style of the rest of
+        the changelog's inline SVG icons. Mirrors the PockRef launcher
+        icon shape: circular bowl on the right + straight stem
+        descending on the left.
+      -->
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="3" y="3" width="7" height="7" rx="1.5"/>
-        <rect x="14" y="3" width="7" height="7" rx="1.5"/>
-        <rect x="3" y="14" width="7" height="7" rx="1.5"/>
-        <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+        <path d="M9 4v16"/>
+        <circle cx="14" cy="9" r="5"/>
       </svg>
-      <span><strong style="color: var(--on-surface)">PockRef</strong> · Android · Galaxy Tab S10+</span>
-    </div>
-    <div class="foot-meta">
-      <span><strong>34</strong> commits</span>
-      <span><strong>1.2.1</strong> → <strong>1.2.2</strong></span>
-      <span>2026-06-11</span>
+      <span><strong style="color: var(--on-surface)">PockRef</strong></span>
     </div>
   </footer>
 
