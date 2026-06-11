@@ -244,6 +244,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -3327,6 +3328,7 @@ private fun BoxScope.CropOverlay(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(state.backgroundColor)
             .windowInsetsPadding(WindowInsets.systemBars),
     ) {
         // 1a. Upper area — `weight(1f)` consumes all
@@ -3339,15 +3341,284 @@ private fun BoxScope.CropOverlay(
         Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                // V_NOW: the pointerInput is on the OUTER Box
+                // (the full upper area), NOT on the floating
+                // layer Box. The previous code put
+                // pointerInput on the floating layer Box
+                // (size = layerW x layerH), which meant
+                // touch events at the Box's right/bottom
+                // edges (where the crop handles sit when
+                // CropRect = (0,0,1,1)) were OUTSIDE the
+                // Compose hit-testing range [0, width) x
+                // [0, height) — the right and bottom edges
+                // are exclusive. The user could SEE the
+                // handles (drawn outside the Box via
+                // graphicsLayer(clip=false)) but could NOT
+                // TOUCH them. This is why the bottom two
+                // corners were basically impossible to drag
+                // (y = layerH is outside the Box) and the
+                // top two were unreliable (x = layerW is
+                // outside the Box).
+                //
+                // Moving pointerInput to the outer Box
+                // (which fills the entire upper area) means
+                // touch events are received for the full
+                // area, including the space around the
+                // floating layer where the handle circles
+                // extend. We convert touch coordinates from
+                // the outer Box's coordinate system to the
+                // floating layer's coordinate system using
+                // the centering offset:
+                //   layerLocalX = touchX - offsetX
+                //   layerLocalY = touchY - offsetY
+                // where offsetX = (outerW - layerWpx) / 2
+                //       offsetY = (outerH - layerHpx) / 2
+                //
+                // This mirrors how the SINGLE-mode corner
+                // handle works: its pointerInput is on the
+                // full-screen Canvas, so there are no
+                // boundary issues.
+                awaitEachGesture {
+                    var firstEvent: PointerEvent
+                    var down: PointerInputChange
+                    while (true) {
+                        firstEvent = awaitPointerEvent(PointerEventPass.Main)
+                        val downChange = firstEvent.changes.firstOrNull {
+                            it.changedToDownIgnoreConsumed()
+                        }
+                        if (downChange != null) {
+                            down = downChange
+                            break
+                        }
+                    }
+                    down.consume()
+                    // Compute the floating layer's offset
+                    // within this outer Box. The layer is
+                    // centered (contentAlignment = Center), so
+                    // offset = (outerSize - layerSize) / 2.
+                    val outerW = size.width.toFloat()
+                    val outerH = size.height.toFloat()
+                    val lwPx = with(density) { currentLayerW.toPx() }
+                    val lhPx = with(density) { currentLayerH.toPx() }
+                    val offX = (outerW - lwPx) / 2f
+                    val offY = (outerH - lhPx) / 2f
+                    // Convert touch position to floating
+                    // layer coordinates.
+                    val startLayer = Offset(
+                        down.position.x - offX,
+                        down.position.y - offY,
+                    )
+                    val cStart = calcScreenCoords()
+                    val cL0 = cStart[0]; val cT0 = cStart[1]
+                    val cR0 = cStart[2]; val cB0 = cStart[3]
+                    val imgW = cStart[4]; val imgH = cStart[5]
+                    val tp = touchPadding
+                    val cornerTp = touchPadding * 1.5f
+                    val inCornerLT = startLayer.x in (cL0 - cornerTp)..(cL0 + cornerTp) &&
+                            startLayer.y in (cT0 - cornerTp)..(cT0 + cornerTp)
+                    val inCornerRT = startLayer.x in (cR0 - cornerTp)..(cR0 + cornerTp) &&
+                            startLayer.y in (cT0 - cornerTp)..(cT0 + cornerTp)
+                    val inCornerLB = startLayer.x in (cL0 - cornerTp)..(cL0 + cornerTp) &&
+                            startLayer.y in (cB0 - cornerTp)..(cB0 + cornerTp)
+                    val inCornerRB = startLayer.x in (cR0 - cornerTp)..(cR0 + cornerTp) &&
+                            startLayer.y in (cB0 - cornerTp)..(cB0 + cornerTp)
+                    val inside = startLayer.x > cL0 + tp && startLayer.x < cR0 - tp &&
+                            startLayer.y > cT0 + tp && startLayer.y < cB0 - tp
+                    val nearBox = startLayer.x > cL0 - tp && startLayer.x < cR0 + tp &&
+                            startLayer.y > cT0 - tp && startLayer.y < cB0 + tp
+                    val isFree = currentCropAspect == CropAspect.FREE
+                    dragEdge = when {
+                        inCornerLT -> if (isFree) "lt" else "lt_lock"
+                        inCornerRT -> if (isFree) "rt" else "rt_lock"
+                        inCornerLB -> if (isFree) "lb" else "lb_lock"
+                        inCornerRB -> if (isFree) "rb" else "rb_lock"
+                        inside -> "move"
+                        nearBox -> "move"
+                        else -> null
+                    }
+                    val edge = dragEdge ?: return@awaitEachGesture
+                    // V_NOW: use ABSOLUTE positioning instead of
+                    // incremental deltas. The previous code read
+                    // [currentCropRect] on every move frame and
+                    // added the per-frame dx/dy to it. But
+                    // [currentCropRect] is a [rememberUpdatedState]
+                    // wrapper that only reflects the ViewModel's
+                    // new value after the NEXT recomposition — so
+                    // if two move events arrive in the same frame
+                    // (common on high-refresh-rate devices), the
+                    // second event reads the STALE cropRect and
+                    // the first event's delta is lost. The user
+                    // perceives this as "not following the finger".
+                    //
+                    // The SINGLE-mode corner handle avoids this by
+                    // computing the scale factor from the current
+                    // pointer position relative to the initial
+                    // anchor (absolute positioning). We use the
+                    // same approach: capture the initial cropRect
+                    // at drag start, and on every move frame
+                    // compute the TOTAL displacement from the
+                    // start position, then apply that total
+                    // displacement to the initial cropRect.
+                    val initialCropRect = currentCropRect
+                    val startLayerX = startLayer.x
+                    val startLayerY = startLayer.y
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                            ?: break
+                        if (!change.pressed) {
+                            change.consume()
+                            break
+                        }
+                        // Convert to layer coordinates
+                        val curLayerX = change.position.x - offX
+                        val curLayerY = change.position.y - offY
+                        change.consume()
+                        // Total displacement from drag start
+                        val totalDxPx = curLayerX - startLayerX
+                        val totalDyPx = curLayerY - startLayerY
+                        val totalDx = totalDxPx / imgW
+                        val totalDy = totalDyPx / imgH
+                        val cr = initialCropRect
+                        val minSize = 0.08f
+                        val newRect = when (edge) {
+                            "move" -> {
+                                val nw = cr.cropWidth
+                                val nh = cr.cropHeight
+                                val nl = (cr.left + totalDx).coerceIn(0f, 1f - nw)
+                                val nt = (cr.top + totalDy).coerceIn(0f, 1f - nh)
+                                cr.copy(left = nl, top = nt, right = nl + nw, bottom = nt + nh)
+                            }
+                            "lt" -> cr.copy(
+                                left = (cr.left + totalDx).coerceIn(0f, cr.right - minSize),
+                                top = (cr.top + totalDy).coerceIn(0f, cr.bottom - minSize),
+                            )
+                            "rt" -> cr.copy(
+                                right = (cr.right + totalDx).coerceIn(cr.left + minSize, 1f),
+                                top = (cr.top + totalDy).coerceIn(0f, cr.bottom - minSize),
+                            )
+                            "lb" -> cr.copy(
+                                left = (cr.left + totalDx).coerceIn(0f, cr.right - minSize),
+                                bottom = (cr.bottom + totalDy).coerceIn(cr.top + minSize, 1f),
+                            )
+                            "rb" -> cr.copy(
+                                right = (cr.right + totalDx).coerceIn(cr.left + minSize, 1f),
+                                bottom = (cr.bottom + totalDy).coerceIn(cr.top + minSize, 1f),
+                            )
+                            "l" -> cr.copy(left = (cr.left + totalDx).coerceIn(0f, cr.right - minSize))
+                            "r" -> cr.copy(right = (cr.right + totalDx).coerceIn(cr.left + minSize, 1f))
+                            "t" -> cr.copy(top = (cr.top + totalDy).coerceIn(0f, cr.bottom - minSize))
+                            "b" -> cr.copy(bottom = (cr.bottom + totalDy).coerceIn(cr.top + minSize, 1f))
+                            "rb_lock" -> {
+                                val na = normAspect(currentCropAspect, currentCropImage)
+                                val aL = cr.left; val aT = cr.top
+                                val maxW = (1f - aL).coerceAtLeast(minSize)
+                                var nw = ((cr.right + totalDx) - aL).coerceIn(minSize, maxW)
+                                var nh = nw / na
+                                if (aT + nh > 1f) { nh = 1f - aT; nw = nh * na }
+                                cr.copy(right = aL + nw, bottom = aT + nh)
+                            }
+                            "lt_lock" -> {
+                                val na = normAspect(currentCropAspect, currentCropImage)
+                                val aR = cr.right; val aB = cr.bottom
+                                val maxW = aR.coerceAtLeast(minSize)
+                                var nw = (aR - (cr.left + totalDx)).coerceIn(minSize, maxW)
+                                var nh = nw / na
+                                var nT = aB - nh
+                                if (nT < 0f) { nh = aB; nw = nh * na; nT = 0f }
+                                cr.copy(left = aR - nw, top = nT)
+                            }
+                            "rt_lock" -> {
+                                val na = normAspect(currentCropAspect, currentCropImage)
+                                val aL = cr.left; val aB = cr.bottom
+                                val maxW = (1f - aL).coerceAtLeast(minSize)
+                                var nw = ((cr.right + totalDx) - aL).coerceIn(minSize, maxW)
+                                var nh = nw / na
+                                var nT = aB - nh
+                                if (nT < 0f) { nh = aB; nw = nh * na; nT = 0f }
+                                cr.copy(right = aL + nw, top = nT)
+                            }
+                            "lb_lock" -> {
+                                val na = normAspect(currentCropAspect, currentCropImage)
+                                val aR = cr.right; val aT = cr.top
+                                val maxW = aR.coerceAtLeast(minSize)
+                                var nw = (aR - (cr.left + totalDx)).coerceIn(minSize, maxW)
+                                var nh = nw / na
+                                if (aT + nh > 1f) { nh = 1f - aT; nw = nh * na }
+                                cr.copy(left = aR - nw, bottom = aT + nh)
+                            }
+                            "r_lock" -> {
+                                val na = normAspect(currentCropAspect, currentCropImage)
+                                val aL = cr.left
+                                val maxW = (1f - aL).coerceAtLeast(minSize)
+                                var nw = ((cr.right + totalDx) - aL).coerceIn(minSize, maxW)
+                                var nh = nw / na
+                                val cy = (cr.top + cr.bottom) / 2f
+                                var nT = cy - nh / 2f
+                                var nB = cy + nh / 2f
+                                if (nT < 0f) { nT = 0f; nB = nh; nh = nB - nT; nw = nh * na }
+                                if (nB > 1f) { nB = 1f; nh = nB - nT; nw = nh * na }
+                                cr.copy(right = aL + nw, top = nT, bottom = nB)
+                            }
+                            "l_lock" -> {
+                                val na = normAspect(currentCropAspect, currentCropImage)
+                                val aR = cr.right
+                                val maxW = aR.coerceAtLeast(minSize)
+                                var nw = (aR - (cr.left + totalDx)).coerceIn(minSize, maxW)
+                                var nh = nw / na
+                                val cy = (cr.top + cr.bottom) / 2f
+                                var nT = cy - nh / 2f
+                                var nB = cy + nh / 2f
+                                if (nT < 0f) { nT = 0f; nB = nh; nh = nB - nT; nw = nh * na }
+                                if (nB > 1f) { nB = 1f; nh = nB - nT; nw = nh * na }
+                                cr.copy(left = aR - nw, top = nT, bottom = nB)
+                            }
+                            "b_lock" -> {
+                                val na = normAspect(currentCropAspect, currentCropImage)
+                                val aT = cr.top
+                                val maxH = (1f - aT).coerceAtLeast(minSize)
+                                var nh = ((cr.bottom + totalDy) - aT).coerceIn(minSize, maxH)
+                                var nw = nh * na
+                                val cx = (cr.left + cr.right) / 2f
+                                var nL = cx - nw / 2f
+                                var nR = cx + nw / 2f
+                                if (nL < 0f) { nL = 0f; nR = nw; nw = nR - nL; nh = nw / na }
+                                if (nR > 1f) { nR = 1f; nw = nR - nL; nh = nw / na }
+                                cr.copy(left = nL, right = nR, bottom = aT + nh)
+                            }
+                            "t_lock" -> {
+                                val na = normAspect(currentCropAspect, currentCropImage)
+                                val aB = cr.bottom
+                                val maxH = aB.coerceAtLeast(minSize)
+                                var nh = (aB - (cr.top + totalDy)).coerceIn(minSize, maxH)
+                                var nw = nh * na
+                                val cx = (cr.left + cr.right) / 2f
+                                var nL = cx - nw / 2f
+                                var nR = cx + nw / 2f
+                                if (nL < 0f) { nL = 0f; nR = nw; nw = nR - nL; nh = nw / na }
+                                if (nR > 1f) { nR = 1f; nw = nR - nL; nh = nw / na }
+                                cr.copy(left = nL, right = nR, top = aB - nh)
+                            }
+                            else -> cr
+                        }
+                        currentOnAction(PockRefAction.UpdateCropRect(newRect))
+                    }
+                    dragEdge = null
+                }
+            },
             contentAlignment = Alignment.Center,
         ) {
             // 1b. Floating image layer — anchored in the
             //     center of the upper area. The
-            //     [pointerInput] is on this Box so drag
-            //     events flow naturally; the [shadow] /
-            //     [background] / [clip] chain applies the
-            //     iOS-PiP card silhouette. The 16dp shadow
+            //     [pointerInput] is on the OUTER Box
+            //     (the full upper area), not here, so
+            //     that touch events at the layer's edges
+            //     (where crop handles sit) are received.
+            //     The [shadow] / [background] / [clip]
+            //     chain applies the iOS-PiP card
+            //     silhouette. The 16dp shadow
             //     is decorative (no layout cost); with
             //     [clip = false] it would otherwise show
             //     rectangular corners outside the rounded
@@ -3367,174 +3638,7 @@ private fun BoxScope.CropOverlay(
                     .background(
                         color = MaterialTheme.colorScheme.surface,
                         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-            )
-            .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDragStart = { start ->
-                        val c = calcScreenCoords()
-                        val cL = c[0]; val cT = c[1]; val cR = c[2]; val cB = c[3]
-                        val tp = touchPadding
-                        val inLeft = start.x in (cL - tp)..(cL + tp)
-                        val inRight = start.x in (cR - tp)..(cR + tp)
-                        val inTop = start.y in (cT - tp)..(cT + tp)
-                        val inBottom = start.y in (cB - tp)..(cB + tp)
-                        val inside = start.x > cL + tp && start.x < cR - tp &&
-                                start.y > cT + tp && start.y < cB - tp
-                        val nearBox = start.x > cL - tp && start.x < cR + tp &&
-                                start.y > cT - tp && start.y < cB + tp
-                        val isFree = currentCropAspect == CropAspect.FREE
-
-                        dragEdge = when {
-                            inside -> "move"
-                            inLeft && inTop -> if (isFree) "lt" else "lt_lock"
-                            inRight && inTop -> if (isFree) "rt" else "rt_lock"
-                            inLeft && inBottom -> if (isFree) "lb" else "lb_lock"
-                            inRight && inBottom -> if (isFree) "rb" else "rb_lock"
-                            inLeft -> if (isFree) "l" else "l_lock"
-                            inRight -> if (isFree) "r" else "r_lock"
-                            inTop -> if (isFree) "t" else "t_lock"
-                            inBottom -> if (isFree) "b" else "b_lock"
-                            nearBox -> "move"
-                            else -> null
-                        }
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        val edge = dragEdge ?: return@detectDragGestures
-                        val coords = calcScreenCoords()
-                        val imgW = coords[4]
-                        val imgH = coords[5]
-                        val dx = dragAmount.x / imgW
-                        val dy = dragAmount.y / imgH
-                        val cr = currentCropRect
-                        val minSize = 0.08f
-                        val newRect = when (edge) {
-                            "move" -> {
-                                val nw = cr.cropWidth
-                                val nh = cr.cropHeight
-                                val nl = (cr.left + dx).coerceIn(0f, 1f - nw)
-                                val nt = (cr.top + dy).coerceIn(0f, 1f - nh)
-                                cr.copy(left = nl, top = nt, right = nl + nw, bottom = nt + nh)
-                            }
-                            "lt" -> cr.copy(
-                                left = (cr.left + dx).coerceIn(0f, cr.right - minSize),
-                                top = (cr.top + dy).coerceIn(0f, cr.bottom - minSize),
-                            )
-                            "rt" -> cr.copy(
-                                right = (cr.right + dx).coerceIn(cr.left + minSize, 1f),
-                                top = (cr.top + dy).coerceIn(0f, cr.bottom - minSize),
-                            )
-                            "lb" -> cr.copy(
-                                left = (cr.left + dx).coerceIn(0f, cr.right - minSize),
-                                bottom = (cr.bottom + dy).coerceIn(cr.top + minSize, 1f),
-                            )
-                            "rb" -> cr.copy(
-                                right = (cr.right + dx).coerceIn(cr.left + minSize, 1f),
-                                bottom = (cr.bottom + dy).coerceIn(cr.top + minSize, 1f),
-                            )
-                            "l" -> cr.copy(left = (cr.left + dx).coerceIn(0f, cr.right - minSize))
-                            "r" -> cr.copy(right = (cr.right + dx).coerceIn(cr.left + minSize, 1f))
-                            "t" -> cr.copy(top = (cr.top + dy).coerceIn(0f, cr.bottom - minSize))
-                            "b" -> cr.copy(bottom = (cr.bottom + dy).coerceIn(cr.top + minSize, 1f))
-                            "rb_lock" -> {
-                                val na = normAspect(currentCropAspect, currentCropImage)
-                                val aL = cr.left; val aT = cr.top
-                                val maxW = (1f - aL).coerceAtLeast(minSize)
-                                var nw = ((cr.right + dx) - aL).coerceIn(minSize, maxW)
-                                var nh = nw / na
-                                if (aT + nh > 1f) { nh = 1f - aT; nw = nh * na }
-                                cr.copy(right = aL + nw, bottom = aT + nh)
-                            }
-                            "lt_lock" -> {
-                                val na = normAspect(currentCropAspect, currentCropImage)
-                                val aR = cr.right; val aB = cr.bottom
-                                val maxW = aR.coerceAtLeast(minSize)
-                                var nw = (aR - (cr.left + dx)).coerceIn(minSize, maxW)
-                                var nh = nw / na
-                                var nT = aB - nh
-                                if (nT < 0f) { nh = aB; nw = nh * na; nT = 0f }
-                                cr.copy(left = aR - nw, top = nT)
-                            }
-                            "rt_lock" -> {
-                                val na = normAspect(currentCropAspect, currentCropImage)
-                                val aL = cr.left; val aB = cr.bottom
-                                val maxW = (1f - aL).coerceAtLeast(minSize)
-                                var nw = ((cr.right + dx) - aL).coerceIn(minSize, maxW)
-                                var nh = nw / na
-                                var nT = aB - nh
-                                if (nT < 0f) { nh = aB; nw = nh * na; nT = 0f }
-                                cr.copy(right = aL + nw, top = nT)
-                            }
-                            "lb_lock" -> {
-                                val na = normAspect(currentCropAspect, currentCropImage)
-                                val aR = cr.right; val aT = cr.top
-                                val maxW = aR.coerceAtLeast(minSize)
-                                var nw = (aR - (cr.left + dx)).coerceIn(minSize, maxW)
-                                var nh = nw / na
-                                if (aT + nh > 1f) { nh = 1f - aT; nw = nh * na }
-                                cr.copy(left = aR - nw, bottom = aT + nh)
-                            }
-                            "r_lock" -> {
-                                val na = normAspect(currentCropAspect, currentCropImage)
-                                val aL = cr.left
-                                val maxW = (1f - aL).coerceAtLeast(minSize)
-                                var nw = ((cr.right + dx) - aL).coerceIn(minSize, maxW)
-                                var nh = nw / na
-                                val cy = (cr.top + cr.bottom) / 2f
-                                var nT = cy - nh / 2f
-                                var nB = cy + nh / 2f
-                                if (nT < 0f) { nT = 0f; nB = nh; nh = nB - nT; nw = nh * na }
-                                if (nB > 1f) { nB = 1f; nh = nB - nT; nw = nh * na }
-                                cr.copy(right = aL + nw, top = nT, bottom = nB)
-                            }
-                            "l_lock" -> {
-                                val na = normAspect(currentCropAspect, currentCropImage)
-                                val aR = cr.right
-                                val maxW = aR.coerceAtLeast(minSize)
-                                var nw = (aR - (cr.left + dx)).coerceIn(minSize, maxW)
-                                var nh = nw / na
-                                val cy = (cr.top + cr.bottom) / 2f
-                                var nT = cy - nh / 2f
-                                var nB = cy + nh / 2f
-                                if (nT < 0f) { nT = 0f; nB = nh; nh = nB - nT; nw = nh * na }
-                                if (nB > 1f) { nB = 1f; nh = nB - nT; nw = nh * na }
-                                cr.copy(left = aR - nw, top = nT, bottom = nB)
-                            }
-                            "b_lock" -> {
-                                val na = normAspect(currentCropAspect, currentCropImage)
-                                val aT = cr.top
-                                val maxH = (1f - aT).coerceAtLeast(minSize)
-                                var nh = ((cr.bottom + dy) - aT).coerceIn(minSize, maxH)
-                                var nw = nh * na
-                                val cx = (cr.left + cr.right) / 2f
-                                var nL = cx - nw / 2f
-                                var nR = cx + nw / 2f
-                                if (nL < 0f) { nL = 0f; nR = nw; nw = nR - nL; nh = nw / na }
-                                if (nR > 1f) { nR = 1f; nw = nR - nL; nh = nw / na }
-                                cr.copy(left = nL, right = nR, bottom = aT + nh)
-                            }
-                            "t_lock" -> {
-                                val na = normAspect(currentCropAspect, currentCropImage)
-                                val aB = cr.bottom
-                                val maxH = aB.coerceAtLeast(minSize)
-                                var nh = (aB - (cr.top + dy)).coerceIn(minSize, maxH)
-                                var nw = nh * na
-                                val cx = (cr.left + cr.right) / 2f
-                                var nL = cx - nw / 2f
-                                var nR = cx + nw / 2f
-                                if (nL < 0f) { nL = 0f; nR = nw; nw = nR - nL; nh = nw / na }
-                                if (nR > 1f) { nR = 1f; nw = nR - nL; nh = nw / na }
-                                cr.copy(left = nL, right = nR, top = aB - nh)
-                            }
-                            else -> cr
-                        }
-                        currentOnAction(PockRefAction.UpdateCropRect(newRect))
-                    },
-                    onDragEnd = { dragEdge = null },
-                    onDragCancel = { dragEdge = null },
-                )
-            },
+                    ),
     ) {
         // V_NOW: render the actual cropped image as the
         // bottom layer inside the chrome canvas. The layer's
@@ -3549,7 +3653,7 @@ private fun BoxScope.CropOverlay(
         // crop tool. The dim / border / grid / handles paint
         // on top of this image so the user can see both
         // the picture AND the crop overlay at the same time.
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(modifier = Modifier.fillMaxSize().graphicsLayer(clip = false)) {
             val c = calcScreenCoords()
             val cL = c[0]; val cT = c[1]; val cR = c[2]; val cB = c[3]
             val cW = cR - cL; val cH = cB - cT
@@ -3633,11 +3737,32 @@ private fun BoxScope.CropOverlay(
                         scaleY = if (cropImage.flipY) -1f else 1f,
                         pivot = Offset(size.width / 2f, size.height / 2f),
                     ) {
-                        drawImage(
-                            image = displayBitmap,
-                            dstOffset = IntOffset(offX.toInt(), offY.toInt()),
-                            dstSize = IntSize(drawW.toInt().coerceAtLeast(1), drawH.toInt().coerceAtLeast(1)),
-                        )
+                        // V_NOW: clipPath the image draw to a
+                        // rounded rect matching the floating
+                        // layer's [ChromeCornerRadius], so the
+                        // picture itself shows the iOS-PiP
+                        // card silhouette WITHOUT clipping the
+                        // whole Box (which would clip the
+                        // corner handles too).
+                        clipPath(
+                            path = androidx.compose.ui.graphics.Path().apply {
+                                addRoundRect(
+                                    androidx.compose.ui.geometry.RoundRect(
+                                        left = 0f, top = 0f,
+                                        right = size.width, bottom = size.height,
+                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(
+                                            with(density) { Dimens.ChromeCornerRadius.toPx() }
+                                        )
+                                    )
+                                )
+                            }
+                        ) {
+                            drawImage(
+                                image = displayBitmap,
+                                dstOffset = IntOffset(offX.toInt(), offY.toInt()),
+                                dstSize = IntSize(drawW.toInt().coerceAtLeast(1), drawH.toInt().coerceAtLeast(1)),
+                            )
+                        }
                     }
                 }
             }
@@ -3646,11 +3771,22 @@ private fun BoxScope.CropOverlay(
             drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cR, 0f), size = Size(size.width - cR, size.height))
             drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cL, 0f), size = Size(cW, cT))
             drawRect(color = Color.Black.copy(alpha = 0.3f), topLeft = Offset(cL, cB), size = Size(cW, size.height - cB))
+            // V_NOW (2026-06-11, user spec "裁切框 ... 蓝色边框"
+            // + reference screenshot): crop selection border is
+            // now M3 primary blue (was white) — matches the
+            // blue inner ring of the corner handles (the
+            // [Color(0xFF2196F3)] two lines below) so the
+            // visual language is "blue = crop selection" across
+            // the border + handles. Border width bumped from
+            // 2f → 3f so it reads as a deliberate selection
+            // (the 2f white border was previously nearly
+            // invisible against the dimmed surrounding
+            // image).
             drawRect(
-                color = Color.White,
+                color = Color(0xFF2196F3),
                 topLeft = Offset(cL, cT),
                 size = Size(cW, cH),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
             )
             val gridColor = Color.White.copy(alpha = 0.35f)
             for (i in 1..2) {
@@ -3659,6 +3795,14 @@ private fun BoxScope.CropOverlay(
                 val fy = cT + cH * i / 3f
                 drawLine(gridColor, Offset(cL, fy), Offset(cR, fy), strokeWidth = 1f)
             }
+            // V_NOW (2026-06-11): only 4 corner handles — no
+            // mid-edge handles. The corner circles sit ON the
+            // crop rect corner (no diagonal offset) so the
+            // entire circle is always visible, even when the
+            // crop rect is at the image edge. The previous
+            // 12dp diagonal offset pushed the circles into
+            // the dimmed area, which made them half-hidden
+            // when the crop rect touched the image border.
             val cornerLen = 28f
             val cornerW = 4f
             val cornerColor = Color.White
@@ -3674,9 +3818,10 @@ private fun BoxScope.CropOverlay(
                 }
             }
             val handlePositions = listOf(
-                Offset(cL, cT), Offset(cR, cT), Offset(cL, cB), Offset(cR, cB),
-                Offset((cL + cR) / 2f, cT), Offset((cL + cR) / 2f, cB),
-                Offset(cL, (cT + cB) / 2f), Offset(cR, (cT + cB) / 2f),
+                Offset(cL, cT),
+                Offset(cR, cT),
+                Offset(cL, cB),
+                Offset(cR, cB),
             )
             handlePositions.forEach { pos ->
                 drawCircle(color = Color.White, radius = handleRadius, center = pos)
