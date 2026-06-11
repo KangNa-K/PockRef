@@ -464,7 +464,16 @@ private fun RecentFileTile(
                             )
                         }
                     }
-                    if (entry.coverImageId != null && !multiSelectMode) {
+                    // V_NOW (2026-06-11): removed the
+                    // "cover image" star badge from the
+                    // recent-files grid. Users found the
+                    // green star in the top-right corner
+                    // confusing — it looked like a favorite
+                    // marker rather than a "this scene has
+                    // a cover image" hint. The cover image
+                    // can still be set / inspected inside
+                    // the scene itself.
+                    if (false && entry.coverImageId != null && !multiSelectMode) {
                         Box(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
