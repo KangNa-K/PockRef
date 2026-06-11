@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -48,7 +50,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.Composable
@@ -71,6 +75,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp
 import com.pockref.app.model.RecentSceneEntry
 import com.pockref.app.model.RecentSortMode
 import com.pockref.app.model.pickCoverTarget
@@ -609,6 +614,127 @@ private fun RecentFileTile(
         )
     }
 }
+
+/**
+ * V_NOW (2026-06-11, swipe v6 — progressive reveal):
+ * The action button that gets revealed under a swiping
+ * recent-files tile. Anchored to one side of the tile
+ * (start for pin, end for delete); the parent passes a
+ * normalized [progress] in `0f..1f` mapped from the
+ * absolute drag distance between [SwipeDimens.visualRevealStart]
+ * and [SwipeDimens.commitThreshold].
+ *
+ * Geometry interpolates linearly for size and with an
+ * ease-out curve for corner radius (the corner "rounds
+ * out" faster, giving the visual feel of a chip → pill
+ * → circle without overshooting).
+ *
+ * The [locked] flag freezes the button at its expanded
+ * size, raises elevation, and reveals the trailing text
+ * label ("删除" / "置顶"). Locking is what the parent
+ * does in the "the user has decided" gap between
+ * commit-threshold reached and 3-second auto-dismiss —
+ * see the [RecentFileTile] drag-stop handler.
+ *
+ * M3 color usage:
+ *   - Delete: [MaterialTheme.colorScheme.errorContainer]
+ *     paired with [MaterialTheme.colorScheme.onErrorContainer]
+ *     for icon and label. Plain [colorScheme.error] is
+ *     reserved for text-grade destructive emphasis;
+ *     using it as a large background is too aggressive.
+ *   - Pin: [MaterialTheme.colorScheme.secondaryContainer]
+ *     paired with [colorScheme.onSecondaryContainer].
+ *     Matches the pinned corner badge in
+ *     [RecentFileTile] (the small
+ *     [Icons.Rounded.PushPin] chip in the top-left
+ *     of a pinned tile) so the swipe-action button
+ *     and the post-action badge read as the same
+ *     affordance in two different states ("intent"
+ *     vs "applied"). The user explicitly asked for
+ *     this match (2026-06-11) — the gesture's
+ *     "pin" affordance should be visually identical
+ *     to the post-pin badge.
+ */
+@Composable
+private fun SwipeActionButton(
+    kind: SwipeActionKind,
+    progress: Float,
+    locked: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val clamped = progress.coerceIn(0f, 1f)
+    // Ease-out for the corner: feels like a chip → pill
+    // transition. Linear for size — size is the primary
+    // "growth" signal and easing it would feel laggy.
+    val easeOut = 1f - (1f - clamped) * (1f - clamped)
+    val size = lerp(SwipeDimens.buttonSizeCollapsed.value, SwipeDimens.buttonSizeExpanded.value, clamped).dp
+    val corner = lerp(
+        SwipeDimens.buttonCornerCollapsed.value,
+        SwipeDimens.buttonCornerExpanded.value,
+        easeOut,
+    ).dp
+    // Below progress 0.5 the button is barely visible;
+    // cap the dim end at 0.5 alpha so the user can still
+    // see "something is forming" without it being a
+    // confusing flicker.
+    val alpha = if (locked) 1f else 0.5f + 0.5f * clamped
+
+    val container = when (kind) {
+        SwipeActionKind.Delete -> MaterialTheme.colorScheme.errorContainer
+        SwipeActionKind.Pin -> MaterialTheme.colorScheme.secondaryContainer
+    }
+    val onContainer = when (kind) {
+        SwipeActionKind.Delete -> MaterialTheme.colorScheme.onErrorContainer
+        SwipeActionKind.Pin -> MaterialTheme.colorScheme.onSecondaryContainer
+    }
+    val icon = when (kind) {
+        SwipeActionKind.Delete -> Icons.Rounded.Delete
+        SwipeActionKind.Pin -> Icons.Rounded.PushPin
+    }
+    val label = when (kind) {
+        SwipeActionKind.Delete -> "删除"
+        SwipeActionKind.Pin -> "置顶"
+    }
+
+    Surface(
+        color = container.copy(alpha = alpha),
+        contentColor = onContainer,
+        shape = RoundedCornerShape(corner),
+        tonalElevation = if (locked) 3.dp else 0.dp,
+        shadowElevation = if (locked) 6.dp else 1.dp,
+        modifier = modifier.size(size),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(enabled = locked, onClick = onClick)
+                .padding(horizontal = if (locked) 12.dp else 0.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                modifier = Modifier.size(if (locked) 20.dp else 16.dp),
+            )
+            // V_NOW (2026-06-11): the label fades in with
+            // the lock transition rather than scaling with
+            // progress, to avoid the "growing text" jitter
+            // that labels trigger at small tile sizes.
+            if (locked) {
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+private enum class SwipeActionKind { Delete, Pin }
 
 /**
  * V_NOW (2026-06-10 user spec "启动页的文件列表里的文件名
