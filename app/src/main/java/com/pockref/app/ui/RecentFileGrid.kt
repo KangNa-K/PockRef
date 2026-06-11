@@ -78,6 +78,60 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * V_NOW (2026-06-11, swipe v6 — progressive reveal):
+ * Token set for the progressive swipe-to-action UX on
+ * the recent-files grid. Lives next to the only caller
+ * to keep the change surface small; if a second screen
+ * ever needs the same vocabulary, hoist to a top-level
+ * theme/Dimens module.
+ *
+ * Distance thresholds tuned for a 1:1 grid tile in a
+ * 3/4/5 column layout (Compact/Medium/Expanded):
+ *   - [visualRevealStart] = 12 dp — below this, the
+ *     user is just noise / jitter; the button stays
+ *     invisible and the thumb does not move. This
+ *     matches Android's 8 dp touch slop and adds a
+ *     small safety margin.
+ *   - [commitThreshold] = 64 dp — past this, the user
+ *     has clearly committed to the action; the button
+ *     snaps to its full size and stays there waiting
+ *     for a tap (or auto-dismisses in 3 s).
+ *   - [maxDrag] = 112 dp — hard cap. The thumb stops
+ *     here even if the user keeps dragging; this is
+ *     enough to fully expose a 48 dp button plus its
+ *     right-edge breathing room.
+ *
+ * v6 is the only path — the v5 velocity fast-path
+ * "full-tile replace" delete surface is gone
+ * (2026-06-11 user request). Every swipe, regardless
+ * of release velocity, goes through the progressive
+ * reveal + tap-to-confirm flow.
+ */
+private object SwipeDimens {
+    val visualRevealStart = 12.dp
+    val commitThreshold = 64.dp
+    val maxDrag = 112.dp
+
+    // V_NOW (2026-06-11, swipe v6 grid-tile tuning):
+    // collapsed 24→32 dp, expanded 48→40 dp. The
+    // previous 48 dp at commit on a 1:1 grid cell
+    // (~145 dp wide at 3-col Compact) left the
+    // button visually crowded against the edge; 40
+    // dp gives a tighter "edge-anchored chip" feel
+    // that matches the SwipeActionButton being a
+    // secondary affordance, not a primary CTA. Corner
+    // radii scale accordingly so the circle/pill
+    // proportion stays consistent (size / 2).
+    val buttonSizeCollapsed = 32.dp
+    val buttonSizeExpanded = 40.dp
+    val buttonCornerCollapsed = 16.dp
+    val buttonCornerExpanded = 20.dp
+
+    val autoDismissMs = 3000L
+    val settleMs = 280L
+}
+
 // V_NOW (L2 empty-canvas revamp 2026-06-10 + start-page
 // multi-select 2026-06-10): the recent-files grid that
 // replaces the old RecentFileSection lists. Renders as
