@@ -327,7 +327,6 @@ private fun RecentFileTile(
     // adds an M3 [AlertDialog] so the user has one
     // more chance to cancel a destructive action.
     // Pin is reversible and skips this gate.
-    var showDeleteConfirm by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val draggableState = rememberDraggableState { delta ->
         // Allow both directions: negative = left-swipe (delete),
@@ -663,7 +662,9 @@ private fun RecentFileTile(
                                 imageVector = Icons.Rounded.PushPin,
                                 contentDescription = "已置顶",
                                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .offset(y = 1.dp),
                             )
                         }
                     }
@@ -756,7 +757,8 @@ private fun RecentFileTile(
                                 }
                             }
                             SwipeActionKind.Delete -> {
-                                showDeleteConfirm = true
+                                onSwipeDelete()
+                                swipeLocked = null
                             }
                         }
                     },
@@ -958,79 +960,6 @@ private fun RecentFileTile(
             },
             dismissButton = {
                 Button(onClick = { showRenameDialog = false }) {
-                    Text("取消")
-                }
-            },
-        )
-    }
-    // V_NOW (2026-06-11, swipe v6): delete confirmation
-    // dialog. M3 [AlertDialog] with an error-tinted
-    // confirm button, matching the project's existing
-    // rename dialog style. The dialog lives on the
-    // tile so a multi-tile lock state can show one
-    // dialog per affected tile if needed; in practice
-    // only one tile is locked at a time because
-    // tapping elsewhere cancels.
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = {
-                showDeleteConfirm = false
-                swipeLocked = null
-                scope.launch {
-                    animate(
-                        initialValue = dragOffset,
-                        targetValue = 0f,
-                        animationSpec = tween(
-                            durationMillis = 250,
-                            easing = emphasizedAccelerate,
-                        ),
-                    ) { value, _ -> dragOffset = value }
-                }
-            },
-            icon = {
-                Icon(
-                    imageVector = Icons.Rounded.Delete,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            },
-            title = { Text("删除这个场景?") },
-            text = {
-                Text(
-                    "「${displayLabel(entry.label)}」将移到回收站,30 天后自动清除。",
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showDeleteConfirm = false
-                        swipeLocked = null
-                        onSwipeDelete()
-                    },
-                ) {
-                    Text(
-                        "删除",
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        showDeleteConfirm = false
-                        swipeLocked = null
-                        scope.launch {
-                            animate(
-                                initialValue = dragOffset,
-                                targetValue = 0f,
-                                animationSpec = tween(
-                                    durationMillis = 250,
-                                    easing = emphasizedAccelerate,
-                                ),
-                            ) { value, _ -> dragOffset = value }
-                        }
-                    },
-                ) {
                     Text("取消")
                 }
             },
