@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -694,7 +695,6 @@ private fun RecentFileTile(
                         }
                     }
                 }
-            }
             // 3. v6 progressive action button (layered
             //    ABOVE the thumbnail). Rendered inside
             //    the outer tile Box (403) so it shares
@@ -900,6 +900,7 @@ private fun RecentFileTile(
                         },
                 )
             }
+        }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = displayLabel(entry.label),
@@ -1123,8 +1124,8 @@ private fun SwipeActionButton(
         color = container.copy(alpha = alpha),
         contentColor = onContainer,
         shape = RoundedCornerShape(corner),
-        tonalElevation = if (locked) 3.dp else 0.dp,
-        shadowElevation = if (locked) 6.dp else 1.dp,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
         modifier = modifier.size(size),
     ) {
         Row(
@@ -1138,7 +1139,21 @@ private fun SwipeActionButton(
             Icon(
                 imageVector = icon,
                 contentDescription = label,
-                modifier = Modifier.size(if (locked) 20.dp else 16.dp),
+                modifier = Modifier
+                    .size(if (locked) 20.dp else 16.dp)
+                    .then(
+                        if (kind == SwipeActionKind.Pin) {
+                            // PushPin icon's visual center is
+                            // above its geometric center (the
+                            // pin head is heavy, the tip is
+                            // light); shift down 1 dp to
+                            // optically center it in the
+                            // circular button.
+                            Modifier.offset(y = 1.dp)
+                        } else {
+                            Modifier
+                        }
+                    ),
             )
             // V_NOW (2026-06-11): the label fades in with
             // the lock transition rather than scaling with
