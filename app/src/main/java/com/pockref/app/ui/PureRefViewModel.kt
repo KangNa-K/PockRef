@@ -2062,19 +2062,25 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
      *   - [SecurityException]: URI permission lost
      *     (user revoked the persistable grant in
      *     Settings, or the URI was never persistable
-     *     in the first place — e.g. picked before
-     *     the user added the SAF picker flow)
+     *     in the first place). Treated as "deleted"
+     *     — the entry is a ghost the user can't
+     *     open or re-delete, so we remove it from
+     *     the list.
      *   - [FileNotFoundException]: file already gone
-     *     (deleted out-of-band, moved, etc.)
+     *     (deleted out-of-band, moved, etc.).
+     *     Treated as "deleted" — the file no longer
+     *     exists, so the entry should be removed.
      *   - [UnsupportedOperationException]: the
      *     provider for this URI doesn't implement
      *     delete (some read-only cloud providers)
      *   - [IllegalArgumentException]: the URI is
      *     not a document URI
      *
-     * All of these are caught and logged; the
-     * failed set is returned to the caller for
-     * state-update branching + snackbar message.
+     * [SecurityException] and [FileNotFoundException]
+     * are treated as "deleted" (entry removed from
+     * list). The remaining exceptions map to "failed"
+     * and are returned to the caller for state-update
+     * branching + snackbar message.
      */
     private fun deleteFilesInBatch(
         uris: Set<String>,
@@ -2087,26 +2093,45 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 DocumentsContract.deleteDocument(contentResolver, uri)
                 deleted.add(uriString)
             } catch (e: SecurityException) {
-                // Lost URI permission — log and
-                // treat as a failed delete. The
-                // recent-scenes entry stays in
-                // recents so the user can see
-                // what's there and retry (the
-                // retry will also fail; the
-                // snackbar nudges them to clear
-                // the entry instead).
-                failed.add(uriString)
-                android.util.Log.w(
+                // V_NOW (2026-06-12 "本地已删除文件无法清除" fix):
+                // Lost URI permission — the file
+                // may have been deleted out-of-band
+                // (file manager), moved, or the
+                // persistable grant was revoked.
+                // Either way the entry is a ghost:
+                // the user can't open it, and
+                // retrying delete will also fail.
+                // Remove from the list so the user
+                // isn't stuck with an un-deletable
+                // entry.
+                deleted.add(uriString)
+                android.util.Log.i(
                     "PockRefRecent",
-                    "bulkDelete: SecurityException for $uriString: ${e.message}",
+                    "bulkDelete: lost URI permission, removing entry: $uriString",
+                )
+            } catch (e: java.io.FileNotFoundException) {
+                // V_NOW (2026-06-12 "本地已删除文件无法清除" fix):
+                // file already gone from disk
+                // (deleted out-of-band by the user
+                // via a file manager, moved, etc.).
+                // From the recent-scenes list's
+                // perspective the entry SHOULD be
+                // removed — the file no longer
+                // exists, so keeping the entry is
+                // just a ghost. Treat as "deleted"
+                // so the caller removes it from
+                // the list.
+                deleted.add(uriString)
+                android.util.Log.i(
+                    "PockRefRecent",
+                    "bulkDelete: file already gone, removing entry: $uriString",
                 )
             } catch (e: Throwable) {
-                // FileNotFoundException,
                 // UnsupportedOperationException,
                 // IllegalArgumentException, etc.
-                // All map to "failed" from the
-                // user's perspective — the file
-                // is still on disk / in recents.
+                // These map to "failed" — the
+                // provider doesn't support delete
+                // or the URI is invalid.
                 failed.add(uriString)
                 android.util.Log.w(
                     "PockRefRecent",
