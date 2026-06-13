@@ -48,6 +48,177 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         return Offset(bounds.left, bounds.bottom + gap)
     }
 
+    /**
+     * V_NOW (2026-06-12 "剪贴板多张导入" extension): inner
+     * helper that iterates every [ClipData.Item] in the
+     * clipboard and decodes it as an image. Returns the
+     * successfully-decoded [SceneImage]s plus a per-item
+     * failure count. Must be called from
+     * [Dispatchers.IO] (the [importFromClipboard] caller
+     * is already inside a `withContext(Dispatchers.IO)`
+     * block).
+     *
+     * Per-item failure modes (no URI, unsupported scheme,
+     * empty bytes, decode error, etc.) are caught and
+     * counted in [ClipboardImportResult.failedCount] —
+     * a single bad item never aborts the rest of the
+     * batch. The caller surfaces a partial-success
+     * snackbar when [ClipboardImportResult.failedCount]
+     * is non-zero.
+     *
+     * Items that aren't images (text clips, URL labels,
+     * etc.) are silently skipped — the previous
+     * single-item code only checked `description.mimeType`
+     * for the whole clip; for multi-item clips we check
+     * each item's MIME individually.
+     */
+    private fun importAllFromClipboard(): ClipboardImportResult {
+        val app = mainVm.getApplication<Application>()
+        val clipboard = app.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager
+            ?: return ClipboardImportResult(emptyList(), 0)
+        val clip = clipboard.primaryClip ?: return ClipboardImportResult(emptyList(), 0)
+        if (clip.itemCount == 0) return ClipboardImportResult(emptyList(), 0)
+        val existingImages = mainVm._uiState.value.images
+        val existingCount = existingImages.size
+        val imageSpacing = 8f
+        val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
+
+        val imported = mutableListOf<SceneImage>()
+        var failedCount = 0
+        // V_NOW (2026-06-12 "剪贴板多张导入" extension):
+        // cascadeOrigin tracks the placement Y for the
+        // next image — each new image drops below the
+        // previous one with [imageSpacing] of breathing
+        // room. Stacking starts at [placementOrigin]
+        // (below the existing canvas) so the new images
+        // never overlap the user's existing layout.
+        var cascadeY = placementOrigin.y
+        for (i in 0 until clip.itemCount) {
+            val item = clip.getItemAt(i)
+            // Try to get the URI from the item — Android
+            // stores clipboard image data in (a) a
+            // content URI via item.getUri(), (b) an
+            // inline URI on API 31+, or (c) as a text
+            // representation that happens to be a URI
+            // string. The coerceToText fallback catches
+            // case (c) and the very rare "browser copied
+            // an image address as text" case.
+            val uri = item.uri
+                ?: try {
+                    Uri.parse(item.coerceToText(app)?.toString()?.trim() ?: "")
+                } catch (_: Exception) { null }
+            if (uri == null) {
+                failedCount++
+                continue
+            }
+            val scheme = uri.scheme
+            if (scheme !in listOf("content", "file", "android.resource")) {
+                failedCount++
+                continue
+            }
+            // Per-item try/catch so a single bad URI
+            // doesn't abort the whole batch (e.g. one
+            // content URI's provider has been revoked
+            // while the rest are still readable).
+            val decoded = try {
+                decodeClipboardItem(uri)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                android.util.Log.w(
+                    "PockRefClipboard",
+                    "importAll: ${e.javaClass.simpleName} for $uri: ${e.message}",
+                )
+                null
+            }
+            if (decoded == null) {
+                failedCount++
+                continue
+            }
+            val imgIndex = imported.size
+            val baseWidth = decoded.width.toFloat().coerceAtMost(720f)
+            val scale = baseWidth / decoded.width.toFloat()
+            val baseHeight = decoded.height * scale
+            imported.add(
+                SceneImage(
+                    name = "剪贴板图片_${existingCount + imgIndex + 1}",
+                    mimeType = decoded.mimeType,
+                    imageBytes = decoded.bytes,
+                    intrinsicWidth = decoded.width,
+                    intrinsicHeight = decoded.height,
+                    center = Offset(
+                        placementOrigin.x + baseWidth / 2f,
+                        cascadeY + baseHeight / 2f,
+                    ),
+                    displaySize = Size2D(baseWidth, baseHeight),
+                    zIndex = existingCount + imgIndex,
+                )
+            )
+            // Advance the cascade for the next image.
+            cascadeY += baseHeight + imageSpacing
+        }
+        return ClipboardImportResult(imported, failedCount)
+    }
+
+    /**
+     * Decode a single clipboard item's URI into
+     * (bytes, mimeType, width, height). Returns null
+     * on any decode failure (open fails, optimizer
+     * produces 0×0 output, etc.). Caller decides
+     * what to do with nulls.
+     */
+    private fun decodeClipboardItem(uri: Uri): ClipboardDecodedImage? {
+        val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: return null
+        if (rawBytes.isEmpty()) return null
+        var mime = mainVm.contentResolver.getType(uri)
+        if (mime == null) {
+            val uriStr = uri.toString()
+            mime = when {
+                uriStr.endsWith(".png", ignoreCase = true) -> "image/png"
+                uriStr.endsWith(".webp", ignoreCase = true) -> "image/webp"
+                else -> "image/jpeg"
+            }
+        }
+        val result = mainVm.imageOptimizer.optimize(rawBytes, mime)
+        if (result.width <= 0 || result.height <= 0) return null
+        return ClipboardDecodedImage(
+            bytes = result.bytes,
+            mimeType = result.mimeType,
+            width = result.width,
+            height = result.height,
+        )
+    }
+
+    /**
+     * V_NOW (2026-06-12 "剪贴板多张导入" extension): a
+     * single decoded clipboard image. Internal DTO so
+     * [importAllFromClipboard] and [decodeClipboardItem]
+     * can communicate without dragging Kotlin's stdlib
+     * tuple types into the public surface.
+     */
+    private data class ClipboardDecodedImage(
+        val bytes: ByteArray,
+        val mimeType: String,
+        val width: Int,
+        val height: Int,
+    )
+
+    /**
+     * V_NOW (2026-06-12 "剪贴板多张导入" extension):
+     * the result of a multi-item clipboard import.
+     * [imported] is the list of successfully-decoded
+     * [SceneImage]s; [failedCount] is the number of
+     * items that were skipped (no URI, bad scheme,
+     * decode failure, etc.). The caller turns
+     * [failedCount] into a partial-success snackbar.
+     */
+    private data class ClipboardImportResult(
+        val imported: List<SceneImage>,
+        val failedCount: Int,
+    )
+
     fun dropImages(uris: List<Uri>, dragPermission: android.view.DragAndDropPermissions? = null) {
         if (uris.isEmpty()) return
         mainVm.viewModelScope.launch {
@@ -287,77 +458,31 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
     }
 
     /**
-     * Import an image from the system clipboard. Reads
-     * [ClipboardManager] in an IO coroutine, decodes the
-     * image bytes, and adds a new [SceneImage] to the scene.
+     * Import images from the system clipboard. Reads
+     * [ClipboardManager] in an IO coroutine, decodes each
+     * image's bytes, and adds one or more [SceneImage]s to
+     * the scene. Supports the multi-item clipboard format
+     * — when the user copies multiple images in some
+     * gallery apps / browsers, the [ClipData] has
+     * `itemCount > 1` and each item carries its own URI.
+     *
+     * Per-item failures are isolated: a single item that
+     * can't be decoded / opened does NOT abort the rest
+     * of the batch. The snackbar reports the per-item
+     * failure count when the batch is partial-success.
+     *
      * Surfaces errors via [PockRefViewModel.reportError].
      */
     fun importFromClipboard() {
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
-            val imported = try {
+            // V_NOW (2026-06-12 "剪贴板多张导入" extension):
+            // result is a (imported, failedCount) pair so
+            // partial successes can be reported in the
+            // snackbar (e.g. "已导入 3 张剪贴板图片,2 张失败").
+            val batchResult = try {
                 withContext(Dispatchers.IO) {
-                    val existingImages = mainVm._uiState.value.images
-                    val existingCount = existingImages.size
-                    val imageSpacing = 8f
-                    val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
-                    val app = mainVm.getApplication<Application>()
-                    val clipboard = app.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                        as? android.content.ClipboardManager
-                        ?: return@withContext emptyList<SceneImage>()
-                    val clip = clipboard.primaryClip ?: return@withContext emptyList<SceneImage>()
-                    if (clip.itemCount == 0) return@withContext emptyList<SceneImage>()
-                    // Check if any MIME type starts with "image/"
-                    val hasImageMime = (0 until clip.description.mimeTypeCount).any {
-                        clip.description.getMimeType(it).startsWith("image/")
-                    }
-                    if (!hasImageMime) return@withContext emptyList<SceneImage>()
-                    val item = clip.getItemAt(0)
-                    // Try to get the URI directly from the clip item.
-                    // Android clipboards store image data in several
-                    // ways: (a) a content URI via item.getUri() (most
-                    // common for copied images from browsers / gallery
-                    // apps), (b) an inline URI property on API 31+,
-                    // or (c) as a text representation that happens to
-                    // be a URI string. The old code only tried
-                    // coerceToText → Uri.parse, which misses cases
-                    // (a) and (b) — the clip has image/ MIME but
-                    // coerceToText returns null or a non-URI label,
-                    // so the import silently fails.
-                    val uri = item.uri
-                        ?: try { Uri.parse(item.coerceToText(app)?.toString()?.trim() ?: "") } catch (_: Exception) { null }
-                    if (uri == null) return@withContext emptyList<SceneImage>()
-                    val scheme = uri.scheme
-                    if (scheme !in listOf("content", "file", "android.resource")) return@withContext emptyList<SceneImage>()
-                    val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: return@withContext emptyList<SceneImage>()
-                    if (rawBytes.isEmpty()) return@withContext emptyList<SceneImage>()
-                    var mime = mainVm.contentResolver.getType(uri)
-                    if (mime == null) {
-                        val uriStr = uri.toString()
-                        mime = when {
-                            uriStr.endsWith(".png", ignoreCase = true) -> "image/png"
-                            uriStr.endsWith(".webp", ignoreCase = true) -> "image/webp"
-                            else -> "image/jpeg"
-                        }
-                    }
-                    val result = mainVm.imageOptimizer.optimize(rawBytes, mime)
-                    if (result.width <= 0 || result.height <= 0) return@withContext emptyList<SceneImage>()
-                    val baseWidth = result.width.toFloat().coerceAtMost(720f)
-                    val scale = baseWidth / result.width.toFloat()
-                    val baseHeight = result.height * scale
-                    listOf(
-                        SceneImage(
-                            name = "剪贴板图片_${existingCount + 1}",
-                            mimeType = result.mimeType,
-                            imageBytes = result.bytes,
-                            intrinsicWidth = result.width,
-                            intrinsicHeight = result.height,
-                            center = Offset(placementOrigin.x + baseWidth / 2f, placementOrigin.y + baseHeight / 2f),
-                            displaySize = Size2D(baseWidth, baseHeight),
-                            zIndex = existingCount,
-                        )
-                    )
+                    importAllFromClipboard()
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -366,10 +491,20 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 mainVm.setBusy(false)
                 return@launch
             }
+            val imported = batchResult.imported
+            val failedCount = batchResult.failedCount
             if (imported.isEmpty()) {
                 mainVm.reportError("剪贴板中没有可用的图片", null)
                 mainVm.setBusy(false)
                 return@launch
+            }
+            // V_NOW (2026-06-12 "剪贴板多张导入" extension):
+            // report partial-success when some items
+            // failed. Full success uses the same concise
+            // message as before; full failure is already
+            // caught by the imported.isEmpty() branch above.
+            if (failedCount > 0) {
+                mainVm.reportError("已导入 ${imported.size} 张剪贴板图片,${failedCount} 张失败")
             }
             mainVm.recordUndoState()
             mainVm._uiState.update { state ->
