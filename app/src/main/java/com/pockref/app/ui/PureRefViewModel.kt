@@ -1635,12 +1635,28 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     internal fun rememberRecentScene(uri: Uri, label: String, source: String) {
         val filePath = queryDisplayNameSync(uri) ?: ""
         val fileSize = queryFileSizeSync(uri).coerceAtLeast(0L)
+        // V_NOW (2026-06-11): if the user has already
+        // given this scene a custom label (e.g. via the
+        // start-page rename dialog), preserve it instead
+        // of overwriting with the scene-internal name or
+        // the URI display name. The fallback label is
+        // only used when there is no existing entry or
+        // the existing entry's label is blank.
+        val existingLabel = _uiState.value.recentScenes
+            .firstOrNull { it.uri == uri.toString() }?.label
+        val resolvedLabel = if (!existingLabel.isNullOrBlank()) existingLabel else label
+        val existingPinned = _uiState.value.recentScenes
+            .firstOrNull { it.uri == uri.toString() }?.pinned ?: false
+        val existingCoverImageId = _uiState.value.recentScenes
+            .firstOrNull { it.uri == uri.toString() }?.coverImageId.orEmpty()
         val normalized = RecentSceneEntry(
             uri = uri.toString(),
-            label = label,
+            label = resolvedLabel,
             source = source,
             filePath = filePath,
             fileSize = fileSize,
+            pinned = existingPinned,
+            coverImageId = existingCoverImageId,
         )
         val updated = buildList {
             add(normalized)
@@ -1822,6 +1838,16 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         // implementation that lived here previously — see
         // [com.pockref.app.model.encodeRecentScenes] for the
         // 8-field layout.
+        //
+        // V_NOW (2026-06-11): we intentionally do NOT
+        // auto-prune entries whose underlying file
+        // no longer exists. The user has explicitly
+        // asked for the recent-scenes list to keep
+        // showing entries even when the file is
+        // temporarily unreachable (e.g. SD card
+        // unmounted, file moved). The user can
+        // long-press to delete the entry manually
+        // if they want to remove it permanently.
         return decodeRecentScenes(prefs.getString(RECENT_SCENES_KEY, null))
     }
 
@@ -2425,7 +2451,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             },
             onFailure = { error ->
                 attempts += "input stream@$uri failed:${error.javaClass.simpleName}"
-                reportError("读取场景文件失败: ${error.message ?: error.javaClass.simpleName}", error)
+                reportError("打开文件失败:找不到文件", error)
                 null
             },
         )
@@ -2447,7 +2473,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             },
             onFailure = { error ->
                 attempts += "asset fd@$uri failed:${error.javaClass.simpleName}"
-                reportError("读取场景文件失败: ${error.message ?: error.javaClass.simpleName}", error)
+                reportError("打开文件失败:找不到文件", error)
                 null
             },
         )
@@ -2469,7 +2495,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             },
             onFailure = { error ->
                 attempts += "file descriptor@$uri failed:${error.javaClass.simpleName}"
-                reportError("读取场景文件失败: ${error.message ?: error.javaClass.simpleName}", error)
+                reportError("打开文件失败:找不到文件", error)
                 null
             },
         )

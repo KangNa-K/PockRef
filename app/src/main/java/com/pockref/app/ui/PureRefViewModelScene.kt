@@ -535,7 +535,16 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (error: Throwable) {
-                mainVm.reportError("打开场景失败: ${error.message ?: error.javaClass.simpleName}", error)
+                // V_NOW (2026-06-11): report the error
+                // but keep the recent-scenes entry so the
+                // user can re-attempt (e.g. the file may
+                // be temporarily locked or in a transient
+                // bad state) or delete it manually from
+                // the start page. Auto-removing was too
+                // aggressive — the user wanted the
+                // recent entry to survive a failed open
+                // attempt.
+                mainVm.reportError("打开文件失败:找不到文件", error)
                 mainVm.setBusy(false)
                 return@launch
             }
@@ -543,17 +552,23 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.redoStack.clear()
             mainVm.sceneGestureActive = false
             mainVm.gestureUndoRecorded = false
-            mainVm.rememberRecentScene(uri, scene.name.ifBlank { mainVm.queryDisplayNameSync(uri) ?: "Scene" }, "Opened")
+            mainVm.rememberRecentScene(uri, mainVm.queryDisplayNameSync(uri)?.let { SceneNaming.fromPurFileName(it) } ?: scene.name.ifBlank { "Scene" }, "Opened")
             mainVm._uiState.update {
                 val bg = if (mainVm.isImportedPurFile) mainVm.appPrefs.defaultBackgroundPreset.color else scene.backgroundColor
-                // Derive the display name through [SceneNaming] so
-                // the stored value follows the same convention as
-                // freshly-imported scenes. If the embedded .pur has
-                // its own name we keep it; if it's blank (some .pur
-                // files don't store a name) we fall back to the
-                // file's display name.
-                val displaySceneName = scene.name.ifBlank {
-                    SceneNaming.fromPurFileName(mainVm.queryDisplayNameSync(uri) ?: "Scene")
+                // V_NOW (2026-06-11): prefer the disk
+                // filename (URI display name) over the
+                // scene-internal name so that when the
+                // user renames the file in a file
+                // manager the app reflects the new
+                // name. Only fall back to
+                // [scene.name] when the URI query
+                // returns null (e.g. the provider
+                // doesn't support DISPLAY_NAME).
+                val uriDisplayName = mainVm.queryDisplayNameSync(uri)
+                val displaySceneName = if (!uriDisplayName.isNullOrBlank()) {
+                    SceneNaming.fromPurFileName(uriDisplayName)
+                } else {
+                    scene.name.ifBlank { "Scene" }
                 }
                 it.copy(
                     sceneName = SceneNaming.sanitizeForStorage(displaySceneName),
