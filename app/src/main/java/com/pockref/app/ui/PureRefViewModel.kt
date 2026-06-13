@@ -1661,15 +1661,41 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
-    // V_NOW (L2 polish 2026-06-10): rename a recent entry's
-    // display label. Re-serializes the prefs entry so the
-    // new label survives process death. Empty newLabel is
-    // silently dropped.
+    // V_NOW (L2 polish 2026-06-10 + 2026-06-11 "label 与磁盘不同步"
+    // fix): rename a recent entry's display label. For file:// URIs
+    // the on-disk .pur file is also renamed so the start-page label
+    // and the file manager view stay in sync. The prefs row is
+    // re-serialized with the new label + (for file URIs) the new
+    // filePath + new uri. Empty newLabel is silently dropped.
     internal fun renameRecentScene(uri: String, newLabel: String) {
         if (newLabel.isBlank()) return
         if (_uiState.value.recentScenes.none { it.uri == uri }) return
+
+        // Try to rename the on-disk .pur file when we can.
+        // The function returns the (uri, filePath) to use in
+        // the persisted row — they may differ from the input
+        // if the file was actually renamed, or may be the
+        // original values if rename isn't supported for this
+        // URI (e.g. content:// on Android 11+ where the SAF
+        // tree doesn't expose writable rename for files the
+        // app didn't create).
+        val (resolvedUri, resolvedFilePath) = renameUnderlyingFile(
+            uri = Uri.parse(uri),
+            oldLabel = _uiState.value.recentScenes.first { it.uri == uri }.label,
+            newLabel = newLabel,
+        )
+        val resolvedUriString = resolvedUri.toString()
+
         val updated = _uiState.value.recentScenes.map {
-            if (it.uri == uri) it.copy(label = newLabel) else it
+            if (it.uri == uri) {
+                it.copy(
+                    label = newLabel,
+                    uri = resolvedUriString,
+                    filePath = resolvedFilePath,
+                )
+            } else {
+                it
+            }
         }
         prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
             listOf(
@@ -1684,6 +1710,91 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             ).joinToString("|")
         }).apply()
         _uiState.update { it.copy(recentScenes = updated) }
+    }
+
+    /**
+     * Try to rename the underlying .pur file so the start-page
+     * label and the file manager view stay in sync.
+     *
+     * Returns the (uri, filePath) pair to persist in
+     * [RecentSceneEntry]. For file:// URIs we use
+     * [java.io.File.renameTo] and rebuild the uri. For SAF
+     * document URIs we attempt
+     * [android.provider.DocumentsContract.renameDocument] —
+     * this works on most providers (Files app, Documents UI,
+     * Drive, SD card) but is a no-op on MediaStore (which
+     * doesn't allow renaming through the SAF tree). On a
+     * no-op we keep the original uri/filePath.
+     */
+    private fun renameUnderlyingFile(
+        uri: Uri,
+        oldLabel: String,
+        newLabel: String,
+    ): Pair<Uri, String> {
+        val context = getApplication<Application>()
+        val currentEntry = _uiState.value.recentScenes.firstOrNull { it.uri == uri.toString() }
+        val currentFilePath = currentEntry?.filePath ?: ""
+        // V_NOW (2026-06-11): strip the .pur extension
+        // from oldLabel before computing the desired
+        // new name — the new label typed by the user may
+        // or may not include the extension, and we want
+        // the file on disk to always end in .pur.
+        val newName = if (newLabel.endsWith(".pur", ignoreCase = true)) {
+            newLabel
+        } else {
+            "$newLabel.pur"
+        }
+        try {
+            when (uri.scheme) {
+                "file" -> {
+                    val oldFile = java.io.File(uri.path ?: return uri to currentFilePath)
+                    val parent = oldFile.parentFile ?: return uri to currentFilePath
+                    val newFile = java.io.File(parent, newName)
+                    if (oldFile.absolutePath == newFile.absolutePath) {
+                        return uri to currentFilePath
+                    }
+                    if (!oldFile.renameTo(newFile)) {
+                        android.util.Log.w(
+                            "PockRefRename",
+                            "File.renameTo returned false for ${oldFile.absolutePath} -> ${newFile.absolutePath}",
+                        )
+                        return uri to currentFilePath
+                    }
+                    return Uri.fromFile(newFile) to newName
+                }
+                "content" -> {
+                    val resolver = context.contentResolver
+                    val newDisplayName = newName
+                    val renamed = runCatching {
+                        android.provider.DocumentsContract.renameDocument(
+                            resolver,
+                            uri,
+                            newDisplayName,
+                        )
+                    }.getOrNull()
+                    return if (renamed != null) {
+                        // Re-query the display name so the
+                        // persisted [filePath] matches the
+                        // new file.
+                        val refreshedName = queryDisplayNameSync(renamed) ?: newDisplayName
+                        renamed to refreshedName
+                    } else {
+                        // Provider doesn't support rename
+                        // (e.g. MediaStore on some OEMs).
+                        // Just keep the original uri but
+                        // update the persisted label so
+                        // the start page shows the new
+                        // name even if the file manager
+                        // shows the old one.
+                        uri to currentFilePath
+                    }
+                }
+                else -> return uri to currentFilePath
+            }
+        } catch (t: Throwable) {
+            android.util.Log.e("PockRefRename", "rename failed", t)
+            return uri to currentFilePath
+        }
     }
 
     internal fun removeRecentScene(uri: String) {
