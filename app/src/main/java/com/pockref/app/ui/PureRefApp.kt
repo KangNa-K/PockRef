@@ -2003,10 +2003,29 @@ fun PockRefApp(
                 state = state,
                 onAction = onAction,
             )
+            // V_NOW (2026-06-16 user feedback "把导出日志按钮
+            // 改成默认不显示,点 pockref 图标 7 次后才会显示"):
+            // the FAB visibility is now gated by a local
+            // remember flag (not in PockRefUiState, not in
+            // AppPreferences). The flag starts false every
+            // time the EmptyCanvasState composable enters the
+            // composition (which is every fresh app launch —
+            // matching the spec "应用每次打开启动页的导出
+            // 日志按钮都不显示"). The 7-tap counter inside
+            // [EmptyCanvasState] flips this flag to true via
+            // [onLogExportFab]; once true it stays true for
+            // the rest of the session (no auto-hide, no
+            // re-lock on backgrounding — the spec doesn't
+            // ask for either). The Settings → 外观 →
+            // "启动页显示导出日志" toggle is removed
+            // entirely (see SettingsAppearanceTab).
+            val showLogExportFab = remember { mutableStateOf(false) }
             EmptyCanvasState(
                 state = state,
                 onAction = onAction,
                 onImportMixed = onImport,
+                showLogExportFab = showLogExportFab.value,
+                onLogExportFab = { showLogExportFab.value = true },
                 modifier = Modifier.align(Alignment.Center),
             )
             // V_NOW (2026-06-16, "启动页导出运行日志" feature):
@@ -2017,20 +2036,17 @@ fun PockRefApp(
             // come from PockRefApp's parameters so we don't pull
             // a viewModel reference into this 11k-line composable.
             //
-            // V_NOW (2026-06-16 user feedback "在设置里增加启动
-            // 页是否显示导出日志的开关"): the mount is gated by
-            // [PockRefUiState.showStartPageLogExportFab] (default
-            // true, set in [PockRefViewModel] from
-            // [AppPreferences.showStartPageLogExportFab] on init,
-            // toggled by Settings → 外观 → "启动页显示导出日志").
-            // When the user flips the toggle off, the FAB
-            // disappears entirely from the start page. The export
-            // action itself is unaffected — there are no other
-            // entry points in 1.3.0, so flipping the toggle off
-            // effectively hides the only way to start a log
-            // export; the user can re-enable via Settings to
-            // restore the FAB.
-            if (state.showStartPageLogExportFab) {
+            // V_NOW (2026-06-16 user feedback "把导出日志按钮
+            // 改成默认不显示,点 pockref 图标 7 次后才会显示"):
+            // the visibility flag is the local
+            // [showLogExportFab] remember'd above, NOT a
+            // PockRefUiState field. The 7-tap unlock is
+            // session-only by design (per the user's spec
+            // "应用每次打开启动页的导出日志按钮都不显示"),
+            // so we don't pollute the persistent UI state
+            // with a field that would always start false on
+            // next launch anyway.
+            if (showLogExportFab.value) {
                 LogExportFab(
                     exportInProgress = exportInProgressFlow,
                     onStartLogExport = onStartLogExport,
@@ -5342,12 +5358,35 @@ private fun Modifier.verticalLayoutSwap() = this.layout { measurable, constraint
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EmptyCanvasState(
+ private fun EmptyCanvasState(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
     onImportMixed: () -> Unit,
+    // V_NOW (2026-06-16 user feedback "把导出日志按钮改成默认
+    // 不显示,点 pockref 图标 7 次后才会显示"): the start-page
+    // log-export FAB is hidden by default and unlocked via
+    // an easter-egg tap counter on the PockRef text title. The
+    // tap counter is local (remember) — it resets on every
+    // fresh app launch, matching the spec "应用每次打开启动页
+    // 的导出日志按钮都不显示". [showLogExportFab] is the parent
+    // (PockRefApp) state flag that gates the actual FAB
+    // mount. [onLogExportFab] flips that flag to true and
+    // sticks for the rest of this session (no reset, no
+    // auto-hide timer — once unlocked, the FAB stays until
+    // the activity is destroyed).
+    showLogExportFab: Boolean = false,
+    onLogExportFab: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    // 7-tap easter-egg counter on the PockRef title. local
+    // remember: dies with the composable, so every fresh
+    // start-page entry (which is what the spec actually
+    // requires) starts from 0. Counter only fires the
+    // callback on the 7th tap; taps 1-6 are silent. No
+    // visual feedback (no snackbar / no toast) — the FAB
+    // appearing IS the affordance, the spec doesn't ask
+    // for an intermediate confirmation.
+    val pockrefIconTapCount = androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
     Surface(
         modifier = modifier.widthIn(max = 520.dp),
         // P1 (2026-06-11 chrome unify): mid-size card
@@ -5363,6 +5402,31 @@ private fun EmptyCanvasState(
         ) {
             Text(
                 "PockRef",
+                // V_NOW (2026-06-16 user spec "把导出日志按钮
+                // 改成默认不显示,点 pockref 图标 7 次后才
+                // 会显示"): the title doubles as the
+                // easter-egg activator. `clickable` on a Text
+                // is the standard pattern (the Text itself has
+                // no internal hit-rect, so a Modifier
+                // extension is required). The `clip` /
+                // `clickable` order: clip first, then clickable,
+                // so the ripple is bounded to the text glyph
+                // region (no overflow into the surrounding
+                // card padding — which would visually look
+                // like a "card is tappable" affordance and
+                // confuse the user about the actual card
+                // chrome). The counter is the local
+                // `pockrefIconTapCount` remember'd in this
+                // composable; on the 7th tap it calls
+                // [onLogExportFab] which flips the parent's
+                // [showLogExportFab] flag to true.
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        val next = pockrefIconTapCount.intValue + 1
+                        pockrefIconTapCount.intValue = next
+                        if (next >= 7) onLogExportFab()
+                    },
                 // V_NOW (2026-06-10 user spec "启动页
                 // pockref 字体"): use Nunito (a rounded
                 // geometric sans) via Google Fonts

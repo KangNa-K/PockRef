@@ -1096,19 +1096,27 @@ data class PockRefUiState(
      * [com.pockref.app.data.AppPreferences.minimapSliderOrientation].
      */
     val minimapSliderOrientation: MinimapSliderOrientation = MinimapSliderOrientation.VERTICAL,
-    /**
-     * V_NOW (2026-06-16): whether the start page renders the
-     * log-export FAB. Mirrors
-     * [com.pockref.app.data.AppPreferences.showStartPageLogExportFab].
-     * Default true so the 1.3.0 release ships with the FAB
-     * visible — the spec ("启动页新增悬浮按钮") requires it. The
-     * user can flip this in Settings → 外观 → "启动页显示导出
-     * 日志" if they want a clean start page; the FAB just
-     * disappears without affecting the export action itself
-     * (which is also reachable via long-press menu paths etc.,
-     * not just the FAB).
-     */
-    val showStartPageLogExportFab: Boolean = true,
+    // V_NOW (2026-06-16 user feedback "把导出日志按钮改成默认
+    // 不显示,点 pockref 图标 7 次后才会显示"): the start-page
+    // log-export FAB no longer has a state field here. The
+    // visibility is now a Compose-local remember in
+    // [com.pockref.app.ui.EmptyCanvasState], defaulting to
+    // false on every fresh app launch (the tap counter resets
+    // when the composable enters composition, which is every
+    // session start). Removing the field also means we can
+    // drop the corresponding
+    // [com.pockref.app.data.AppPreferences.showStartPageLogExportFab]
+    // backing store and the
+    // [com.pockref.app.ui.PockRefAction.SetShowStartPageLogExportFab]
+    // action — none of them had a UI to drive them after the
+    // Settings toggle was removed (the 880a345 / 003884f
+    // commits added them; the present commit removes them).
+    //
+    // (Historical context: this field was added in 880a345 as
+    // part of the "Settings toggle to control FAB visibility"
+    // refinement. The same session's follow-up
+    // "点 7 次后才会显示" feedback made the toggle redundant
+    // and asked for its removal.)
     /**
      * Active settings tab (V_NOW: tabbed settings sheet).
      * Persists across sheet open/close so the user comes

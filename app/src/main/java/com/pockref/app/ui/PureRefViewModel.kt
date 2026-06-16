@@ -209,12 +209,18 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             minimapZoomScale = appPrefs.minimapZoomScale,
             minimapDisplayMode = appPrefs.minimapDisplayMode,
             minimapSliderOrientation = appPrefs.minimapSliderOrientation,
-            // V_NOW (2026-06-16): see
-            // [AppPreferences.showStartPageLogExportFab]. The 1.3.0
-            // spec ships the FAB visible by default; a user who
-            // never opens settings sees it until they explicitly
-            // opt out via Settings → 外观.
-            showStartPageLogExportFab = appPrefs.showStartPageLogExportFab,
+            // V_NOW (2026-06-16 user feedback "把导出日志按钮
+            // 改成默认不显示,点 pockref 图标 7 次后才会显示"):
+            // the [showStartPageLogExportFab] field is removed
+            // from [PockRefUiState] (and the AppPreferences
+            // backing field too). FAB visibility is now a
+            // Compose-local remember in
+            // [com.pockref.app.ui.EmptyCanvasState] — no init
+            // read needed here, the visibility defaults to
+            // false on every fresh app launch via the
+            // `remember { mutableStateOf(false) }` default
+            // value, and the 7-tap counter in EmptyCanvasState
+            // flips it to true via the [onLogExportFab] callback.
         )
     )
     val uiState: StateFlow<PockRefUiState> = _uiState.asStateFlow()
@@ -994,7 +1000,12 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.SetMinimapZoomScale -> setMinimapZoomScale(action.scale)
             is PockRefAction.SetMinimapDisplayMode -> setMinimapDisplayMode(action.mode)
             is PockRefAction.SetMinimapSliderOrientation -> setMinimapSliderOrientation(action.orientation)
-            is PockRefAction.SetShowStartPageLogExportFab -> setShowStartPageLogExportFab(action.show)
+            // V_NOW (2026-06-16): the
+            // [PockRefAction.SetShowStartPageLogExportFab] dispatch
+            // arm is removed — the action itself no longer
+            // exists (it was added in 880a345 alongside the
+            // now-removed Settings toggle and the
+            // [PockRefUiState.showStartPageLogExportFab] field).
             PockRefAction.SetMenuBarsCollapsed -> collapseMenuBarsOnWindowBlur()
             PockRefAction.RestoreMenuBarsOnFocus -> restoreMenuBarsOnWindowFocus()
             is PockRefAction.SetSettingsSheetOpen -> setSettingsSheetOpen(action.open)
@@ -1192,22 +1203,13 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         _uiState.update { it.copy(minimapSliderOrientation = orientation) }
     }
 
-    /**
-     * V_NOW (2026-06-16): toggle the start-page log-export FAB.
-     * Persists via [AppPreferences.showStartPageLogExportFab] so
-     * the user's choice survives app restart. Idempotent — if
-     * the value didn't change, skip the prefs write and the state
-     * update to avoid spurious recomposition of the start-page
-     * branch (where [com.pockref.app.ui.logs.LogExportFab] is
-     * mounted under an `if (state.showStartPageLogExportFab)`
-     * guard, so a no-op write still costs an unnecessary
-     * `_uiState.update` + observe-cycle).
-     */
-    internal fun setShowStartPageLogExportFab(show: Boolean) {
-        if (show == _uiState.value.showStartPageLogExportFab) return
-        appPrefs.showStartPageLogExportFab = show
-        _uiState.update { it.copy(showStartPageLogExportFab = show) }
-    }
+    // V_NOW (2026-06-16): the [setShowStartPageLogExportFab]
+    // reducer / setter is removed. The 7-tap easter-egg state
+    // is now a Compose-local remember in
+    // [com.pockref.app.ui.EmptyCanvasState] and never round-trips
+    // through the ViewModel (intentional — see the field
+    // removal KDoc on [PockRefUiState.showStartPageLogExportFab]
+    // for the full rationale).
 
     /**
      * V_NOW: unified chrome collapse on window-blur. Triggered

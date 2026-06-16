@@ -121,26 +121,18 @@ internal fun SettingsAppearanceTab(
     item {
         SettingsMinimapSection(state = state, onAction = onAction)
     }
-    // V_NOW (2026-06-16): toggle the start-page log-export
-    // FAB. Sits in the appearance tab because it's a chrome
-    // visibility control (same bucket as the minimap display
-    // mode toggle above). Default ON (1.3.0 spec ships the FAB
-    // visible) — a user who wants a clean start page can flip
-    // this off. The export ACTION itself is unaffected; the
-    // user can still trigger it via other paths (currently the
-    // FAB is the only entry point, so flipping the toggle off
-    // also hides the only way to start a log export — the
-    // long-press "导出" affordance is NOT planned; see the
-    // CHANGELOG_1.3.0.md note).
-    item {
-        SettingsToggleRow(
-            title = "启动页显示导出日志",
-            subtitle = "在启动页右下角显示「导出运行日志」悬浮按钮(用于快速导出崩溃 / 错误日志给开发者)",
-            checked = state.showStartPageLogExportFab,
-            onCheckedChange = { show ->
-                onAction(PockRefAction.SetShowStartPageLogExportFab(show))
-            },
-        )
-    }
+    // V_NOW (2026-06-16 user feedback "去掉设置里的启动
+    // 页显示导出日志的开关"): the start-page log-export FAB
+    // is now an easter-egg feature — hidden by default, made
+    // visible by tapping the PockRef title 7 times. The
+    // toggle that previously lived here is removed entirely:
+    // the FAB visibility is now session-local (a Compose
+    // remember in [EmptyCanvasState]) and doesn't belong in
+    // persistent settings anymore. Removed the
+    // [SettingsToggleRow] block + the
+    // [PockRefAction.SetShowStartPageLogExportFab] action +
+    // the [PockRefUiState.showStartPageLogExportFab] field
+    // + the [AppPreferences.showStartPageLogExportFab]
+    // backing store in one go.
     }
 }

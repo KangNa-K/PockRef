@@ -677,17 +677,15 @@ sealed interface PockRefAction {
      */
     data class SetMinimapSliderOrientation(val orientation: com.pockref.app.model.MinimapSliderOrientation) : PockRefAction
 
-    /**
-     * V_NOW (2026-06-16): toggle the start-page log-export FAB
-     * visibility. Dispatched by the "启动页显示导出日志" Switch
-     * in Settings → 外观. The reducer writes the value to
-     * [PockRefUiState.showStartPageLogExportFab] AND persists to
-     * [com.pockref.app.data.AppPreferences.showStartPageLogExportFab]
-     * so the choice survives app restart. The FAB itself
-     * (com.pockref.app.ui.logs.LogExportFab) is mounted only when
-     * this state is true (see PockRefApp's start-page branch).
-     */
-    data class SetShowStartPageLogExportFab(val show: Boolean) : PockRefAction
+    // V_NOW (2026-06-16 user feedback "去掉设置里的启动页
+    // 显示导出日志的开关"): the [SetShowStartPageLogExportFab]
+    // action that lived here (added in 880a345) is removed.
+    // The FAB visibility no longer has a state field to write
+    // to, no Settings toggle to drive, and no AppPreferences
+    // key to persist to — see
+    // [com.pockref.app.model.PockRefUiState] KDoc for the full
+    // chain of removals (action + field + Settings row +
+    // AppPreferences key + reducer branch).
 
     /**
      * V_NOW: window-blur collapse. Dispatched by
