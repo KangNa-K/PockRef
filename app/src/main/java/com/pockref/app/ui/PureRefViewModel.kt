@@ -227,6 +227,33 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     private val _lastError = MutableStateFlow<UiError?>(null)
     val lastError: StateFlow<UiError?> = _lastError.asStateFlow()
 
+    // V_NOW (2026-06-16, "启动页导出运行日志" feature):
+    // Whether a log export is currently in progress. The FAB
+    // observes this via [logExportInProgress] and disables
+    // itself to prevent duplicate clicks. Mirrors the
+    // [lastError] StateFlow pattern (no PockRefUiState field)
+    // because only the FAB cares about this state.
+    private val _logExportInProgress = MutableStateFlow(false)
+    val logExportInProgress: StateFlow<Boolean> = _logExportInProgress.asStateFlow()
+
+    // V_NOW (2026-06-16): Snapshot of recent [UiError]s that
+    // the LogExportFab will include in its export. We keep an
+    // internal ring buffer rather than reflecting it into
+    // [PockRefUiState] because (a) nothing else in the app reads
+    // it, and (b) PockRefUiState is already 100+ fields — pushing
+    // 50 strings in there would trigger expensive recomposition
+    // on every error report.
+    //
+    // Capacity 50 matches the cap documented in the spec; if a
+    // future bug requires more history, bump MAX_RECENT_ERRORS
+    // in the companion object.
+    private val recentErrors = ArrayDeque<UiError>(MAX_RECENT_ERRORS)
+    private val recentErrorsLock = Any()
+
+    internal fun snapshotRecentErrors(): List<UiError> = synchronized(recentErrorsLock) {
+        recentErrors.toList()
+    }
+
     /**
      * Log an error and surface it to the UI through [errors]. The throwable is
      * always written to Logcat (with a stable [TAG] for filtering) and may be
@@ -245,6 +272,14 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         // layer would need this. Equality-based distinctUntilChanged on the
         // StateFlow side keeps recomposition cheap.
         _lastError.value = uiError
+        // V_NOW (2026-06-16): mirror into the log-export ring buffer.
+        // Push is bounded by capacity (50); oldest entries are evicted FIFO.
+        synchronized(recentErrorsLock) {
+            recentErrors.addLast(uiError)
+            while (recentErrors.size > MAX_RECENT_ERRORS) {
+                recentErrors.removeFirst()
+            }
+        }
     }
 
     /**
@@ -2525,6 +2560,83 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         return if (size >= 0L) "$size bytes" else "unknown"
     }
 
+    /**
+     * V_NOW (2026-06-16, "启动页导出运行日志" feature):
+     * Build the run-log text on IO and hand it back via [onReady].
+     * The Composable owns the SAF launcher and uses [onReady] to
+     * receive the assembled text + suggested filename. The text
+     * never enters StateFlow (it's too big — logcat alone can be
+     * hundreds of KB).
+     *
+     * Idempotent: a second call while one is in progress is a no-op.
+     *
+     * @param appLabel  Result of `context.applicationInfo.loadLabel(...)`
+     *                  or the literal "PockRef". Used as the filename prefix.
+     * @param onReady   Called on the main thread when the text is ready.
+     * @param onError   Called on the main thread if [com.pockref.app.data.LogExporter.buildForContext]
+     *                  throws.
+     */
+    fun startLogExport(
+        appLabel: String,
+        onReady: (suggestedName: String, content: String) -> Unit,
+        onError: (reason: String) -> Unit,
+    ) {
+        if (_logExportInProgress.value) return
+        viewModelScope.launch {
+            _logExportInProgress.value = true
+            onAction(PockRefAction.LogExportStarted)
+
+            // 30s watchdog: if build hangs (extremely unlikely — logcat
+            // exec could theoretically block on a hostile device), reset
+            // state and surface a timeout via onError.
+            val watchdogJob = launch {
+                kotlinx.coroutines.delay(30_000L)
+                if (_logExportInProgress.value) {
+                    Log.w(TAG, "Log export timed out")
+                    _logExportInProgress.value = false
+                    onError("timeout")
+                    onAction(PockRefAction.LogExportFailed("timeout"))
+                }
+            }
+
+            try {
+                val lastCrash = com.pockref.app.data.CrashHandler.readLastCrash(getApplication())
+                val prefsLines = listOf(
+                    "Theme mode:           ${appPrefs.themeMode.name}",
+                    "Auto-save:            ${if (appPrefs.autoSaveEnabled) "enabled (interval ${appPrefs.autoSaveIntervalMs / 1000}s)" else "disabled"}",
+                    "S Pen mode:           ${appPrefs.spenMode.name}",
+                    "Recent scenes count:  ${_uiState.value.recentScenes.size}",
+                    *(
+                        if (appPrefs.disabledGestureIds.isNotEmpty()) {
+                            arrayOf("Disabled gestures:    ${appPrefs.disabledGestureIds.sorted()}")
+                        } else emptyArray()
+                        ),
+                )
+                val text = com.pockref.app.data.LogExporter.buildForContext(
+                    context = getApplication(),
+                    appLabel = appLabel,
+                    recentErrors = snapshotRecentErrors(),
+                    lastCrash = lastCrash,
+                    prefsLines = prefsLines,
+                )
+                val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                    .format(java.util.Date())
+                val name = "${appLabel}_日志导出_$ts.txt"
+                watchdogJob.cancel()
+                onReady(name, text)
+                onAction(PockRefAction.LogExportFinished)
+            } catch (t: Throwable) {
+                watchdogJob.cancel()
+                Log.e(TAG, "Log export failed", t)
+                val msg = t.message ?: t::class.java.simpleName
+                onError(msg)
+                onAction(PockRefAction.LogExportFailed(msg))
+            } finally {
+                _logExportInProgress.value = false
+            }
+        }
+    }
+
     internal class CachedSceneFile(val file: File) : java.io.Closeable {
         override fun close() {
             file.delete()
@@ -2533,5 +2645,8 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     companion object {
         private const val TAG = "PockRefViewModel"
+        // V_NOW (2026-06-16): ring-buffer cap for the
+        // log-export [recentErrors] snapshot.
+        private const val MAX_RECENT_ERRORS = 50
     }
 }
