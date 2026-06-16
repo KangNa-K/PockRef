@@ -1770,6 +1770,51 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         mainVm._uiState.update { it.copy(triggerSaveAsFromDialog = false) }
     }
 
+    // V_NOW (2026-06-16): the Save button now opens a name dialog
+    // instead of launching CreateDocument directly. ACTION_CREATE_DOCUMENT
+    // + Downloads grants only per-task permission (not persistable) on
+    // Samsung One UI 6 / Android 14, so openOutputStream denies with
+    // "Permission Denial ... requires MANAGE_DOCUMENTS, or
+    // grantUriPermission()". See [PockRefAction.RequestSaveScene] for the
+    // full rationale.
+    fun requestSaveScene() {
+        val defaultName = mainVm._uiState.value.sceneName
+            .ifBlank { "Untitled" }
+            .let { if (it.endsWith(".pur")) it else "$it.pur" }
+        mainVm._uiState.update {
+            it.copy(
+                showSaveSceneNameDialog = true,
+                pendingSaveSceneName = defaultName,
+                pendingSaveSceneLaunch = false,
+            )
+        }
+    }
+
+    fun confirmSaveSceneName(name: String) {
+        val finalName = name.trim().ifBlank { "Untitled" }
+            .let { if (it.endsWith(".pur")) it else "$it.pur" }
+        mainVm._uiState.update {
+            it.copy(
+                showSaveSceneNameDialog = false,
+                pendingSaveSceneName = finalName,
+                pendingSaveSceneLaunch = true,
+            )
+        }
+    }
+
+    fun dismissSaveSceneNameDialog() {
+        mainVm._uiState.update {
+            it.copy(
+                showSaveSceneNameDialog = false,
+                pendingSaveSceneLaunch = false,
+            )
+        }
+    }
+
+    fun consumePendingSaveSceneLaunch() {
+        mainVm._uiState.update { it.copy(pendingSaveSceneLaunch = false) }
+    }
+
     fun updateCanvasViewport(width: Float, height: Float) {
         val safeWidth = width.coerceAtLeast(0f)
         val safeHeight = height.coerceAtLeast(0f)

@@ -876,37 +876,85 @@ fun PockRefApp(
     // `application/octet-stream + .pur path` intent filter in
     // AndroidManifest.xml, so old .pur files saved by older
     // versions still open in PockRef via that filter.
-    // V_NOW (2026-06-16): [ACTION_CREATE_DOCUMENT] returns a URI
-    // whose per-task write grant is enough while the process is
-    // alive, but the [ExternalStorageProvider] rejects the
-    // write with `Permission Denial ... requires
-    // android.permission.MANAGE_DOCUMENTS, or grantUriPermission()`
-    // once the process dies (or the user lands in the Downloads
-    // tree, which routes through the MANAGE_DOCUMENTS check on
-    // Samsung forks). Mirror the [exportBatchPngLauncher] /
-    // [exportBatchJpgLauncher] fix: take a persistable grant so
-    // the URI survives, and swallow SecurityException because
-    // some providers don't support persistable grants at all —
-    // the per-task grant is still good for the lifetime of the
-    // process, which covers the immediate save.
-    val saveSceneLauncher = rememberLauncherForActivityResult(
-        CreateDocument(com.pockref.app.MainActivity.PUR_SCENE_MIME),
-    ) { uri ->
-        uri?.let {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    it,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-                )
-            }.onFailure { e ->
-                android.util.Log.w(
-                    "PockRefSave",
-                    "takePersistableUriPermission failed: ${e.message}",
-                )
-            }
-            onAction(PockRefAction.SaveScene(it))
+    // V_NOW (2026-06-16): [ACTION_CREATE_DOCUMENT] + Downloads
+    // returns a URI that ONLY has per-task write grant on Samsung
+    // One UI 6 / Android 14 — DocumentsUI doesn't grant
+    // [FLAG_GRANT_PERSISTABLE_URI_PERMISSION] for the Downloads
+    // folder, so [takePersistableUriPermission] throws
+    // "SecurityException: No persistable permission grants found
+    // for UID ..." (verified via PockRefSave log on SM-X810).
+    // Without a persistable grant the URI never enters the
+    // grant table, so [ExternalStorageProvider.checkCallingUriPermission]
+    // returns false and [openOutputStream] denies with
+    // "Permission Denial ... requires android.permission.MANAGE_DOCUMENTS,
+    // or grantUriPermission()".
+    //
+    // Fix: switch the Save flow to the two-step [OpenDocumentTree] +
+    // [DocumentsContract.createDocument] pattern already used by
+    // [exportBatchPngLauncher] / [exportBatchJpgLauncher]. The
+    // user picks a folder first (defaulted to Downloads so they
+    // don't have to navigate), then types a filename in
+    // [SaveSceneNameDialog], then we takePersistable on the tree
+    // and createDocument on it. OpenDocumentTree on a tree URI
+    // does grant persistable (it's the whole point of the tree
+    // contract), so the resulting document URI inherits a
+    // working write grant.
+    val saveSceneTreeInitialUri = remember {
+        // content://com.android.externalstorage.documents/root/primary%3ADownload
+        Uri.parse(
+            "content://com.android.externalstorage.documents/root/primary%3A" +
+                Environment.DIRECTORY_DOWNLOADS,
+        )
+    }
+    val saveSceneTreeLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        android.util.Log.i(
+            "PockRefSave",
+            "OpenDocumentTree callback: uri=$treeUri",
+        )
+        if (treeUri == null) {
+            // user cancelled — leave pendingSaveSceneLaunch already
+            // consumed (LaunchedEffect clears it on entry); nothing
+            // else to do.
+            return@rememberLauncherForActivityResult
         }
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                treeUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        } catch (e: SecurityException) {
+            // per-task grant still good for the lifetime of the
+            // process — log but proceed (mirrors
+            // [exportBatchPngLauncher] behavior).
+            android.util.Log.w(
+                "PockRefSave",
+                "takePersistableUriPermission failed: ${e.message}",
+            )
+        }
+        val filename = state.pendingSaveSceneName.ifBlank { "Untitled.pur" }
+        val documentUri = try {
+            DocumentsContract.createDocument(
+                context.contentResolver,
+                treeUri,
+                com.pockref.app.MainActivity.PUR_SCENE_MIME,
+                filename,
+            )
+        } catch (e: Throwable) {
+            android.util.Log.e("PockRefSave", "createDocument failed", e)
+            null
+        }
+        if (documentUri != null) {
+            onAction(PockRefAction.SaveScene(documentUri))
+        }
+        // Clear the pending-launch flag now that we've either
+        // dispatched SaveScene or failed silently — the
+        // LaunchedEffect only fires when this flag transitions to
+        // true, so flipping it false here is safe even if no
+        // dialog confirm re-arms it.
+        onAction(PockRefAction.ConsumePendingSaveSceneLaunch)
     }
     // Export launchers are declared inside [if
     // (state.showExportDialog)] (where they're used) so the
@@ -1052,21 +1100,40 @@ fun PockRefApp(
             ),
         )
     }
-    // V_NOW: bottom-right action panel's "Save" item. Always goes
-    // through the system save-as picker (matching the existing
-    // unsaved-dialog-save path at line 560 below). When the user
-    // is editing an existing .pur file they can hit Save, confirm
-    // the same filename, and the picker will overwrite in place.
+    // V_NOW (2026-06-16): Save now goes through [RequestSaveScene]
+    // → [SaveSceneNameDialog] → [saveSceneTreeLauncher]. The
+    // dialog handles both "new file" (no currentSceneUri) and
+    // "save over" paths: in both cases the user picks a folder +
+    // a filename, and we call [DocumentsContract.createDocument].
+    // The two-step UX is the only known way to dodge the
+    // DocumentsUI + Downloads persistable-grant bug on Samsung
+    // One UI 6 / Android 14 (see comment block above the
+    // [saveSceneTreeLauncher] declaration for details).
     val onSaveScene: () -> Unit = {
-        val name = if (state.sceneName.endsWith(".pur")) state.sceneName else "${state.sceneName}.pur"
-        saveSceneLauncher.launch(name)
+        onAction(PockRefAction.RequestSaveScene)
     }
 
     LaunchedEffect(state.triggerSaveAsFromDialog) {
         if (state.triggerSaveAsFromDialog) {
-            val name = if (state.sceneName.endsWith(".pur")) state.sceneName else "${state.sceneName}.pur"
-            saveSceneLauncher.launch(name)
+            // Same dialog flow as the top-bar Save button — the
+            // unsaved-changes dialog's "Save" path now also
+            // triggers [RequestSaveScene], so the user gets the
+            // same folder-picker + name-dialog UX whether they
+            // hit Save from the toolbar or from the close
+            // confirmation.
+            onAction(PockRefAction.RequestSaveScene)
             onAction(PockRefAction.ClearSaveAsTrigger)
+        }
+    }
+
+    LaunchedEffect(state.pendingSaveSceneLaunch) {
+        if (state.pendingSaveSceneLaunch) {
+            saveSceneTreeLauncher.launch(saveSceneTreeInitialUri)
+            // Don't consume the flag here — the launcher's
+            // callback (above) is the one source of truth for
+            // "we're done with this save attempt". If the user
+            // cancels the tree picker the callback fires with
+            // treeUri=null and clears the flag there.
         }
     }
 
@@ -1854,6 +1921,22 @@ fun PockRefApp(
                     backgroundMode = state.exportCanvasBackground,
                     onAction = onAction,
                     exportCanvasLauncher = exportCanvasLauncher,
+                )
+            }
+            // V_NOW (2026-06-16): Save button → name dialog →
+            // OpenDocumentTree. See [PockRefAction.RequestSaveScene]
+            // and the comment block above [saveSceneTreeLauncher]
+            // for why the Save flow no longer uses
+            // ACTION_CREATE_DOCUMENT.
+            if (state.showSaveSceneNameDialog) {
+                SaveSceneNameDialog(
+                    initialName = state.pendingSaveSceneName,
+                    onConfirm = { typed ->
+                        onAction(PockRefAction.ConfirmSaveSceneName(typed))
+                    },
+                    onDismiss = {
+                        onAction(PockRefAction.DismissSaveSceneNameDialog)
+                    },
                 )
             }
         }
@@ -11091,6 +11174,69 @@ private fun RenameSceneDialog(
                 enabled = text.isNotBlank(),
             ) {
                 Text("确定")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        },
+    )
+}
+
+/**
+ * V_NOW (2026-06-16): Save-scene name dialog. Shown when the user
+ * taps Save (or hits "Save" in the unsaved-changes dialog).
+ *
+ * The dialog does NOT launch the system save-as picker — it only
+ * collects a filename. After confirm, [PockRefAction.ConfirmSaveSceneName]
+ * stores the name and flips [PockRefUiState.pendingSaveSceneLaunch],
+ * which a [LaunchedEffect] in [PockRefApp] reacts to by launching
+ * the [OpenDocumentTree] picker. The picker is the second step
+ * (folder choice). The reason we can't fuse them into a single
+ * [CreateDocument] dialog is the Samsung One UI 6 / Android 14
+ * DocumentsUI bug: it doesn't grant
+ * [FLAG_GRANT_PERSISTABLE_URI_PERMISSION] on URIs returned for the
+ * Downloads folder, so [openOutputStream] denies with
+ * "Permission Denial ... requires android.permission.MANAGE_DOCUMENTS,
+ * or grantUriPermission()". The tree-picker path sidesteps that
+ * because [OpenDocumentTree]'s persistable grant succeeds.
+ *
+ * The dialog is a Compose [rememberSaveable] field so the typed
+ * name survives configuration changes while the dialog is open.
+ */
+@Composable
+private fun SaveSceneNameDialog(
+    initialName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by rememberSaveable(initialName) { mutableStateOf(initialName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("保存场景") },
+        text = {
+            Column {
+                Text(
+                    text = "输入文件名,接下来选择保存位置。",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 12.dp),
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    label = { Text("文件名") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(text.trim().ifBlank { "Untitled" }) },
+            ) {
+                Text("选择文件夹")
             }
         },
         dismissButton = {

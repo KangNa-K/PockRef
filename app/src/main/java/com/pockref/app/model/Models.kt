@@ -1129,6 +1129,21 @@ data class PockRefUiState(
     val isSaving: Boolean = false,
     val triggerSaveAsFromDialog: Boolean = false,
     val pendingCloseAfterSave: Boolean = false,
+    // V_NOW (2026-06-16, "Save 路径改走 OpenDocumentTree + createDocument"):
+    // the Save button no longer launches CreateDocument directly — it
+    // opens [SaveSceneNameDialog] (showSaveSceneNameDialog=true) where
+    // the user types a filename, then confirms. On confirm the dialog
+    // dismisses and [pendingSaveSceneLaunch] flips true; the UI layer
+    // watches that flag via LaunchedEffect and launches the
+    // [OpenDocumentTree] picker. After launch the flag is consumed
+    // (ConsumePendingSaveSceneLaunch) so a dialog confirm can't fire
+    // twice if the composition recomposes while the picker is up.
+    // [pendingSaveSceneName] is the name typed into the dialog (used
+    // for DocumentsContract.createDocument after tree-pick) — empty
+    // when no dialog is active.
+    val showSaveSceneNameDialog: Boolean = false,
+    val pendingSaveSceneName: String = "",
+    val pendingSaveSceneLaunch: Boolean = false,
     val fittedImageId: String? = null,
     val preFitCanvasScale: Float = 1f,
     val preFitCanvasOffset: Offset = Offset.Zero,

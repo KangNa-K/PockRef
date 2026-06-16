@@ -586,6 +586,22 @@ sealed interface PockRefAction {
      */
     data class SetSelectionMode(val mode: com.pockref.app.model.SelectionMode) : PockRefAction
     data object SaveSceneDirect : PockRefAction
+    // V_NOW (2026-06-16, "Save 路径改走 OpenDocumentTree +
+    // DocumentsContract.createDocument"): the Save button now
+    // opens a name dialog instead of launching CreateDocument
+    // directly. The reason is ACTION_CREATE_DOCUMENT + Downloads
+    // doesn't grant FLAG_GRANT_PERSISTABLE_URI_PERMISSION on
+    // Samsung One UI 6 / Android 14 (DocumentsUI bug) — the
+    // returned URI is per-task only and the provider's grant
+    // table doesn't see it, so openOutputStream denies with
+    // "Permission Denial ... requires MANAGE_DOCUMENTS, or
+    // grantUriPermission()". Two-step UX (tree picker + name
+    // dialog) sidesteps the bug because OpenDocumentTree's
+    // takePersistableUriPermission succeeds on Downloads trees.
+    data object RequestSaveScene : PockRefAction
+    data class ConfirmSaveSceneName(val name: String) : PockRefAction
+    data object DismissSaveSceneNameDialog : PockRefAction
+    data object ConsumePendingSaveSceneLaunch : PockRefAction
     data object UnsavedDialogSave : PockRefAction
     data object UnsavedDialogDiscard : PockRefAction
     data object UnsavedDialogCancel : PockRefAction
