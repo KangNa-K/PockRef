@@ -239,6 +239,11 @@ class MainActivity : ComponentActivity() {
                     imageLazyLoader = viewModel.imageLazyLoader,
                     imageDecoder = viewModel.imageDecoder,
                     errorsFlow = viewModel.errors,
+                    // V_NOW (2026-06-16): bridge the
+                    // [LogExportFab] click to
+                    // [PockRefViewModel.startLogExport].
+                    onStartLogExport = viewModel::startLogExport,
+                    exportInProgressFlow = viewModel.logExportInProgress,
                 )
             }
         }

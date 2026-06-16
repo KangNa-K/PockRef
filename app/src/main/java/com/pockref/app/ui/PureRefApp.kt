@@ -288,6 +288,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import androidx.compose.material3.DropdownMenu
@@ -314,6 +316,7 @@ import com.pockref.app.model.CropAspect
 import com.pockref.app.model.CropRect
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.model.RecentSceneEntry
+import com.pockref.app.ui.logs.LogExportFab
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.SelectionMode
@@ -512,6 +515,19 @@ fun PockRefApp(
     imageLazyLoader: com.pockref.app.data.PurFileParser? = null,
     imageDecoder: com.pockref.app.data.SceneImageDecoder? = null,
     errorsFlow: SharedFlow<UiError>? = null,
+    // V_NOW (2026-06-16, "启动页导出运行日志" feature):
+    // Wraps [PockRefViewModel.startLogExport] so the
+    // [LogExportFab] (mounted inside the start-page branch)
+    // can trigger the VM-side work without the composable
+    // tree holding a direct viewModel reference. The actual
+    // VM stays in MainActivity / ViewModelProvider; this
+    // composable just routes the click through.
+    onStartLogExport: (
+        appLabel: String,
+        onReady: (suggestedName: String, content: String) -> Unit,
+        onError: (reason: String) -> Unit,
+    ) -> Unit = { _, _, _ -> },
+    exportInProgressFlow: StateFlow<Boolean> = MutableStateFlow(false),
 ) {
     val importLauncher = rememberLauncherForActivityResult(OpenMultipleDocuments()) { uris ->
         onAction(PockRefAction.ImportImages(uris))
@@ -1218,6 +1234,9 @@ fun PockRefApp(
                 // needs the [onMenuDismiss] param.
                  imageLazyLoader = imageLazyLoader,
                  imageDecoder = imageDecoder,
+                 // V_NOW (2026-06-16): thread the export trigger.
+                 exportInProgressFlow = exportInProgressFlow,
+                 onStartLogExport = onStartLogExport,
                  modifier = Modifier
                      .fillMaxSize(),
                  hoverProgress = hoverProgress,
@@ -1815,6 +1834,18 @@ fun PockRefApp(
     // so the magnifier image sits ABOVE the chrome).
     hoverProgress: Float = 0f,
     canvasBitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    // V_NOW (2026-06-16, "启动页导出运行日志" feature):
+    // Threaded down from [PockRefApp] so [LogExportFab]
+    // (mounted on the start-page branch of this Box) can
+    // observe the VM-side export-in-progress flag and
+    // dispatch a build without [CanvasPanel] holding a
+    // direct viewModel reference.
+    exportInProgressFlow: StateFlow<Boolean> = MutableStateFlow(false),
+    onStartLogExport: (
+        appLabel: String,
+        onReady: (suggestedName: String, content: String) -> Unit,
+        onError: (reason: String) -> Unit,
+    ) -> Unit = { _, _, _ -> },
 ) {
 
     // V_NOW (S-04 chip alignment): recompute statusBarTopDp here
@@ -1924,6 +1955,20 @@ fun PockRefApp(
                 onAction = onAction,
                 onImportMixed = onImport,
                 modifier = Modifier.align(Alignment.Center),
+            )
+            // V_NOW (2026-06-16, "启动页导出运行日志" feature):
+            // Bottom-right export FAB. Mounted ONLY on the start
+            // page branch; once a scene is loaded the FAB
+            // disappears, matching the "启动页" semantics the
+            // feature was scoped to. The StateFlow + callback
+            // come from PockRefApp's parameters so we don't pull
+            // a viewModel reference into this 11k-line composable.
+            LogExportFab(
+                exportInProgress = exportInProgressFlow,
+                onStartLogExport = onStartLogExport,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(Dimens.EdgeInset),
             )
         } else {
             if (state.cropImageId != null) {
