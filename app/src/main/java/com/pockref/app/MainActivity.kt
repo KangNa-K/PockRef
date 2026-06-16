@@ -14,6 +14,7 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pockref.app.data.AppPreferences
+import com.pockref.app.data.CrashHandler
 import com.pockref.app.model.SelectionMode
 import com.pockref.app.spen.SpenButtonDetector
 import com.pockref.app.ui.PockRefAction
@@ -213,6 +214,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // V_NOW (2026-06-16, "启动页导出运行日志" feature):
+        // Install the crash handler BEFORE any other init so
+        // we catch crashes from enableEdgeToEdge / setContent /
+        // Compose initialization onward. Idempotent — a
+        // second install is a no-op.
+        CrashHandler.install(application)
         enableEdgeToEdge()
 
         spenDetector = SpenButtonDetector(
