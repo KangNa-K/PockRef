@@ -5,6 +5,7 @@
 - ▲ 调整 启动页导出日志按钮去除阴影 + 去除文字说明 — 按钮现在是一个纯图标 FAB(48dp 圆角,1dp outline),不再有 labelSmall 文字"导出运行日志",也不再有 `Dimens.FabElevation` 阴影。accessibility 的 `contentDescription` 仍保留
 - ● 新增 启动页是否显示导出日志的开关 — `设置 → 外观` 增加一个 `启动页显示导出日志` Switch,默认开,关闭后启动页 FAB 立即消失。**注意:1.3.0 中启动页 FAB 是导出日志的唯一入口,关掉后该功能将完全无法触达 — 后续版本考虑加 long-press 启动页菜单项作为冗余入口**
 - ▲ 修复 加载 disk-backed 大图(原尺寸 9000+px)到画布时闪退 — `BitmapRegionDecoder.decodeRegion` 在 SM-X810 / 部分 Adreno GPU 上**忽略 `inSampleSize`**,直接返回原图 1:1 bitmap(347MB ARGB_8888),触发 `Canvas: trying to draw too large` 异常。`SceneImageDecoder.decodeViaRegionDecoder` 改成 decodeRegion 后**强制** `createScaledBitmap` 到 `targetSide`,跟 fallback 路径一致。disk-backed .pur 大图(9317×9333 这种)现在正常显示为 4096 long-edge(~16MB),不再闪退
+- ▲ 修复 (round 2, 同 crash 路径) 真正主因不是 region decoder(`getOrCreateRegionDecoder` 在本项目是 stub 返 null,生产路径永远走 `decodeFromOffsetFallback` → `decodeSampledBitmap` → `BitmapFactory.decodeByteArray`),而是 **`BitmapFactory` 在 SM-X810 上同样忽略 `inSampleSize`**,返回 1:1 bitmap。`decodeSampledBitmap` decode 后加强制 `createScaledBitmap` 到 `reqWidth/Height`,跟 e4b2b31 同款 force-scale 保护。`OOM retry` 路径**不**能 catch 这个 case(OOM 只在真分配失败时 fire,1:1 decode 12GB 设备塞得下不会 OOM)
 
 ## 🛠 内部改进
 
