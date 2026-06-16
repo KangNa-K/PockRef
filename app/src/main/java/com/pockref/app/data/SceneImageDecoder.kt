@@ -335,6 +335,40 @@ class SceneImageDecoder(
     /**
      * Decode via BitmapRegionDecoder. This is the happy path — it reads
      * only the portions of the file it needs, with no intermediate copy.
+     *
+     * V_NOW (2026-06-16 user feedback "应用又闪退" + logcat
+     * "Canvas: trying to draw too large(347892948bytes) bitmap"):
+     * `BitmapRegionDecoder.decodeRegion(Rect, Options)` is documented to
+     * honour `Options.inSampleSize` (added in API 21), but in practice
+     * several Android framework combinations IGNORE it — the returned
+     * bitmap is the region at 1:1 pixel density regardless of
+     * `inSampleSize`. The SM-X810 (Adreno 730, Android 16) is one such
+     * combination; the user-visible symptom is a disk-backed
+     * `SceneImage` whose `displaySize` was set from the raw pixel
+     * dimensions (e.g. 9317×9333) by [PurFileParser] line 408 (the
+     * no-transform-in-.pur fallback path): the pipeline picks level 5
+     * (4096) → `calculateSampleSize(9317, 9333, 4096, 4096) = 2` →
+     * `decodeRegion` is asked for sample=2 but returns 1:1 → a
+     * 347MB ARGB_8888 bitmap lands in [ImageDecodePipeline]'s
+     * `onBitmapReady` → [PockRefCanvas] `drawSceneImage` →
+     * [androidx.compose.ui.graphics.drawscope.DrawScope.drawImage]
+     * → `BaseRecordingCanvas.drawBitmap` → `throwIfCannotDraw`
+     * past the ~200MB single-bitmap limit on most GPUs → crash.
+     *
+     * Fix: after `decodeRegion`, ALWAYS re-check the returned bitmap's
+     * long edge. If it exceeds [targetSide], force a precise
+     * [Bitmap.createScaledBitmap] downscale. This mirrors the
+     * [decodeSampledBitmap] helper used by the
+     * [decodeFromOffsetFallback] path (where
+     * `BitmapFactory.decodeByteArray` correctly honours
+     * `inSampleSize`, so the additional createScaledBitmap there
+     * is a precision step, not a safety net). After the fix, the
+     * region-decode path is also safe regardless of GPU/driver.
+     *
+     * Recycle the intermediate `decoded` if the scale pass
+     * produced a fresh bitmap (matches the recycle discipline in
+     * [decodeSampledBitmap] so we don't hold two copies of a
+     * 347MB allocation).
      */
     private fun decodeViaRegionDecoder(
         decoder: BitmapRegionDecoder,
@@ -351,7 +385,20 @@ class SceneImageDecoder(
             inPreferredConfig = Bitmap.Config.ARGB_8888
             inMutable = false
         }
-        return decoder.decodeRegion(Rect(0, 0, width, height), opts)
+        val decoded = decoder.decodeRegion(Rect(0, 0, width, height), opts)
+            ?: return null
+
+        val longSide = maxOf(decoded.width, decoded.height)
+        return if (longSide > targetSide) {
+            val scale = targetSide.toFloat() / longSide.toFloat()
+            val newW = (decoded.width * scale).toInt().coerceAtLeast(1)
+            val newH = (decoded.height * scale).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(decoded, newW, newH, true).also {
+                if (it !== decoded) decoded.recycle()
+            }
+        } else {
+            decoded
+        }
     }
 
     /**
