@@ -2601,6 +2601,12 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             (if (write) android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
         if (flags == 0) return
         runCatching { contentResolver.takePersistableUriPermission(uri, flags) }
+            .onFailure { e ->
+                android.util.Log.w(
+                    "PockRefSave",
+                    "takePersistableUriPermission failed for uri=$uri: ${e.javaClass.simpleName}: ${e.message}",
+                )
+            }
     }
 
     private fun formatDiagnosticFileSize(size: Long): String {
