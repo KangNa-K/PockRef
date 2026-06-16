@@ -474,6 +474,34 @@ class SceneImageDecoder(
 
     // ── Shared helpers ─────────────────────────────────────────────
 
+    /**
+     * Decode a JPEG/PNG/WebP byte array into a bitmap whose long edge
+     * is at most [reqWidth]/[reqHeight] (using [reqWidth] / [reqHeight]
+     * as the canvas-side target).
+     *
+     * V_NOW (2026-06-16 user feedback "应用又闪退" — round 2):
+     * [BitmapFactory.decodeByteArray] with `Options.inSampleSize` is
+     * documented to honour the sample, but on the SM-X810 (Adreno
+     * 730, Android 16) the framework actually returns a 1:1 bitmap
+     * (e.g. 9317×9333) for sample=2 — same symptom as the
+     * [BitmapRegionDecoder.decodeRegion] inSampleSize bug, but on
+     * the BitmapFactory path. The earlier fix in e4b2b31 (added
+     * createScaledBitmap after [decodeViaRegionDecoder]) didn't
+     * catch this because [getOrCreateRegionDecoder] is a stub that
+     * always returns null on this project (deliberate, see its
+     * KDoc about Samsung decode failures), so production decode
+     * never reached decodeViaRegionDecoder — it always went
+     * through [decodeFromOffsetFallback] → [decodeSampledBitmap].
+     *
+     * Fix: after [BitmapFactory.decodeByteArray] returns, ALWAYS
+     * check the bitmap's long edge. If it exceeds the requested
+     * max, force a precise [Bitmap.createScaledBitmap] downscale.
+     * This mirrors the e4b2b31 fix in [decodeViaRegionDecoder] and
+     * guarantees the returned bitmap fits the LOD budget regardless
+     * of whether inSampleSize is honoured on the target device.
+     * Intermediate bitmap is recycled if the scale pass produced
+     * a fresh bitmap.
+     */
     private fun decodeSampledBitmap(bytes: ByteArray, reqWidth: Int, reqHeight: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
@@ -484,12 +512,32 @@ class SceneImageDecoder(
             inPreferredConfig = Bitmap.Config.ARGB_8888
             inMutable = false
         }
-        return try {
+        val decoded = try {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
         } catch (oom: OutOfMemoryError) {
+            // V_NOW (e4b2b31 didn't touch this path because the
+            // first OOM retry with sample*2 was already here; the
+            // new force-scale fix below catches the case where
+            // inSampleSize is silently ignored, which the OOM
+            // retry would NOT catch — OOM only fires on a real
+            // allocation failure, not on a 1:1 decode that
+            // succeeds because the heap happens to have the room).
             Log.w(TAG, "OOM decoding, retrying with 2x sample")
             opts.inSampleSize = sample * 2
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        } ?: return null
+
+        val targetLongEdge = maxOf(reqWidth, reqHeight)
+        val longSide = maxOf(decoded.width, decoded.height)
+        return if (longSide > targetLongEdge) {
+            val scale = targetLongEdge.toFloat() / longSide.toFloat()
+            val newW = (decoded.width * scale).toInt().coerceAtLeast(1)
+            val newH = (decoded.height * scale).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(decoded, newW, newH, true).also {
+                if (it !== decoded) decoded.recycle()
+            }
+        } else {
+            decoded
         }
     }
 
