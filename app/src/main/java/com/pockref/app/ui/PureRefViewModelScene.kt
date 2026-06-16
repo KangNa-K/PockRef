@@ -8,6 +8,7 @@ import android.provider.DocumentsContract
 import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.ImageOptimizer
 import com.pockref.app.model.CropAspect
@@ -1810,7 +1811,29 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
      * bitmap of that size, and renders every image at its canvas
      * position with full transform support (scale, rotation, flips).
      */
-    fun exportCanvas(uri: Uri) {
+    /**
+     * Export the entire canvas as a single PNG image with the
+     * user-chosen background mode. See
+     * [com.pockref.app.model.ExportCanvasBackgroundMode] for the
+     * two modes (TRANSPARENT / CANVAS_BACKGROUND). Forced to PNG
+     * regardless of mode because JPEG would either ignore the
+     * transparent alpha (most encoders fill opaque) or contradict
+     * the user's CANVAS_BACKGROUND pick (some encoders don't honor
+     * the alpha even when source has one).
+     *
+     * V_NOW (2026-06-16 user spec "导出画布新增背景选项"):
+     * [backgroundMode] is plumbed through from the canvas-export
+     * dialog via [com.pockref.app.ui.PockRefAction.ConfirmExportCanvas].
+     * When CANVAS_BACKGROUND is selected, we fill the canvas
+     * bitmap with [PockRefUiState.backgroundColor] (the same
+     * colour the user sees on the screen via
+     * [com.pockref.app.ui.PureRefApp]'s `Modifier.background(state.backgroundColor)`)
+     * before Pass 2 starts drawing images. The fill is a single
+     * [android.graphics.Canvas.drawColor] call — `O(W*H)` for
+     * the export canvas, which is negligible relative to the
+     * existing two-pass decode work.
+     */
+    fun exportCanvas(uri: Uri, backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode) {
         val state = mainVm._uiState.value
         val images = state.images
         if (images.isEmpty()) return
@@ -2060,6 +2083,19 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         Bitmap.Config.ARGB_8888,
                     )
                     val canvas = android.graphics.Canvas(bitmap)
+
+                    // V_NOW (2026-06-16 user spec "导出画布新增背景选项"):
+                    // if the user picked [ExportCanvasBackgroundMode.CANVAS_BACKGROUND]
+                    // in the canvas-export dialog, pre-fill the bitmap with the
+                    // current canvas background colour. The fill goes BEFORE Pass 2
+                    // so the laid-out images draw on top of the colour, matching
+                    // the on-screen rendering (where the background is the Box's
+                    // Modifier.background and the images are children drawn after).
+                    // [TRANSPARENT] mode skips the fill — the bitmap keeps its
+                    // default ARGB_8888 alpha=0 (transparent) state.
+                    if (backgroundMode == com.pockref.app.model.ExportCanvasBackgroundMode.CANVAS_BACKGROUND) {
+                        canvas.drawColor(state.backgroundColor.toArgb())
+                    }
 
                     // -----------------------------------------------------------------
                     // Pass 2: stream-decode with inSampleSize, draw, recycle.

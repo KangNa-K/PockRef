@@ -892,9 +892,26 @@ fun PockRefApp(
     val exportJpgLauncher = rememberLauncherForActivityResult(CreateDocument("image/jpeg")) { uri ->
         uri?.let { onAction(PockRefAction.ConfirmExport(it, com.pockref.app.model.ExportFormat.JPEG)) }
     }
-    // Canvas export: export the entire canvas as a single PNG
+    // Canvas export: export the entire canvas as a single PNG.
+    // V_NOW (2026-06-16): the URI-returning callback reads the
+    // current [state.exportCanvasBackground] (which the
+    // [ExportCanvasDialogHost] wrote via
+    // [PockRefAction.SetExportCanvasBackground]) and passes it
+    // through [PockRefAction.ConfirmExportCanvas] so the
+    // [com.pockref.app.ui.PureRefViewModelScene.exportCanvas]
+    // call knows whether to fill the bitmap with the canvas
+    // background colour or leave it transparent. The dialog
+    // dismisses itself in the same reducer via
+    // [PockRefUiState.showExportCanvasDialog] = false.
     val exportCanvasLauncher = rememberLauncherForActivityResult(CreateDocument("image/png")) { uri ->
-        uri?.let { onAction(PockRefAction.ConfirmExportCanvas(it)) }
+        uri?.let {
+            onAction(
+                PockRefAction.ConfirmExportCanvas(
+                    uri = it,
+                    backgroundMode = state.exportCanvasBackground,
+                ),
+            )
+        }
     }
     // Multi-export: pick a FOLDER, then write every selected image
     // as a sibling file inside it. The same format launches both
@@ -1328,8 +1345,18 @@ fun PockRefApp(
                     onAction = onAction,
                     onSaveScene = onSaveScene,
                     onExportCanvas = {
-                        val sceneName = state.sceneName.ifBlank { "canvas" }
-                        exportCanvasLauncher.launch("$sceneName.png")
+                        // V_NOW (2026-06-16): the canvas-export
+                        // entry used to launch the SAF picker
+                        // directly, bypassing the
+                        // [ExportCanvasDialogHost]. Now we
+                        // dispatch [PockRefAction.ExportCanvas]
+                        // to open the dialog; the dialog's
+                        // "确认导出" button is the single point
+                        // that reads the chosen [maxDim] +
+                        // [backgroundMode] and launches the
+                        // picker (which then comes back through
+                        // [exportCanvasLauncher] above).
+                        onAction(PockRefAction.ExportCanvas)
                     },
                     // V_NOW: chrome-mutex — any click in the
                     // right-bottom panel (FAB tap / long-press
@@ -1774,6 +1801,32 @@ fun PockRefApp(
                     exportBatchPngLauncher = exportBatchPngLauncher,
                     exportBatchJpgLauncher = exportBatchJpgLauncher,
                     onDismiss = { onAction(PockRefAction.CancelExport) },
+                )
+            }
+            // V_NOW (2026-06-16): the canvas-export options
+            // dialog. Was previously a dead state — the
+            // [PockRefUiState.showExportCanvasDialog] flag was
+            // set in [PureRefViewModel] but no composable read
+            // it, so the user saw the SAF picker pop up
+            // directly with no options to pick. Now
+            // [onExportCanvas] dispatches [PockRefAction.ExportCanvas]
+            // (which sets this flag to true), and this
+            // composable is the single place that consumes the
+            // flag and renders [ExportCanvasDialogHost]. The
+            // dialog owns the dismiss flow via
+            // [PockRefAction.CancelExportCanvas] (back / scrim
+            // tap) and the "确认导出" button (which
+            // launches the SAF picker — the callback then
+            // dispatches [PockRefAction.ConfirmExportCanvas]
+            // with the URI + the current background mode from
+            // state).
+            if (state.showExportCanvasDialog) {
+                ExportCanvasDialogHost(
+                    sceneName = state.sceneName,
+                    maxDim = state.exportCanvasMaxDim,
+                    backgroundMode = state.exportCanvasBackground,
+                    onAction = onAction,
+                    exportCanvasLauncher = exportCanvasLauncher,
                 )
             }
         }
@@ -11066,6 +11119,194 @@ private fun ExportDialogHost(
         confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        },
+    )
+}
+
+/**
+ * V_NOW (2026-06-16 user spec "导出画布新增背景选项"):
+ * the canvas-export options dialog. Renders when
+ * [PockRefUiState.showExportCanvasDialog] is true. Two
+ * segmented-button rows:
+ *   1. **Max dim** (existing 2026-06-09 spec "导出画布
+ *      选项 — 无尺寸上限"): the user picks a longest-edge
+ *      cap. Default = 8192px; the alternative is "no cap"
+ *      which the dialog warns can OOM on small-heap
+ *      devices.
+ *   2. **Background** (new 2026-06-16 spec): TRANSPARENT
+ *      (default, preserves the pre-feature behaviour of
+ *      [com.pockref.app.ui.PureRefViewModelScene.exportCanvas])
+ *      or CANVAS_BACKGROUND (fills the export bitmap with
+ *      [PockRefUiState.backgroundColor] before Pass 2
+ *      draws the images).
+ *
+ * The "确认导出" button is the single point that dismisses
+ * the dialog AND launches the SAF picker. Chip clicks only
+ * write to state — they don't dismiss — so the user can
+ * flip both rows before committing. The previous reducer
+ * (pre-1.3.0) had [com.pockref.app.ui.PockRefAction.SetExportCanvasMaxDim]
+ * dismiss the dialog, which would have closed it on every
+ * max-dim chip click; the new design removes that dismiss
+ * and the "确认导出" button owns the dismiss+launch flow.
+ *
+ * Forced to PNG regardless of background mode: JPEG
+ * either ignores alpha (filling opaque) or contradicts
+ * the user's CANVAS_BACKGROUND pick when alpha is set.
+ * The dialog's helper text explains this when the user
+ * picks TRANSPARENT.
+ */
+@Composable
+private fun ExportCanvasDialogHost(
+    sceneName: String,
+    maxDim: Int?,
+    backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode,
+    onAction: (PockRefAction) -> Unit,
+    exportCanvasLauncher: androidx.activity.result.ActivityResultLauncher<String>,
+) {
+    val effectiveSceneName = sceneName.ifBlank { "canvas" }
+    AlertDialog(
+        onDismissRequest = { onAction(PockRefAction.CancelExportCanvas) },
+        title = { Text("导出画布") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Scope chip — mirror the [ExportDialogHost] R-05
+                // chip so the user knows exactly which export path
+                // this dialog controls (vs. the per-image
+                // [ExportDialogHost] which exports the selection).
+                Surface(
+                    shape = RoundedCornerShape(Dimens.ChipCornerRadius),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    tonalElevation = 0.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Rounded.Layers,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                        Text(
+                            text = "导出当前画布的全部图片(单张 PNG,不是逐图)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                    }
+                }
+
+                // ── Max-dim segmented control ──
+                Text(
+                    text = "尺寸上限",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilterChip(
+                        selected = maxDim == 8192,
+                        onClick = { onAction(PockRefAction.SetExportCanvasMaxDim(8192)) },
+                        label = { Text("标准\n(最长 8192px)") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    FilterChip(
+                        selected = maxDim == null,
+                        onClick = { onAction(PockRefAction.SetExportCanvasMaxDim(null)) },
+                        label = { Text("原始画质\n(无上限)") },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                // V_NOW (2026-06-09): the "no cap" path can OOM on
+                // small-heap devices (canvas sizes to actual bbox,
+                // e.g. 20000×15000 ≈ 1.2GB). Inline hint to set
+                // expectations before the user picks.
+                if (maxDim == null) {
+                    Text(
+                        text = "⚠ 画布按实际内容尺寸输出,可能非常大,小内存设备可能 OOM",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                // ── Background segmented control ──
+                Text(
+                    text = "背景",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilterChip(
+                        selected = backgroundMode == com.pockref.app.model.ExportCanvasBackgroundMode.TRANSPARENT,
+                        onClick = {
+                            onAction(
+                                PockRefAction.SetExportCanvasBackground(
+                                    com.pockref.app.model.ExportCanvasBackgroundMode.TRANSPARENT,
+                                ),
+                            )
+                        },
+                        label = { Text("透明背景") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    FilterChip(
+                        selected = backgroundMode == com.pockref.app.model.ExportCanvasBackgroundMode.CANVAS_BACKGROUND,
+                        onClick = {
+                            onAction(
+                                PockRefAction.SetExportCanvasBackground(
+                                    com.pockref.app.model.ExportCanvasBackgroundMode.CANVAS_BACKGROUND,
+                                ),
+                            )
+                        },
+                        label = { Text("画布背景色") },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                // V_NOW (2026-06-16): transparent + JPEG would
+                // contradict each other (JPEG forces opaque fill
+                // in most encoders). The export itself is forced
+                // to PNG, so we surface a one-liner explaining
+                // why JPG doesn't appear in this dialog — same
+                // pattern as [ExportDialogHost] for the per-image
+                // path, but inlined here because the format choice
+                // is implicit ("always PNG" for export-canvas).
+                if (backgroundMode == com.pockref.app.model.ExportCanvasBackgroundMode.TRANSPARENT) {
+                    Text(
+                        text = "PNG 格式,无背景填充(适合后续编辑/合成)",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text(
+                        text = "PNG 格式,导出图背景色 = 画布当前背景色",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    // V_NOW: chip clicks above already wrote the
+                    // chosen [maxDim] and [backgroundMode] into
+                    // state; the SAF callback reads them back via
+                    // [PockRefAction.ConfirmExportCanvas]. We
+                    // launch the picker here, NOT in a reducer,
+                    // because [exportCanvasLauncher] is a UI-scope
+                    // ActivityResultLauncher that requires the
+                    // Compose dispatch thread.
+                    exportCanvasLauncher.launch("$effectiveSceneName.png")
+                },
+            ) {
+                Text("确认导出")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onAction(PockRefAction.CancelExportCanvas) }) {
                 Text("取消")
             }
         },

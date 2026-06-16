@@ -897,20 +897,41 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  * the export into a1×N or N×1 canvas with no
  * meaningful drawable area.
  */
- is PockRefAction.SetExportCanvasMaxDim -> {
- _uiState.update {
- it.copy(
- exportCanvasMaxDim = action.maxDim?.coerceAtLeast(1),
- showExportCanvasDialog = false,
- )
- }
- }
- PockRefAction.CancelExportCanvas -> {
- _uiState.update { it.copy(showExportCanvasDialog = false) }
- }
- is PockRefAction.ConfirmExportCanvas -> {
+  is PockRefAction.SetExportCanvasMaxDim -> {
+  // V_NOW (2026-06-16): removed the `showExportCanvasDialog = false`
+  // dismiss that was here when the dialog didn't exist. The dialog
+  // now drives dismissal via [ConfirmExportCanvas] (user picked a
+  // save URI from the SAF picker) or [CancelExportCanvas] (user
+  // dismissed the dialog). Writing the cap and dismissing in the
+  // same dispatch closed the dialog on every chip click, which
+  // made it impossible to compose a "标准 8192" + "画布背景色"
+  // + "确认导出" three-step flow. Now the cap is just a state
+  // value; the dialog reads it back for visual selected-state
+  // and only the confirm / cancel paths flip the visibility flag.
+  _uiState.update {
+  it.copy(
+  exportCanvasMaxDim = action.maxDim?.coerceAtLeast(1),
+  )
+  }
+  }
+  is PockRefAction.SetExportCanvasBackground -> {
+      // V_NOW (2026-06-16): the dialog's "透明背景" /
+      // "画布背景色" segmented button dispatches this. We
+      // only write [exportCanvasBackground] — unlike
+      // [SetExportCanvasMaxDim] we do NOT dismiss the
+      // dialog, because the dialog's "确认导出" button is
+      // the only thing that picks up the new value and
+      // launches the SAF picker. Dismissing here would
+      // close the dialog on every chip click, forcing the
+      // user to re-open it to confirm.
+      _uiState.update { it.copy(exportCanvasBackground = action.mode) }
+  }
+  PockRefAction.CancelExportCanvas -> {
+  _uiState.update { it.copy(showExportCanvasDialog = false) }
+  }
+  is PockRefAction.ConfirmExportCanvas -> {
                 _uiState.update { it.copy(showExportCanvasDialog = false) }
-                sceneController.exportCanvas(action.uri)
+                sceneController.exportCanvas(action.uri, action.backgroundMode)
             }
             is PockRefAction.UpdateCanvasViewport -> sceneController.updateCanvasViewport(action.width, action.height)
             is PockRefAction.SetSceneName -> sceneController.setSceneName(action.value)

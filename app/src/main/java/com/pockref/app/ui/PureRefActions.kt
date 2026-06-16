@@ -100,19 +100,57 @@ sealed interface PockRefAction {
  * reducer clamps to >=1 defensively so a malformed
  * dispatch can't produce a0-pixel canvas.
  */
- data class SetExportCanvasMaxDim(val maxDim: Int?) : PockRefAction
- /**
- * V_NOW (2026-06-09): dismiss the canvas-export options
- * dialog without changing the cap. Dispatched by the
- * dialog's [androidx.compose.material3.AlertDialog]
- * `onDismissRequest` (system back, scrim tap). Idempotent —
- * setting the flag to false when it's already false is a
- * no-op. Does NOT alter [PockRefUiState.exportCanvasMaxDim]
- * — the next [PockRefAction.SetExportCanvasMaxDim] or the
- * default8192 fallback will be used.
- */
- data object CancelExportCanvas : PockRefAction
- data class ConfirmExportCanvas(val uri: Uri) : PockRefAction
+  data class SetExportCanvasMaxDim(val maxDim: Int?) : PockRefAction
+  // V_NOW (2026-06-16): the KDoc above (saying "1) stores the chosen
+  // cap AND 2) dismisses the dialog") is OBSOLETE — the dismiss
+  // path was removed in commit 1.3.0 (see
+  // [com.pockref.app.ui.PureRefViewModel] reducer for
+  // [SetExportCanvasMaxDim]). The dialog is now a two-step
+  // "pick options → confirm" flow: chip clicks write the
+  // value into state without dismissing, and the dialog's
+  // "确认导出" button is the single point that dismisses +
+  // launches the SAF picker. The pre-feature comment about
+  // "dismiss + SAF picker flow" was a half-implementation
+  // design (the dialog composable was never written) that
+  // didn't match the now-shipped dialog shape.
+  /**
+  * V_NOW (2026-06-16 user spec "导出画布新增背景选项"):
+  * the canvas-export dialog's "透明背景" / "画布背景色"
+  * segmented button dispatches this. The reducer writes the
+  * mode to [PockRefUiState.exportCanvasBackground] (default
+  * [com.pockref.app.model.ExportCanvasBackgroundMode.TRANSPARENT]).
+  * Like [SetExportCanvasMaxDim], this is per-export (not
+  * persisted) — the user picks the mode every time they
+  * open the dialog.
+  */
+  data class SetExportCanvasBackground(val mode: com.pockref.app.model.ExportCanvasBackgroundMode) : PockRefAction
+  /**
+  * V_NOW (2026-06-09): dismiss the canvas-export options
+  * dialog without changing the cap. Dispatched by the
+  * dialog's [androidx.compose.material3.AlertDialog]
+  * `onDismissRequest` (system back, scrim tap). Idempotent —
+  * setting the flag to false when it's already false is a
+  * no-op. Does NOT alter [PockRefUiState.exportCanvasMaxDim]
+  * — the next [PockRefAction.SetExportCanvasMaxDim] or the
+  * default8192 fallback will be used.
+  */
+  data object CancelExportCanvas : PockRefAction
+  /**
+  * User picked a save URI from the SAF picker AND the dialog's
+  * background mode is now in [PockRefUiState.exportCanvasBackground].
+  * The [backgroundMode] is also passed explicitly so
+  * [com.pockref.app.ui.PureRefViewModelScene.exportCanvas] can
+  * pin to the value the user confirmed (instead of re-reading
+  * state that may have been mutated between the dialog's
+  * confirm-click and the SAF picker's return — the dialog and
+  * the picker both go through Compose recomposition, so
+  * passing the value explicitly avoids any re-entrancy on
+  * the [exportCanvasBackground] field).
+  */
+  data class ConfirmExportCanvas(
+      val uri: Uri,
+      val backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode,
+  ) : PockRefAction
     data class UpdateCanvasViewport(val width: Float, val height: Float) : PockRefAction
     data class ImportImages(val uris: List<Uri>) : PockRefAction
     /**

@@ -60,6 +60,33 @@ enum class ExportFormat(val mimeType: String, val extension: String) {
 }
 
 /**
+ * V_NOW (2026-06-16 user spec "导出画布新增背景选项"):
+ * background-fill mode for the **export-canvas** path
+ * ([com.pockref.app.ui.PureRefViewModelScene.exportCanvas]).
+ *
+ * - [TRANSPARENT] — the export bitmap is left as the default
+ *   ARGB_8888 transparent background; only the laid-out images
+ *   are drawn. PNG is the only meaningful format here (JPEG
+ *   would force-fill its own opaque background, contradicting
+ *   the user's choice). The export dialog surfaces a hint when
+ *   the user picks TRANSPARENT to make this expectation explicit.
+ *
+ * - [CANVAS_BACKGROUND] — the export bitmap is pre-filled with
+ *   [com.pockref.app.model.PockRefUiState.backgroundColor] before
+ *   the images are drawn. The result is a non-transparent PNG/JPEG
+ *   that visually matches the on-screen canvas, useful for
+ *   posting reference boards to social/chat where transparency
+ *   is undesirable.
+ *
+ * Default is [TRANSPARENT] to preserve the pre-feature
+ * behaviour. Not persisted — the user picks per export.
+ */
+enum class ExportCanvasBackgroundMode {
+    TRANSPARENT,
+    CANVAS_BACKGROUND,
+}
+
+/**
  * Single source of truth for scene display names. All paths that
  * set [PockRefUiState.sceneName] go through this object so the
  * convention stays consistent (and the "•" unsaved indicator is
@@ -950,6 +977,17 @@ data class PockRefUiState(
     * via the export dialog (or by direct state copy in tests).
     */
     val exportCanvasMaxDim: Int? =8192,
+    /**
+    * V_NOW (2026-06-16 user spec "导出画布新增背景选项"):
+    * the background-fill mode for the **export-canvas** path
+    * ([com.pockref.app.ui.PureRefViewModelScene.exportCanvas]).
+    * Set by [com.pockref.app.ui.PockRefAction.SetExportCanvasBackground]
+    * via the canvas-export dialog. Default = [ExportCanvasBackgroundMode.TRANSPARENT]
+    * which preserves the pre-feature behaviour. Not persisted —
+    * the user picks per export (matches the [exportCanvasMaxDim]
+    * pattern, which is also per-export).
+    */
+    val exportCanvasBackground: ExportCanvasBackgroundMode = ExportCanvasBackgroundMode.TRANSPARENT,
     val showUnsavedChangesDialog: Boolean = false,
     /**
      * Settings sheet visibility. True = the [com.pockref.app.ui.SettingsPanel]
