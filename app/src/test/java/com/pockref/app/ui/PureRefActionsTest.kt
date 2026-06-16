@@ -147,7 +147,7 @@ class PockRefActionsTest {
     //   - [BulkDeleteRecentScenes] (dialog confirm)
     // The change is additive — no variant was renamed
     // or removed.
-    private val expectedVariantCount: Int = 146
+    private val expectedVariantCount: Int = 152
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses
