@@ -876,10 +876,37 @@ fun PockRefApp(
     // `application/octet-stream + .pur path` intent filter in
     // AndroidManifest.xml, so old .pur files saved by older
     // versions still open in PockRef via that filter.
+    // V_NOW (2026-06-16): [ACTION_CREATE_DOCUMENT] returns a URI
+    // whose per-task write grant is enough while the process is
+    // alive, but the [ExternalStorageProvider] rejects the
+    // write with `Permission Denial ... requires
+    // android.permission.MANAGE_DOCUMENTS, or grantUriPermission()`
+    // once the process dies (or the user lands in the Downloads
+    // tree, which routes through the MANAGE_DOCUMENTS check on
+    // Samsung forks). Mirror the [exportBatchPngLauncher] /
+    // [exportBatchJpgLauncher] fix: take a persistable grant so
+    // the URI survives, and swallow SecurityException because
+    // some providers don't support persistable grants at all —
+    // the per-task grant is still good for the lifetime of the
+    // process, which covers the immediate save.
     val saveSceneLauncher = rememberLauncherForActivityResult(
         CreateDocument(com.pockref.app.MainActivity.PUR_SCENE_MIME),
     ) { uri ->
-        uri?.let { onAction(PockRefAction.SaveScene(it)) }
+        uri?.let {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    it,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }.onFailure { e ->
+                android.util.Log.w(
+                    "PockRefSave",
+                    "takePersistableUriPermission failed: ${e.message}",
+                )
+            }
+            onAction(PockRefAction.SaveScene(it))
+        }
     }
     // Export launchers are declared inside [if
     // (state.showExportDialog)] (where they're used) so the
