@@ -427,6 +427,19 @@ class AppPreferences(context: Context) {
             prefs.edit().putString(KEY_MINIMAP_SLIDER_ORIENTATION, value.name).apply()
         }
 
+    /**
+     * V_NOW (2026-06-16): whether the start page renders the
+     * log-export FAB. Default ON so the 1.3.0 release ships with
+     * the FAB visible (matches the spec "启动页新增悬浮按钮"); a
+     * user who never opens settings sees the FAB until they
+     * explicitly opt out. Persists across app restarts.
+     */
+    var showStartPageLogExportFab: Boolean
+        get() = prefs.getBoolean(KEY_SHOW_START_PAGE_LOG_EXPORT_FAB, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_SHOW_START_PAGE_LOG_EXPORT_FAB, value).apply()
+        }
+
     companion object {
         private const val PREFS_NAME = "pockref_settings"
         private const val KEY_DEFAULT_BG_PRESET = "default_background_preset"
@@ -468,6 +481,10 @@ class AppPreferences(context: Context) {
         private const val KEY_MINIMAP_ZOOM_SCALE = "minimap_zoom_scale"
         private const val KEY_MINIMAP_DISPLAY_MODE = "minimap_display_mode"
         private const val KEY_MINIMAP_SLIDER_ORIENTATION = "minimap_slider_orientation"
+        // V_NOW (2026-06-16): see [showStartPageLogExportFab] field
+        // above. New pref, fresh-install default = true (so the FAB
+        // is visible the first time the user opens the app).
+        private const val KEY_SHOW_START_PAGE_LOG_EXPORT_FAB = "show_start_page_log_export_fab"
         // V_NOW (2026-06-08): see [globalImageLock] field above.
         private const val KEY_GLOBAL_IMAGE_LOCK = "global_image_lock"
  private const val KEY_LOCK_CANVAS_FROZEN = "lock_canvas_frozen"

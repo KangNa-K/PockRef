@@ -2016,13 +2016,29 @@ fun PockRefApp(
             // feature was scoped to. The StateFlow + callback
             // come from PockRefApp's parameters so we don't pull
             // a viewModel reference into this 11k-line composable.
-            LogExportFab(
-                exportInProgress = exportInProgressFlow,
-                onStartLogExport = onStartLogExport,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(Dimens.EdgeInset),
-            )
+            //
+            // V_NOW (2026-06-16 user feedback "在设置里增加启动
+            // 页是否显示导出日志的开关"): the mount is gated by
+            // [PockRefUiState.showStartPageLogExportFab] (default
+            // true, set in [PockRefViewModel] from
+            // [AppPreferences.showStartPageLogExportFab] on init,
+            // toggled by Settings → 外观 → "启动页显示导出日志").
+            // When the user flips the toggle off, the FAB
+            // disappears entirely from the start page. The export
+            // action itself is unaffected — there are no other
+            // entry points in 1.3.0, so flipping the toggle off
+            // effectively hides the only way to start a log
+            // export; the user can re-enable via Settings to
+            // restore the FAB.
+            if (state.showStartPageLogExportFab) {
+                LogExportFab(
+                    exportInProgress = exportInProgressFlow,
+                    onStartLogExport = onStartLogExport,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(Dimens.EdgeInset),
+                )
+            }
         } else {
             if (state.cropImageId != null) {
                 // V_NOW (M3 sheet chrome, user feedback "裁切界面的视觉风格

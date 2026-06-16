@@ -5,9 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -16,7 +14,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -27,7 +24,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -132,66 +128,54 @@ fun LogExportFab(
     val inProgress by exportInProgress.collectAsState()
     val clickEnabled = !inProgress && state !is LogExportState.Loading
 
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+    Box(
+        modifier = modifier
+            .size(Dimens.BottomPanelChromeSize)
+            .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
+            .background(
+                MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
+            )
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outlineVariant,
+                RoundedCornerShape(Dimens.ChromeCornerRadius),
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            modifier = Modifier
-                .size(Dimens.BottomPanelChromeSize)
-                .shadow(Dimens.FabElevation, RoundedCornerShape(Dimens.ChromeCornerRadius))
-                .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
-                .background(
-                    MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
+        IconButton(
+            onClick = {
+                if (!clickEnabled) return@IconButton
+                state = LogExportState.Loading
+                onStartLogExport(
+                    appLabel,
+                    { name, content ->
+                        pendingName = name
+                        pendingContent = content
+                        state = LogExportState.Idle
+                        launcher.launch(name)
+                    },
+                    { reason ->
+                        state = LogExportState.Error(reason)
+                    },
                 )
-                .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outlineVariant,
-                    RoundedCornerShape(Dimens.ChromeCornerRadius),
-                ),
-            contentAlignment = Alignment.Center,
+            },
+            enabled = clickEnabled,
         ) {
-            IconButton(
-                onClick = {
-                    if (!clickEnabled) return@IconButton
-                    state = LogExportState.Loading
-                    onStartLogExport(
-                        appLabel,
-                        { name, content ->
-                            pendingName = name
-                            pendingContent = content
-                            state = LogExportState.Idle
-                            launcher.launch(name)
-                        },
-                        { reason ->
-                            state = LogExportState.Error(reason)
-                        },
-                    )
-                },
-                enabled = clickEnabled,
-            ) {
-                if (state is LogExportState.Loading || inProgress) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Rounded.Description,
-                        contentDescription = stringResource(R.string.log_export_button_label),
-                        tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
+            if (state is LogExportState.Loading || inProgress) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Rounded.Description,
+                    contentDescription = stringResource(R.string.log_export_button_label),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
-        Text(
-            text = stringResource(R.string.log_export_button_label),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 
     // Error → show toast + auto-reset to Idle after 1.5s.

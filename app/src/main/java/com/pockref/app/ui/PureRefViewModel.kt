@@ -209,6 +209,12 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             minimapZoomScale = appPrefs.minimapZoomScale,
             minimapDisplayMode = appPrefs.minimapDisplayMode,
             minimapSliderOrientation = appPrefs.minimapSliderOrientation,
+            // V_NOW (2026-06-16): see
+            // [AppPreferences.showStartPageLogExportFab]. The 1.3.0
+            // spec ships the FAB visible by default; a user who
+            // never opens settings sees it until they explicitly
+            // opt out via Settings → 外观.
+            showStartPageLogExportFab = appPrefs.showStartPageLogExportFab,
         )
     )
     val uiState: StateFlow<PockRefUiState> = _uiState.asStateFlow()
@@ -988,6 +994,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.SetMinimapZoomScale -> setMinimapZoomScale(action.scale)
             is PockRefAction.SetMinimapDisplayMode -> setMinimapDisplayMode(action.mode)
             is PockRefAction.SetMinimapSliderOrientation -> setMinimapSliderOrientation(action.orientation)
+            is PockRefAction.SetShowStartPageLogExportFab -> setShowStartPageLogExportFab(action.show)
             PockRefAction.SetMenuBarsCollapsed -> collapseMenuBarsOnWindowBlur()
             PockRefAction.RestoreMenuBarsOnFocus -> restoreMenuBarsOnWindowFocus()
             is PockRefAction.SetSettingsSheetOpen -> setSettingsSheetOpen(action.open)
@@ -1183,6 +1190,23 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         if (orientation == _uiState.value.minimapSliderOrientation) return
         appPrefs.minimapSliderOrientation = orientation
         _uiState.update { it.copy(minimapSliderOrientation = orientation) }
+    }
+
+    /**
+     * V_NOW (2026-06-16): toggle the start-page log-export FAB.
+     * Persists via [AppPreferences.showStartPageLogExportFab] so
+     * the user's choice survives app restart. Idempotent — if
+     * the value didn't change, skip the prefs write and the state
+     * update to avoid spurious recomposition of the start-page
+     * branch (where [com.pockref.app.ui.logs.LogExportFab] is
+     * mounted under an `if (state.showStartPageLogExportFab)`
+     * guard, so a no-op write still costs an unnecessary
+     * `_uiState.update` + observe-cycle).
+     */
+    internal fun setShowStartPageLogExportFab(show: Boolean) {
+        if (show == _uiState.value.showStartPageLogExportFab) return
+        appPrefs.showStartPageLogExportFab = show
+        _uiState.update { it.copy(showStartPageLogExportFab = show) }
     }
 
     /**

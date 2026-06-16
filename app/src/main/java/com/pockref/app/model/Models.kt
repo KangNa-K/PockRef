@@ -1097,6 +1097,19 @@ data class PockRefUiState(
      */
     val minimapSliderOrientation: MinimapSliderOrientation = MinimapSliderOrientation.VERTICAL,
     /**
+     * V_NOW (2026-06-16): whether the start page renders the
+     * log-export FAB. Mirrors
+     * [com.pockref.app.data.AppPreferences.showStartPageLogExportFab].
+     * Default true so the 1.3.0 release ships with the FAB
+     * visible — the spec ("启动页新增悬浮按钮") requires it. The
+     * user can flip this in Settings → 外观 → "启动页显示导出
+     * 日志" if they want a clean start page; the FAB just
+     * disappears without affecting the export action itself
+     * (which is also reachable via long-press menu paths etc.,
+     * not just the FAB).
+     */
+    val showStartPageLogExportFab: Boolean = true,
+    /**
      * Active settings tab (V_NOW: tabbed settings sheet).
      * Persists across sheet open/close so the user comes
      * back to whichever tab they were on. Default is
