@@ -32,9 +32,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.pockref.app.R
-import com.pockref.app.ui.PockRefViewModel
 import com.pockref.app.ui.theme.Dimens
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * V_NOW (2026-06-16, "启动页导出运行日志" feature):
@@ -54,11 +55,26 @@ import kotlinx.coroutines.delay
  *
  * The composable owns the [rememberLauncherForActivityResult] for
  * `ACTION_CREATE_DOCUMENT("text/plain")`; the VM hands back the
- * assembled text via a closure, never via StateFlow.
+ * assembled text via [onStartLogExport]'s `onReady` closure,
+ * never via StateFlow.
+ *
+ * @param exportInProgress A hot StateFlow that mirrors the VM's
+ *                         `logExportInProgress` — true while a
+ *                         build coroutine is in flight. Owned by
+ *                         the caller so we don't depend on a VM
+ *                         ref here (PockRefApp doesn't take one).
+ * @param onStartLogExport Click → invoke this with the same
+ *                         3-tuple signature as
+ *                         [com.pockref.app.ui.PockRefViewModel.startLogExport].
  */
 @Composable
 fun LogExportFab(
-    viewModel: PockRefViewModel,
+    exportInProgress: StateFlow<Boolean>,
+    onStartLogExport: (
+        appLabel: String,
+        onReady: (suggestedName: String, content: String) -> Unit,
+        onError: (reason: String) -> Unit,
+    ) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -113,7 +129,7 @@ fun LogExportFab(
     }
 
     // VM in-progress → disable button + show progress.
-    val inProgress by viewModel.logExportInProgress.collectAsState()
+    val inProgress by exportInProgress.collectAsState()
     val clickEnabled = !inProgress && state !is LogExportState.Loading
 
     Column(
@@ -140,15 +156,15 @@ fun LogExportFab(
                 onClick = {
                     if (!clickEnabled) return@IconButton
                     state = LogExportState.Loading
-                    viewModel.startLogExport(
-                        appLabel = appLabel,
-                        onReady = { name, content ->
+                    onStartLogExport(
+                        appLabel,
+                        { name, content ->
                             pendingName = name
                             pendingContent = content
                             state = LogExportState.Idle
                             launcher.launch(name)
                         },
-                        onError = { reason ->
+                        { reason ->
                             state = LogExportState.Error(reason)
                         },
                     )
@@ -192,3 +208,4 @@ fun LogExportFab(
         }
     }
 }
+
