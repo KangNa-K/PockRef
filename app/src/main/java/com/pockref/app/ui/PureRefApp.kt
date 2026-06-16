@@ -3178,10 +3178,30 @@ private fun BoxScope.CropOverlay(
             }
             if (resolved != null && resolved.isNotEmpty()) {
                 value = withContext(Dispatchers.IO) {
-                    android.graphics.BitmapFactory.decodeByteArray(
+                    // V_NOW (2026-06-16 user feedback "为什么我的应用
+                    // 会闪退"): the previous code did a full-resolution
+                    // decode here, which for a disk-backed .pur image
+                    // of e.g. 9317×9333 produced a 347MB ARGB_8888
+                    // bitmap that the Compose `Image` couldn't draw to
+                    // the [Canvas] (throwIfCannotDraw fires past
+                    // ~200MB on most devices, including SM-X810's
+                    // Adreno 730). The canvas-render path doesn't
+                    // hit this because it goes through the
+                    // ImageDecodePipeline LOD ladder; only the
+                    // crop-fallback path was unguarded.
+                    //
+                    // [decodeSampledBitmap] mirrors the SceneImageDecoder
+                    // downsample pattern: inJustDecodeBounds to get
+                    // dimensions, power-of-two inSampleSize, precise
+                    // createScaledBitmap to [CROP_FALLBACK_MAX_LONG_EDGE].
+                    // 2048 matches the second-largest rung of the
+                    // canvas LOD ladder (4096 is ultra-zoom; the
+                    // crop UI is a floating layer at most ~half the
+                    // screen, so 2048 is more than enough for the
+                    // user to inspect the crop region).
+                    decodeSampledBitmap(
                         resolved,
-                        0,
-                        resolved.size,
+                        CROP_FALLBACK_MAX_LONG_EDGE,
                     )?.asImageBitmap()
                 }
             }
@@ -6794,6 +6814,87 @@ private fun formatRelativeAge(thenMs: Long, nowMs: Long): String {
  */
 private fun imageFingerprint(image: SceneImage): Pair<Int, String> {
     return image.imageBytes.size to image.mimeType
+}
+
+// V_NOW (2026-06-16 user feedback "为什么我的应用会闪退",
+// logcat: java.lang.RuntimeException: Canvas: trying to draw
+// too large(347892948bytes) bitmap.): the [CropOverlay] fallback
+// path used to call [BitmapFactory.decodeByteArray] on the raw
+// image bytes without any downsample. For a disk-backed .pur
+// image whose original dimensions are e.g. 9317×9333, that
+// produced a 347MB ARGB_8888 bitmap which the Compose `Image`
+// couldn't draw to the [Canvas] (Android framework throws
+// [BaseRecordingCanvas.throwIfCannotDraw] past the ~200MB
+// single-bitmap limit on most devices, including SM-X810's
+// Adreno 730). The canvas-render path (PockRefCanvas /
+// ImageDecodePipeline) already downsample-decodes via the
+// LOD ladder (128→256→512→1024→2048→4096), so the crash
+// was crop-fallback-specific.
+//
+// This helper mirrors [SceneImageDecoder.decodeSampledBitmap]
+// — inJustDecodeBounds to get the original dimensions,
+// inSampleSize power-of-two downsample, then a precise
+// [Bitmap.createScaledBitmap] pass to land on [maxLongEdge].
+// It also recycles intermediate bitmaps so the 331MB
+// intermediate is released the moment the scaled copy exists.
+// Caller is responsible for recycling the returned bitmap.
+
+// Target long-edge for the crop-fallback decoded bitmap.
+// 2048px matches the second-largest rung of the canvas LOD
+// ladder (DECODE_LADDER in [SceneImageDecoder]). The crop
+// UI is a floating layer anchored in the upper half of the
+// safe area, so its longest displayed edge is well under
+// 2000px on SM-X810 (2800×1752 landscape, status bar +
+// toolbar eat the top ~80dp, so the floating crop layer
+// is roughly 1300-1500px on its long side). 2048 is enough
+// for pixel-accurate crop-rect inspection without risking
+// the 200MB Canvas bitmap limit.
+private const val CROP_FALLBACK_MAX_LONG_EDGE = 2048
+private fun decodeSampledBitmap(
+    bytes: ByteArray,
+    maxLongEdge: Int,
+): android.graphics.Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+    // Power-of-two inSampleSize: doubles the downsample each
+    // step until we'd be below [maxLongEdge]. Matches the
+    // Android docs "Power of 2" guidance — values other than
+    // powers of two are rounded down to the nearest one.
+    val longSide = maxOf(bounds.outWidth, bounds.outHeight)
+    var inSampleSize = 1
+    while (longSide / (inSampleSize * 2) >= maxLongEdge) {
+        inSampleSize *= 2
+    }
+
+    val opts = BitmapFactory.Options().apply {
+        this.inSampleSize = inSampleSize
+        inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+        inMutable = false
+    }
+    val decoded = try {
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+    } catch (oom: OutOfMemoryError) {
+        // Retry with 2x downsample if the first pass OOMed.
+        // (The bounds probe above only reads headers, so
+        // outWidth/outHeight doesn't trigger the OOM; it
+        // happens on the pixel-decode pass.)
+        opts.inSampleSize = inSampleSize * 2
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+    } ?: return null
+
+    val longSideDecoded = maxOf(decoded.width, decoded.height)
+    return if (longSideDecoded > maxLongEdge) {
+        val scale = maxLongEdge.toFloat() / longSideDecoded.toFloat()
+        val newW = (decoded.width * scale).toInt().coerceAtLeast(1)
+        val newH = (decoded.height * scale).toInt().coerceAtLeast(1)
+        android.graphics.Bitmap.createScaledBitmap(decoded, newW, newH, true).also {
+            if (it !== decoded) decoded.recycle()
+        }
+    } else {
+        decoded
+    }
 }
 
 @Composable
