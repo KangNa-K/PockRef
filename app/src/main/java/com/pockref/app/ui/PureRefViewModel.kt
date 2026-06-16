@@ -987,6 +987,19 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             // FileProvider). The result comes back as
             // [ImportImages] via the launcher callback.
             PockRefAction.TakePhoto -> { /* no-op: UI layer */ }
+            // V_NOW (2026-06-16, "启动页导出运行日志" feature):
+            // Lifecycle observers for the log-export feature.
+            // Actual work happens in [startLogExport] which the
+            // FAB invokes directly via VM reference. The Started/
+            // Finished branches are no-op observers; Failed is
+            // surfaced as a normal reportError so the user sees a
+            // Snackbar.
+            PockRefAction.RequestLogExport -> Unit
+            PockRefAction.LogExportStarted -> Unit
+            PockRefAction.LogExportFinished -> Unit
+            is PockRefAction.LogExportFailed -> reportError(
+                "Log export failed: ${action.reason}",
+            )
         }
     }
 

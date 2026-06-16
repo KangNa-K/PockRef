@@ -985,6 +985,20 @@ sealed interface PockRefAction {
      * on the handle). Idempotent.
      */
     data object DismissPracticeConfigSheet : PockRefAction
+
+    // V_NOW (2026-06-16, "启动页导出运行日志" feature):
+    // Lifecycle of a log-export click. The Composable dispatches
+    // [RequestLogExport]; the ViewModel emits [LogExportStarted]
+    // when it enters its IO coroutine, [LogExportFinished] on
+    // successful text assembly, and [LogExportFailed] on any
+    // thrown exception. The actual SAF call lives in the
+    // Composable (it owns the launcher) and uses a callback
+    // closure to receive the assembled text — the text never
+    // enters StateFlow because it can be ~100KB.
+    data object RequestLogExport : PockRefAction
+    data object LogExportStarted : PockRefAction
+    data object LogExportFinished : PockRefAction
+    data class  LogExportFailed(val reason: String) : PockRefAction
 }
 
 /**
