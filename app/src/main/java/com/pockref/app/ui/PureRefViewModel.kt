@@ -1912,21 +1912,32 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         }
     }
 
+    // V_NOW (2026-06-17, "启动页左滑删除 = 真删本地文件"): the
+    // single-file start-page delete (dispatched by
+    // [PockRefAction.RemoveRecentScene] from the swipe-to-delete
+    // button in [com.pockref.app.ui.RecentFileGrid]) used to
+    // be a *list-only* delete — it filtered the URI out of the
+    // recent-scenes prefs entry but left the underlying .pur
+    // file on disk. The user saw "scene disappeared from the
+    // grid" but the file was still on disk and would resurface
+    // next time it was picked / opened by another app.
+    //
+    // Fixed by routing through the same disk-delete path that
+    // [bulkDeleteRecentScenes] uses — the bulk handler is
+    // already idempotent, async-safe, handles the lost-URI /
+    // already-gone / unsupported-provider exception cases,
+    // surfaces a snackbar with the result, and re-filters the
+    // recent-scenes list to drop only the URIs that actually
+    // deleted. We pass `listOf(uri)` so the bulk path runs
+    // unchanged for the single-file case.
+    //
+    // UX: the swipe already has a two-step commit
+    // (swipe-past-threshold → tap revealed delete button), so
+    // we don't add a second confirmation dialog here. The
+    // result snackbar ("已删除 1 个文件" / "删除失败") is the
+    // feedback.
     internal fun removeRecentScene(uri: String) {
-        val updated = _uiState.value.recentScenes.filterNot { it.uri == uri }
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
-        _uiState.update { it.copy(recentScenes = updated) }
+        bulkDeleteRecentScenes(listOf(uri))
     }
 
     private fun loadRecentScenes(): List<RecentSceneEntry> {
