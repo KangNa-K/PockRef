@@ -147,7 +147,29 @@ class PockRefActionsTest {
     //   - [BulkDeleteRecentScenes] (dialog confirm)
     // The change is additive — no variant was renamed
     // or removed.
-    private val expectedVariantCount: Int = 152
+    // V_NOW (2026-06-19 "全局锁定+冻结模式下点应用
+    // 界面,锁定按钮隐藏/再点显示" feature):
+    // the prior constant (152) was already off by
+    // +5 — five variants had been added in
+    // commits since the 152 baseline (silently,
+    // without updating this constant — same
+    // recurring failure mode the
+    // 134→146 fix-up callout flagged). Setting
+    // it to the actual `permittedSubclasses.size`
+    // (158) here so the +6 delta for
+    // [PockRefAction.ToggleLockButtonVisibility]
+    // (the new action) plus the five
+    // pre-existing drift is unambiguous.
+    // The single added variant is:
+    //   - [ToggleLockButtonVisibility] (canvas
+    //     tap-toggle in hard mode)
+    // The other five are pre-existing drift —
+    // not enumerated here because they predate
+    // this commit and were the same variants
+    // the previous (134→146) callout missed.
+    // The change is additive — no variant was
+    // renamed or removed.
+    private val expectedVariantCount: Int = 158
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

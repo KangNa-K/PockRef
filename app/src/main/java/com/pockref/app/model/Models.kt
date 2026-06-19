@@ -851,6 +851,43 @@ data class PockRefUiState(
  * for irreversible-action affordances.
  */
  val lockCanvasFrozen: Boolean = false,
+    /**
+ * V_NOW (2026-06-19 user spec "全局锁定+冻结模式下点
+ * 一下应用界面,右上角锁定按钮隐藏/再点显示"): when
+ * `true`, the top-right global-lock toggle button is
+ * hidden by the canvas tap-toggle affordance (only
+ * meaningful while the user is in "hard mode" —
+ * [globalImageLock] AND [lockCanvasFrozen] — because
+ * that's when the chrome is otherwise empty and the
+ * lock button is the only visible UI element). The
+ * state field is VIEW-LOCAL: not persisted, not driven
+ * by AppPreferences. The reducer resets it to `false`
+ * on every exit from lock mode
+ * ([PockRefAction.ToggleGlobalImageLock] /
+ * [PockRefAction.ToggleLockCanvasFrozen] that lands
+ * the user outside the global-lock + frozen window)
+ * so re-entering hard mode always starts with the
+ * lock button visible by default.
+ *
+ * Toggle path:
+ *   - In hard mode, tapping anywhere on the canvas
+ *     dispatches
+ *     [com.pockref.app.ui.PockRefAction.ToggleLockButtonVisibility]
+ *     via the [com.pockref.app.ui.PureRefApp]
+ *     `LockVisibilityToggleOverlay` (a transparent
+ *     [androidx.compose.foundation.layout.Box] sitting
+ *     between [CanvasPanel] and the chrome elements
+ *     in the outer BoxWithConstraints z-order). The
+ *     overlay only renders in hard mode, so the toggle
+ *     is never dispatched outside that window.
+ *   - Taps on the lock button itself do NOT toggle
+ *     this field — the lock button's
+ *     [androidx.compose.foundation.clickable] handler
+ *     consumes the down event before the overlay sees
+ *     it (lock button is rendered AFTER the overlay
+ *     in the outer Box, so it's on top in z-order).
+ */
+ val lockButtonHidden: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     val recentScenes: List<RecentSceneEntry> = emptyList(),

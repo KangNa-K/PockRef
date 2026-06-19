@@ -809,6 +809,38 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                         boxSelectMode = if (newValue) false else it.boxSelectMode,
                         boxSelectRect = if (newValue) null else it.boxSelectRect,
                         boxSelectPreviewIds = if (newValue) emptySet() else it.boxSelectPreviewIds,
+                        // V_NOW (2026-06-19 "全局锁定+冻结
+                        // 模式下点应用界面,锁定按钮隐藏"
+                        // feature): reset the lock-button
+                        // visibility toggle when the user
+                        // FULLY exits lock mode
+                        // (newValue == false) so the lock
+                        // button re-appears immediately.
+                        // Without the reset, a user who
+                        // toggled the button hidden in
+                        // hard mode and then walked out of
+                        // hard mode via the lock button's
+                        // onLongClick (which fires both
+                        // [ToggleLockCanvasFrozen] and
+                        // [ToggleGlobalImageLock]) would
+                        // see no lock button at all
+                        // afterwards — they'd have to
+                        // remember to tap the canvas to
+                        // bring it back. The reset
+                        // guarantees the lock button is
+                        // visible by default whenever
+                        // [globalImageLock] is off, which
+                        // is the right UX. We don't reset
+                        // on entry (newValue == true)
+                        // because [ToggleGlobalImageLock]
+                        // alone only enters SOFT mode
+                        // (button is always visible there
+                        // regardless of [lockButtonHidden])
+                        // and the previous
+                        // [ToggleLockCanvasFrozen]
+                        // reducer already reset on hard-
+                        // mode entry if needed.
+                        lockButtonHidden = if (newValue) it.lockButtonHidden else false,
                     )
                 }
             }
@@ -863,8 +895,57 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  boxSelectMode = if (newFrozen) false else it.boxSelectMode,
  boxSelectRect = if (newFrozen) null else it.boxSelectRect,
  boxSelectPreviewIds = if (newFrozen) emptySet() else it.boxSelectPreviewIds,
+ // V_NOW (2026-06-19 "全局锁定+冻结模式下点应用
+ // 界面,锁定按钮隐藏" feature): reset the
+ // lock-button visibility toggle whenever the
+ // user exits hard mode (newFrozen == false) so
+ // the lock button is visible by default again.
+ // The user is now in soft mode
+ // ([globalImageLock] = true,
+ // [lockCanvasFrozen] = false), where the lock
+ // button is the primary unlock affordance — it
+ // must be visible. Without this reset, a user
+ // who hid the button in hard mode and then
+ // tapped the lock button to back out would
+ // land in soft mode with the button still
+ // hidden, and the only way to recover is to
+ // remember to tap the canvas. We don't reset
+ // on entry (newFrozen == true) because we
+ // want the user's last preference to carry
+ // across a soft→hard transition (rare, but
+ // possible if they backed out via the
+ // system-back gesture). Combined with the
+ // [ToggleGlobalImageLock] reset (which fires
+ // on the full-exit case), this guarantees the
+ // lock button is visible whenever the user is
+ // outside hard mode.
+ lockButtonHidden = if (newFrozen) it.lockButtonHidden else false,
  )
  }
+ }
+ // V_NOW (2026-06-19 user spec "全局锁定+冻结
+ // 模式下点一下应用界面,右上角锁定按钮隐藏/
+ // 再点显示"): flip
+ // [PockRefUiState.lockButtonHidden]. Only
+ // dispatched by the
+ // [com.pockref.app.ui.PureRefApp]
+ // `LockVisibilityToggleOverlay` (which only
+ // renders in hard mode), so no extra
+ // reducer-level guard is needed — a stray
+ // dispatch outside hard mode would still just
+ // flip the flag harmlessly (the gate in
+ // [com.pockref.app.ui.PureRefApp.GlobalLockButton]
+ // reads `!state.lockButtonHidden` and the
+ // other chrome elements are gated by
+ // `!isLockEngaged`, so the flag is
+ // effectively a no-op outside hard mode).
+ // The two reset paths in
+ // [ToggleGlobalImageLock] (full exit) and
+ // [ToggleLockCanvasFrozen] (hard-mode exit)
+ // are what keeps the flag from "leaking"
+ // across sessions.
+ PockRefAction.ToggleLockButtonVisibility -> _uiState.update {
+ it.copy(lockButtonHidden = !it.lockButtonHidden)
  }
             PockRefAction.BeginRenameScene -> _uiState.update {
                 it.copy(renameDialogValue = SceneNaming.sanitizeForStorage(it.sceneName))

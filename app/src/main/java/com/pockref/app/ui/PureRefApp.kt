@@ -1354,6 +1354,22 @@ fun PockRefApp(
                  canvasBitmapCache = canvasBitmapCache,
              )
 
+            // V_NOW (2026-06-19): lock-button visibility
+            // toggle is now handled inside the canvas's
+            // own pointerInput (see the tap-vs-drag
+            // detection at the pointer-up path in
+            // PockRefCanvas). The previous approach used
+            // a separate transparent
+            // [Box(matchParentSize)] overlay with its own
+            // [pointerInput], but on the SM-X810 the
+            // mere presence of a sibling
+            // [matchParentSize] Box with a [pointerInput]
+            // modifier (regardless of pass: Main or
+            // Final) caused the canvas's pan/zoom to
+            // stop working in global-lock mode. Moving
+            // the toggle detection into the canvas's own
+            // gesture loop avoids the sibling entirely.
+
             val statusBarTopPx = WindowInsets.statusBars.getTop(LocalDensity.current)
             val statusBarTopDp = with(LocalDensity.current) { statusBarTopPx.toDp() }
             // Tap-outside-cancel scrim for the inline scene-name
@@ -1821,7 +1837,28 @@ fun PockRefApp(
             // toggle lives at the top-right of the canvas
             // (not inside the toolbar's row), so it has
             // its own gate.
-            if (state.practiceState == null && state.images.isNotEmpty()) {
+            //
+            // V_NOW (2026-06-19 "全局锁定+冻结模式下点
+            // 应用界面,锁定按钮隐藏" feature; same-day
+            // follow-up "激活全局锁定后也要生效,不只是
+            // 冻结模式"): also gate on
+            // `!state.lockButtonHidden` so the user can
+            // tap the canvas in any lock-engaged state
+            // (soft or hard mode — see the
+            // [LockVisibilityToggleOverlay] block above
+            // for why both modes qualify) to hide the
+            // lock button for a clean view, and tap
+            // again to bring it back. The flag is
+            // only toggled by the overlay itself, so
+            // outside any lock-engaged state the
+            // overlay is unmounted and the flag stays
+            // `false` (the reducer also resets it on
+            // every exit from lock mode, see the
+            // [ToggleGlobalImageLock] and
+            // [ToggleLockCanvasFrozen] reducers for
+            // the two reset paths).
+            if (state.practiceState == null && state.images.isNotEmpty() &&
+                !state.lockButtonHidden) {
             val lockInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             val isLockHovered by lockInteractionSource.collectIsHoveredAsState()
             // V_NOW (2026-06-10): the global-lock button
@@ -8996,6 +9033,29 @@ private fun PockRefCanvas(
 
                     val upTime = System.currentTimeMillis()
                     val isTap = !dragStarted && !transformStarted && (upTime - downTime) < 300L && totalDrag.getDistance() < tapMaxDragPx
+
+                    // V_NOW (2026-06-19 user spec "开启全局锁定
+                    // 和冻结模式后,点一下应用界面,右上角锁定
+                    // 按钮也会隐藏起来,再点一下会显示出来"):
+                    // when the user taps the canvas in any
+                    // lock-engaged state (soft or hard mode),
+                    // toggle the lock button's visibility.
+                    // This was previously implemented as a
+                    // separate [Box(matchParentSize)] overlay
+                    // with its own [pointerInput], but that
+                    // approach broke canvas pan/zoom on the
+                    // SM-X810 (the sibling pointerInput
+                    // interfered with the canvas's gesture
+                    // loop regardless of PointerEventPass).
+                    // Moving the toggle into the canvas's own
+                    // gesture loop avoids the sibling entirely.
+                    // The toggle fires for ANY tap on the
+                    // canvas (empty space or on an image) —
+                    // the user's mental model is "tap
+                    // anywhere to toggle the button".
+                    if (isTap && (currentState.globalImageLock || currentState.lockCanvasFrozen) && currentState.images.isNotEmpty()) {
+                        currentOnAction(PockRefAction.ToggleLockButtonVisibility)
+                    }
 
                     // V_NOW (user request): in multi-select mode,
                     // tapping the empty canvas should deselect all

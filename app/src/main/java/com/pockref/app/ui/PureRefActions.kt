@@ -61,6 +61,27 @@ sealed interface PockRefAction {
  // independent toggles for the two flags. Persisted via
  // [com.pockref.app.data.AppPreferences.lockCanvasFrozen].
  data object ToggleLockCanvasFrozen : PockRefAction
+ /**
+ * V_NOW (2026-06-19 user spec "全局锁定+冻结模式下点
+ * 一下应用界面,右上角锁定按钮隐藏/再点显示"): toggle
+ * [com.pockref.app.model.PockRefUiState.lockButtonHidden].
+ * Dispatched by the [com.pockref.app.ui.PureRefApp]
+ * `LockVisibilityToggleOverlay` (a transparent
+ * [androidx.compose.foundation.layout.Box] in the outer
+ * BoxWithConstraints) on every canvas-area tap while
+ * the user is in "hard mode" ([globalImageLock] AND
+ * [lockCanvasFrozen] both `true`). The action is
+ * deliberately not gated inside the reducer — the
+ * overlay only dispatches it from the hard-mode
+ * render branch, so no extra reducer-level guard is
+ * needed. The reducer simply flips the flag, and
+ * [PockRefAction.ToggleGlobalImageLock] /
+ * [PockRefAction.ToggleLockCanvasFrozen] reset it
+ * back to `false` whenever the user exits lock mode
+ * so a future re-entry starts with the lock button
+ * visible by default.
+ */
+ data object ToggleLockButtonVisibility : PockRefAction
     data object BeginRenameScene : PockRefAction
     data class ConfirmRenameScene(val newName: String) : PockRefAction
     data object CancelRenameScene : PockRefAction
