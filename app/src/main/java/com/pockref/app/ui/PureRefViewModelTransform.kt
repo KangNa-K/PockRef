@@ -1203,7 +1203,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // bottom-right of the scene bbox instead of staying put while
         // shrinking). The pure-multiply form has no such term.
         mainVm._uiState.update { state ->
-            val newScale = (state.canvasScale * scaleChange).coerceIn(0.1f, 10f)
+            val newScale = (state.canvasScale * scaleChange).coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
             val scaleRatio = newScale / state.canvasScale
             val newOffset = state.canvasOffset * scaleRatio
             state.copy(canvasScale = newScale, canvasOffset = newOffset, fittedImageId = null)
@@ -1217,7 +1217,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
      */
     internal fun setCanvasZoom(scale: Float) {
         mainVm._uiState.update { state ->
-            val newScale = scale.coerceIn(0.1f, 10f)
+            val newScale = scale.coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
             val scaleRatio = newScale / state.canvasScale
             val newOffset = state.canvasOffset * scaleRatio
             state.copy(canvasScale = newScale, canvasOffset = newOffset, fittedImageId = null)

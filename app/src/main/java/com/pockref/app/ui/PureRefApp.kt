@@ -4859,7 +4859,7 @@ private fun BoxScope.MinimapChrome(
                     onDrag = { dragAmount ->
                         val scaleDelta = -dragAmount.y * 0.005f
                         val newScale = (currentCanvasScale * (1f + scaleDelta))
-                            .coerceIn(0.1f, 10f)
+                            .coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
                         currentOnAction(PockRefAction.SetCanvasZoom(newScale))
                         sliderInteractionStamp.value = System.currentTimeMillis()
                     },
@@ -5111,7 +5111,7 @@ private fun BoxScope.MinimapChrome(
                     onDrag = { dragAmount ->
                         val scaleDelta = -dragAmount.y * 0.005f
                         val newScale = (currentCanvasScale * (1f + scaleDelta))
-                            .coerceIn(0.1f, 10f)
+                            .coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
                         currentOnAction(PockRefAction.SetCanvasZoom(newScale))
                         // Reset the 3s auto-dismiss timer
                         // on every drag tick — same as the
@@ -5252,7 +5252,7 @@ private fun BoxScope.MinimapChrome(
                             // scale change.
                             val scaleDelta = -dragAmount.y * 0.005f
                             val newScale = (currentCanvasScale * (1f + scaleDelta))
-                                .coerceIn(0.1f, 10f)
+                                .coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
                             currentOnAction(PockRefAction.SetCanvasZoom(newScale))
                             sliderInteractionStamp.value = System.currentTimeMillis()
                         },

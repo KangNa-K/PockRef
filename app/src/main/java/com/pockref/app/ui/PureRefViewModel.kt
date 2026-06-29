@@ -45,6 +45,28 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
+ * Canvas (world) zoom factor bounds.
+ *
+ * **MIN_CANVAS_SCALE = 0.02f** (was 0.1f before 1.3.x):
+ * the previous 0.1 lower bound stopped the user from
+ * shrinking the canvas enough to fit a wide spread of
+ * reference images around the work area — the viewport
+ * ceiling at 10% of the world size was too tight once
+ * 20+ refs surrounded the canvas. 0.02 gives a 5×
+ * reduction headroom (10× vs. the screen width budget)
+ * while still keeping thumbnail chips large enough
+ * (sub-1px rendering kicks in around 0.005, so 0.02
+ * stays well above GPU-flicker territory).
+ *
+ * MAX_CANVAS_SCALE = 10f: matches the previous ceiling.
+ * 10× is large enough to inspect a single 4K reference
+ * pixel-by-pixel; raising it would mostly invite
+ * accidental 100× zooms via aggressive pinch gain.
+ */
+internal const val MIN_CANVAS_SCALE: Float = 0.02f
+internal const val MAX_CANVAS_SCALE: Float = 10f
+
+/**
  * A user-facing error to surface through the Snackbar channel.
  * @param message short, already-localized text shown in the UI
  * @param throwable the original cause (for Logcat / future report); never displayed
@@ -723,7 +745,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  // focused — don't touch the canvas
  } else {
  _uiState.update {
- val newScale = action.scale.coerceIn(0.1f,10f)
+ val newScale = action.scale.coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
  it.copy(canvasScale = newScale, canvasOffset = action.offset, fittedImageId = null)
  }
  }
