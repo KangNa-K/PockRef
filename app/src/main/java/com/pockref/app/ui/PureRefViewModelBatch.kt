@@ -182,12 +182,21 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
         // 1.0x (natural zoom); "maximize window space"
         // for small content is interpreted as "use
         // the natural 1:1 zoom and center it" rather
-        // than upscaling. The downscale clamp (0.15f)
-        // stays because anything below that is just
-        // a thumbnail-style "view all the way out" and
-        // the user can pinch out further if they want.
+        // than upscaling.
+        //
+        // V_NOW (2026-06-29, 1.3.x): the downscale floor
+        // was previously [0.15f] (hard-coded literal).
+        // That floor was too high once a user scattered
+        // 20+ reference images around the canvas — the
+        // bbox often spans 10×+ the viewport, so the
+        // geometric fit scale lands around 0.03–0.06, and
+        // the 0.15 cap caused double-tap-empty to crop
+        // off the outer ring of references instead of
+        // fitting the whole scene. Replaced with
+        // [MIN_CANVAS_SCALE] (= 0.02f) so fit-to-screen
+        // and pinch-zoom share the same shrink floor.
         val fitScale = min(scaleX, scaleY)
-        val targetScale = if (fitScale >= 1f) 1f else fitScale.coerceAtLeast(0.15f)
+        val targetScale = if (fitScale >= 1f) 1f else fitScale.coerceAtLeast(MIN_CANVAS_SCALE)
         val centerX = (left + right) / 2f
         val centerY = (top + bottom) / 2f
         mainVm._uiState.update {
