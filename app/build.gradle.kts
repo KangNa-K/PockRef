@@ -4,6 +4,7 @@ plugins {
 }
 
 import com.android.build.api.dsl.ApkSigningConfig
+import java.io.File
 import java.util.Properties
 
 android {
@@ -14,8 +15,8 @@ android {
         applicationId = "com.pockref.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.3.1"
+        versionCode = 13
+        versionName = "1.3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -23,20 +24,46 @@ android {
         }
     }
 
-    // Release signing is loaded from `keystore.properties` (gitignored). The
-    // file sits at the project root and contains:
+    // Release signing is loaded from a `keystore.properties` (gitignored)
+    // that contains:
     //   storeFile=release.keystore
     //   storePassword=...
     //   keyAlias=pockref
     //   keyPassword=...
-    // To rotate: `keytool -genkey ... -keystore release.keystore` and update
-    // the properties file. NEVER commit the properties or the keystore.
-    val keystoreProps = rootProject.file("keystore.properties")
-    val signingConfigRelease: ApkSigningConfig? = if (keystoreProps.exists()) {
+    //
+    // Two locations are checked, in order:
+    //   1. `~/.android-keys/pockref/keystore.properties` — preferred, keeps
+    //      the keystore outside the project tree (so a `git clone` on
+    //      another machine that lacks the key still builds a debug APK
+    //      without ever seeing the production signing material).
+    //   2. `<projectRoot>/keystore.properties` — fallback for older
+    //      setups / CI that drops the file in the project.
+    //
+    // `storeFile` may be an absolute path or a path relative to the
+    // rootProject (which is what the original code did).
+    //
+    // To rotate: `keytool -genkey ... -keystore release.keystore` and
+    // update the properties file. NEVER commit the properties or the
+    // keystore.
+    val userHome = System.getProperty("user.home")
+    val keystoreProps = listOf(
+        file("$userHome/.android-keys/pockref/keystore.properties"),
+        rootProject.file("keystore.properties"),
+    ).firstOrNull { it.exists() }
+    val signingConfigRelease: ApkSigningConfig? = if (keystoreProps != null) {
         val props = Properties()
         keystoreProps.inputStream().use { props.load(it) }
+        val storeFilePath = props.getProperty("storeFile")
+        val rawStoreFile: File? = storeFilePath?.let { File(it) }
+        val resolvedStoreFile: File? = when {
+            rawStoreFile == null -> null
+            rawStoreFile.isAbsolute -> rawStoreFile
+            else -> rootProject.file(storeFilePath)
+        }
         signingConfigs.create("release") {
-            storeFile = rootProject.file(props.getProperty("storeFile"))
+            if (resolvedStoreFile != null) {
+                storeFile = resolvedStoreFile
+            }
             storePassword = props.getProperty("storePassword")
             keyAlias = props.getProperty("keyAlias")
             keyPassword = props.getProperty("keyPassword")
