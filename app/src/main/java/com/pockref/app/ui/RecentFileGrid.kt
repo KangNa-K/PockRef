@@ -344,35 +344,39 @@ private fun RecentFileTile(
                         tempFile.outputStream().use { out -> input.copyTo(out) }
                     }
                     val codec = PurSceneCodec()
-                    val scene = codec.readFromFile(tempFile)
-                    val targetImage = pickCoverTarget(
-                        images = scene.images,
-                        coverImageId = entry.coverImageId,
-                    )
-                    if (targetImage != null) {
-                        codec.imageDecoder.setSourceFile(tempFile)
-                        val decoded = codec.imageDecoder.decodeThumbnail(targetImage)?.bitmap
-                        if (decoded != null) {
-                            // V_NOW (2026-06-11): apply the
-                            // non-destructive cropRect to the
-                            // cover thumbnail so the tile shows
-                            // the cropped view, not the full
-                            // original image.
-                            val crop = targetImage.cropRect
-                            if (crop != null) {
-                                val cx = (crop.left * decoded.width).toInt().coerceIn(0, decoded.width - 1)
-                                val cy = (crop.top * decoded.height).toInt().coerceIn(0, decoded.height - 1)
-                                val cw = ((crop.right - crop.left) * decoded.width).toInt().coerceIn(1, decoded.width - cx)
-                                val ch = ((crop.bottom - crop.top) * decoded.height).toInt().coerceIn(1, decoded.height - cy)
-                                Bitmap.createBitmap(decoded, cx, cy, cw, ch).asImageBitmap()
+                    try {
+                        val scene = codec.readFromFile(tempFile)
+                        val targetImage = pickCoverTarget(
+                            images = scene.images,
+                            coverImageId = entry.coverImageId,
+                        )
+                        if (targetImage != null) {
+                            codec.imageDecoder.setSourceFile(tempFile)
+                            val decoded = codec.imageDecoder.decodeThumbnail(targetImage)?.bitmap
+                            if (decoded != null) {
+                                // V_NOW (2026-06-11): apply the
+                                // non-destructive cropRect to the
+                                // cover thumbnail so the tile shows
+                                // the cropped view, not the full
+                                // original image.
+                                val crop = targetImage.cropRect
+                                if (crop != null) {
+                                    val cx = (crop.left * decoded.width).toInt().coerceIn(0, decoded.width - 1)
+                                    val cy = (crop.top * decoded.height).toInt().coerceIn(0, decoded.height - 1)
+                                    val cw = ((crop.right - crop.left) * decoded.width).toInt().coerceIn(1, decoded.width - cx)
+                                    val ch = ((crop.bottom - crop.top) * decoded.height).toInt().coerceIn(1, decoded.height - cy)
+                                    Bitmap.createBitmap(decoded, cx, cy, cw, ch).asImageBitmap()
+                                } else {
+                                    decoded.asImageBitmap()
+                                }
                             } else {
-                                decoded.asImageBitmap()
+                                null
                             }
                         } else {
                             null
                         }
-                    } else {
-                        null
+                    } finally {
+                        codec.release()
                     }
                 } finally {
                     tempFile.delete()

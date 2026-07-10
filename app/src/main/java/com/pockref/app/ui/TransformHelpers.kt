@@ -674,6 +674,78 @@ internal fun projectImageCornersToScreen(
     }
 }
 
+internal data class RotationHandleGeometry(
+    val anchor: Offset,
+    val handleCenter: Offset,
+)
+
+internal fun projectImageRotationHandleToScreen(
+    imageCenter: Offset,
+    imageWidth: Float,
+    imageHeight: Float,
+    rotationDegrees: Float,
+    handleOffsetPx: Float,
+    canvasScale: Float,
+    canvasOffset: Offset,
+    viewportWidth: Float,
+    viewportHeight: Float,
+): RotationHandleGeometry {
+    val rad = Math.toRadians(rotationDegrees.toDouble())
+    val cosR = cos(rad).toFloat()
+    val sinR = sin(rad).toFloat()
+    val centerX = viewportWidth / 2f + canvasOffset.x
+    val centerY = viewportHeight / 2f + canvasOffset.y
+    val topCenterLocalY = -imageHeight / 2f
+    val anchorWorld = Offset(
+        x = imageCenter.x - topCenterLocalY * sinR,
+        y = imageCenter.y + topCenterLocalY * cosR,
+    )
+    val anchor = Offset(
+        x = centerX + anchorWorld.x * canvasScale,
+        y = centerY + anchorWorld.y * canvasScale,
+    )
+    val outwardX = sinR
+    val outwardY = -cosR
+    return RotationHandleGeometry(
+        anchor = anchor,
+        handleCenter = Offset(
+            x = anchor.x + outwardX * handleOffsetPx,
+            y = anchor.y + outwardY * handleOffsetPx,
+        ),
+    )
+}
+
+internal fun projectGroupRotationHandleToScreen(
+    groupAabb: GroupAabb,
+    handleOffsetPx: Float,
+    canvasScale: Float,
+    canvasOffset: Offset,
+    viewportWidth: Float,
+    viewportHeight: Float,
+): RotationHandleGeometry {
+    val centerX = viewportWidth / 2f + canvasOffset.x
+    val centerY = viewportHeight / 2f + canvasOffset.y
+    val anchor = Offset(
+        x = centerX + groupAabb.center.x * canvasScale,
+        y = centerY + groupAabb.rect.top * canvasScale,
+    )
+    return RotationHandleGeometry(
+        anchor = anchor,
+        handleCenter = Offset(anchor.x, anchor.y - handleOffsetPx),
+    )
+}
+
+internal fun hitTestRotationHandle(
+    geometry: RotationHandleGeometry,
+    screenPoint: Offset,
+    hitRadiusPx: Float,
+): Boolean {
+    return hypot(
+        screenPoint.x - geometry.handleCenter.x,
+        screenPoint.y - geometry.handleCenter.y,
+    ) <= hitRadiusPx
+}
+
 /**
  * Hit-test a single corner handle. Returns the corner index
  * (0..3 = TL, TR, BL, BR) if [screenPoint] is within
@@ -681,12 +753,12 @@ internal fun projectImageCornersToScreen(
  * `-1` if no corner is hit.
  *
  * `hitRadiusPx` is in SCREEN pixels and is typically
- * `24.dp.toPx()` — bigger than the visual handle radius
+ * `32.dp.toPx()` — bigger than the visual handle radius
  * (~10.dp) so a fingertip landing on or just outside the
  * white dot still grabs the corner. The 4 corners are
  * tested in z-order-independent enumeration order; for a
  * well-spaced set of handles on a real image at most one
- * is within 24dp of the finger, so tie-breaking is not
+ * is within 32dp of the finger, so tie-breaking is not
  * needed in practice.
  *
  * The check uses raw pixel distance, NOT screen-DPI-aware
@@ -712,6 +784,11 @@ internal fun hitTestCornerHandle(
     }
     return bestIndex
 }
+
+internal fun cornerHandleMovePointForFinger(
+    fingerPosition: Offset,
+    initialFingerOffsetFromHandle: Offset,
+): Offset = fingerPosition - initialFingerOffsetFromHandle
 
 /**
  * Compute the new (scale, center) for a corner-drag gesture.
@@ -741,7 +818,7 @@ internal fun hitTestCornerHandle(
  * onto the anchor (initialDiagonal collapses to 0), the
  * returned scale factor is `1f` and the center is the
  * anchor itself — the image stops responding rather than
- * exploding to infinity. In practice the 24dp hit radius
+ * exploding to infinity. In practice the 32dp hit radius
  * + the user's natural drag motion keep this from
  * happening.
  */
@@ -773,6 +850,8 @@ internal fun computeCornerDragResult(
     rotationDegrees: Float,
     anchorSignX: Int = 1,
     anchorSignY: Int = 1,
+    minScaleFactor: Float = 0f,
+    maxScaleFactor: Float = Float.POSITIVE_INFINITY,
 ): Pair<Float, Offset> {
     val initialDiag = hypot(
         initialMoveWorld.x - initialAnchorWorld.x,
@@ -786,11 +865,12 @@ internal fun computeCornerDragResult(
         currentMoveWorld.y - initialAnchorWorld.y,
     )
     val rawRatio = newDiag / initialDiag
-    val scaleFactor = if (kotlin.math.abs(rawRatio - 1f) <= CORNER_DRAG_DEADZONE) {
+    val unclampedScaleFactor = if (kotlin.math.abs(rawRatio - 1f) <= CORNER_DRAG_DEADZONE) {
         1f
     } else {
         rawRatio
     }
+    val scaleFactor = unclampedScaleFactor.coerceIn(minScaleFactor, maxScaleFactor)
     val rad = Math.toRadians(rotationDegrees.toDouble())
     val cosR = cos(rad).toFloat()
     val sinR = sin(rad).toFloat()

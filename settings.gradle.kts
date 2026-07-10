@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PockRefAndroid"
 include(":app")
+include(":benchmark")

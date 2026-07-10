@@ -50,13 +50,13 @@ class V2PurParsingInstrumentedTest {
         }
 
         val parser = PurFileParser()
-        val scene = cacheFile.inputStream().use { parser.parseFromFile(cacheFile) }
+        val scene = parser.parseFromFile(cacheFile)
 
         android.util.Log.i("V2Test", "sceneName='${scene.name}'")
         android.util.Log.i("V2Test", "backgroundColor=0x${scene.backgroundColor.toArgb().toUInt().toString(16)}")
         android.util.Log.i("V2Test", "imageCount=${scene.images.size}")
-        android.util.Log.i("V2Test", "noteCount=${scene.notes.size}")
-        android.util.Log.i("V2Test", "groupCount=${scene.groups.size}")
+        android.util.Log.i("V2Test", "noteTextCount=${scene.markupTexts.count { it.id.startsWith("pur-v2-note-") }}")
+        android.util.Log.i("V2Test", "drawingImageCount=${scene.images.count { it.id.startsWith("pur-v2-drawing-") }}")
 
         // Behaviour assertions (previously missing — this test only logged).
         assertTrue("Expected the parsed scene to have a name", scene.name.isNotBlank())

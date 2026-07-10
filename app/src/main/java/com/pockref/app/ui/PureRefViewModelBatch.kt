@@ -71,6 +71,114 @@ internal fun imageBaseFootprint(image: SceneImage): RotatedFootprint {
 
 internal data class RotatedFootprint(val width: Float, val height: Float)
 
+internal fun alignEdgeAndPackWithoutOverlap(
+    selected: List<SceneImage>,
+    mode: AlignMode,
+    gap: Float,
+): List<SceneImage> {
+    if (selected.size < 2) return selected
+
+    return when (mode) {
+        AlignMode.ALIGN_LEFT -> {
+            val refLeft = selected.minOf { img ->
+                val fp = imageRotatedFootprint(img)
+                img.center.x - fp.width / 2f
+            }
+            var curTop = selected.minOf { img ->
+                val fp = imageRotatedFootprint(img)
+                img.center.y - fp.height / 2f
+            }
+            selected.sortedWith(compareByTopEdge()).map { img ->
+                val fp = imageRotatedFootprint(img)
+                val result = img.copy(
+                    center = Offset(refLeft + fp.width / 2f, curTop + fp.height / 2f),
+                )
+                curTop += fp.height + gap
+                result
+            }
+        }
+        AlignMode.ALIGN_RIGHT -> {
+            val refRight = selected.maxOf { img ->
+                val fp = imageRotatedFootprint(img)
+                img.center.x + fp.width / 2f
+            }
+            var curTop = selected.minOf { img ->
+                val fp = imageRotatedFootprint(img)
+                img.center.y - fp.height / 2f
+            }
+            selected.sortedWith(compareByTopEdge()).map { img ->
+                val fp = imageRotatedFootprint(img)
+                val result = img.copy(
+                    center = Offset(refRight - fp.width / 2f, curTop + fp.height / 2f),
+                )
+                curTop += fp.height + gap
+                result
+            }
+        }
+        AlignMode.ALIGN_TOP -> {
+            val refTop = selected.minOf { img ->
+                val fp = imageRotatedFootprint(img)
+                img.center.y - fp.height / 2f
+            }
+            var curLeft = selected.minOf { img ->
+                val fp = imageRotatedFootprint(img)
+                img.center.x - fp.width / 2f
+            }
+            selected.sortedWith(compareByLeftEdge()).map { img ->
+                val fp = imageRotatedFootprint(img)
+                val result = img.copy(
+                    center = Offset(curLeft + fp.width / 2f, refTop + fp.height / 2f),
+                )
+                curLeft += fp.width + gap
+                result
+            }
+        }
+        AlignMode.ALIGN_BOTTOM -> {
+            val refBottom = selected.maxOf { img ->
+                val fp = imageRotatedFootprint(img)
+                img.center.y + fp.height / 2f
+            }
+            var curLeft = selected.minOf { img ->
+                val fp = imageRotatedFootprint(img)
+                img.center.x - fp.width / 2f
+            }
+            selected.sortedWith(compareByLeftEdge()).map { img ->
+                val fp = imageRotatedFootprint(img)
+                val result = img.copy(
+                    center = Offset(curLeft + fp.width / 2f, refBottom - fp.height / 2f),
+                )
+                curLeft += fp.width + gap
+                result
+            }
+        }
+        else -> selected
+    }
+}
+
+private fun compareByTopEdge(): Comparator<SceneImage> =
+    compareBy<SceneImage>(
+        {
+            val fp = imageRotatedFootprint(it)
+            it.center.y - fp.height / 2f
+        },
+        { it.center.y },
+        { it.center.x },
+        { it.zIndex },
+        { it.id },
+    )
+
+private fun compareByLeftEdge(): Comparator<SceneImage> =
+    compareBy<SceneImage>(
+        {
+            val fp = imageRotatedFootprint(it)
+            it.center.x - fp.width / 2f
+        },
+        { it.center.x },
+        { it.center.y },
+        { it.zIndex },
+        { it.id },
+    )
+
 /**
  * Compute the axis-aligned bounding box (in scene coordinates)
  * of a list of images, using their rotated AABBs. Returns null
@@ -328,63 +436,25 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
                         result
                     }
                 }
-                // V12: position-alignment modes. Each one
-                // picks a reference edge from the
-                // leftmost/rightmost/topmost/bottommost
-                // selected image and snaps every other
-                // image's matching edge to it. Only the
-                // `center` moves; `scale` (and therefore
-                // size) is left untouched.
+                // V12+: position-alignment modes. Each one
+                // snaps the requested visual edge to the
+                // reference edge, then packs along the other
+                // axis in the selected images' current order.
+                // Keeping the old "same edge" behavior alone
+                // could stack unlike-sized images on top of
+                // each other; packing keeps the action useful
+                // as a layout command instead of a collision
+                // command.
                 //
                 // Edges are read from the rotated AABB so
                 // the alignment line respects the actual
                 // visual edge (including corners sticking
                 // out due to rotation), not the unrotated
                 // rectangle.
-                AlignMode.ALIGN_LEFT -> {
-                    val refLeft = selected.minOf { img ->
-                        val fp = imageRotatedFootprint(img)
-                        img.center.x - fp.width / 2f
-                    }
-                    selected.map { img ->
-                        val fp = imageRotatedFootprint(img)
-                        val newCx = refLeft + fp.width / 2f
-                        img.copy(center = Offset(newCx, img.center.y))
-                    }
-                }
-                AlignMode.ALIGN_RIGHT -> {
-                    val refRight = selected.maxOf { img ->
-                        val fp = imageRotatedFootprint(img)
-                        img.center.x + fp.width / 2f
-                    }
-                    selected.map { img ->
-                        val fp = imageRotatedFootprint(img)
-                        val newCx = refRight - fp.width / 2f
-                        img.copy(center = Offset(newCx, img.center.y))
-                    }
-                }
-                AlignMode.ALIGN_TOP -> {
-                    val refTop = selected.minOf { img ->
-                        val fp = imageRotatedFootprint(img)
-                        img.center.y - fp.height / 2f
-                    }
-                    selected.map { img ->
-                        val fp = imageRotatedFootprint(img)
-                        val newCy = refTop + fp.height / 2f
-                        img.copy(center = Offset(img.center.x, newCy))
-                    }
-                }
-                AlignMode.ALIGN_BOTTOM -> {
-                    val refBottom = selected.maxOf { img ->
-                        val fp = imageRotatedFootprint(img)
-                        img.center.y + fp.height / 2f
-                    }
-                    selected.map { img ->
-                        val fp = imageRotatedFootprint(img)
-                        val newCy = refBottom - fp.height / 2f
-                        img.copy(center = Offset(img.center.x, newCy))
-                    }
-                }
+                AlignMode.ALIGN_LEFT,
+                AlignMode.ALIGN_RIGHT,
+                AlignMode.ALIGN_TOP,
+                AlignMode.ALIGN_BOTTOM -> alignEdgeAndPackWithoutOverlap(selected, mode, gap)
             }
             val alignedMap = aligned.associateBy { it.id }
             copy(

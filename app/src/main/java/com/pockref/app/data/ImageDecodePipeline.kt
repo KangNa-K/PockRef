@@ -101,19 +101,17 @@ class ImageDecodePipeline(
      *
      * @param images Current scene images.
      * @param viewportRect World-space viewport rectangle.
-     * @param canvasScale Current zoom level.
      * @param cachedImageIds Set of image IDs that already have a bitmap
      *   in the Compose cache (skip re-decoding these).
-     * @param displaySizeForImage Function that returns the display size
-     *   (in pixels) for a given image at the current zoom. This drives
-     *   the decode ladder selection.
+     * @param decodeRequestForImage Function that returns the display size
+     *   (in pixels) and max decode level for a given image at the current
+     *   zoom. This drives the decode ladder selection.
      */
     suspend fun onSceneChanged(
         images: List<SceneImage>,
         viewportRect: android.graphics.RectF,
-        canvasScale: Float,
         cachedImageIds: Set<String>,
-        displaySizeForImage: (SceneImage) -> Pair<Int, Int>,
+        decodeRequestForImage: (SceneImage) -> ImageDecodeRequest,
     ) {
         val toLoad = images.filter { it.id !in cachedImageIds && it.id !in loadingImages }
         if (toLoad.isEmpty()) return
@@ -142,8 +140,14 @@ class ImageDecodePipeline(
             // Phase 2: In-viewport full-res + prefetch thumbnails (parallel)
             val fullJobs = inView.map { image ->
                 async(Dispatchers.Default) {
-                    val (dw, dh) = displaySizeForImage(image)
-                    decodeAndNotify(image, isThumbnail = false, displayWidth = dw, displayHeight = dh)
+                    val request = decodeRequestForImage(image)
+                    decodeAndNotify(
+                        image = image,
+                        isThumbnail = false,
+                        displayWidth = request.displayWidth,
+                        displayHeight = request.displayHeight,
+                        maxLevel = request.maxLevel,
+                    )
                 }
             }
             val prefetchJobs = prefetch.map { image ->
@@ -174,10 +178,9 @@ class ImageDecodePipeline(
     suspend fun onViewportChanged(
         images: List<SceneImage>,
         viewportRect: android.graphics.RectF,
-        canvasScale: Float,
         cachedImageIds: Set<String>,
         cachedLevels: Map<String, Int>, // imageId → currently-cached decode level
-        displaySizeForImage: (SceneImage) -> Pair<Int, Int>,
+        decodeRequestForImage: (SceneImage) -> ImageDecodeRequest,
     ) {
         val toDecode = images.filter { image ->
             val aabb = imageWorldAabb(image)
@@ -186,10 +189,10 @@ class ImageDecodePipeline(
             if (image.id !in cachedImageIds) return@filter true
             // Already cached — check if zoom increased enough to warrant
             // a re-decode at a higher level
-            val (dw, dh) = displaySizeForImage(image)
-            val targetSide = maxOf(dw, dh)
+            val request = decodeRequestForImage(image)
+            val targetSide = maxOf(request.displayWidth, request.displayHeight)
             val currentLevel = cachedLevels[image.id] ?: 0
-            val desiredLevel = pickLevelForDisplaySize(targetSide)
+            val desiredLevel = pickLevelForDisplaySize(targetSide, request.maxLevel)
             desiredLevel > currentLevel
         }
         if (toDecode.isEmpty()) return
@@ -197,8 +200,14 @@ class ImageDecodePipeline(
         coroutineScope {
             val jobs = toDecode.map { image ->
                 async(Dispatchers.Default) {
-                    val (dw, dh) = displaySizeForImage(image)
-                    decodeAndNotify(image, isThumbnail = false, displayWidth = dw, displayHeight = dh)
+                    val request = decodeRequestForImage(image)
+                    decodeAndNotify(
+                        image = image,
+                        isThumbnail = false,
+                        displayWidth = request.displayWidth,
+                        displayHeight = request.displayHeight,
+                        maxLevel = request.maxLevel,
+                    )
                 }
             }
             jobs.awaitAll()
@@ -212,6 +221,7 @@ class ImageDecodePipeline(
         isThumbnail: Boolean,
         displayWidth: Int = 256,
         displayHeight: Int = 256,
+        maxLevel: Int = SceneImageDecoder.DECODE_LADDER.lastIndex,
     ) {
         synchronized(loadingImages) {
             if (image.id in loadingImages) return
@@ -223,7 +233,7 @@ class ImageDecodePipeline(
                     if (isThumbnail) {
                         decoder.decodeThumbnail(image)
                     } else {
-                        decoder.decode(image, displayWidth, displayHeight)
+                        decoder.decode(image, displayWidth, displayHeight, maxLevel)
                     }
                 }
             }
@@ -242,8 +252,8 @@ class ImageDecodePipeline(
     // ── Geometry helpers ───────────────────────────────────────────
 
     private fun imageWorldAabb(image: SceneImage): android.graphics.RectF {
-        val hw = image.displaySize.width / 2f
-        val hh = image.displaySize.height / 2f
+        val hw = image.displaySize.width * image.scale / 2f
+        val hh = image.displaySize.height * image.scale / 2f
         return android.graphics.RectF(
             image.center.x - hw,
             image.center.y - hh,
@@ -262,10 +272,12 @@ class ImageDecodePipeline(
         return android.graphics.RectF(rect.left - dx, rect.top - dy, rect.right + dx, rect.bottom + dy)
     }
 
-    private fun pickLevelForDisplaySize(targetSide: Int): Int {
-        for (i in SceneImageDecoder.DECODE_LADDER.indices) {
+    private fun pickLevelForDisplaySize(targetSide: Int, maxLevel: Int): Int {
+        if (maxLevel >= SceneImageDecoder.ORIGINAL_LEVEL) return SceneImageDecoder.ORIGINAL_LEVEL
+        val cappedMaxLevel = maxLevel.coerceAtMost(SceneImageDecoder.DECODE_LADDER.lastIndex)
+        for (i in 0..cappedMaxLevel) {
             if (SceneImageDecoder.DECODE_LADDER[i] >= targetSide) return i
         }
-        return SceneImageDecoder.DECODE_LADDER.lastIndex
+        return cappedMaxLevel
     }
 }

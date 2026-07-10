@@ -45,6 +45,28 @@ data class Size2D(
     val height: Float,
 )
 
+enum class CanvasMarkupTool {
+    PEN,
+    TEXT,
+}
+
+data class CanvasMarkupStroke(
+    val id: String = UUID.randomUUID().toString(),
+    val color: Color = Color(0xFFE53935),
+    val lineWidth: Float = 4f,
+    val points: List<Offset> = emptyList(),
+) {
+    val isRenderable: Boolean get() = points.size >= 2
+}
+
+data class CanvasMarkupText(
+    val id: String = UUID.randomUUID().toString(),
+    val text: String,
+    val position: Offset,
+    val color: Color = Color(0xFFE53935),
+    val fontSize: Float = 80f,
+)
+
 /**
  * Image format for the export action. Drives the document
  * launcher's MIME type and the [android.graphics.Bitmap.CompressFormat]
@@ -472,6 +494,8 @@ data class PockRefScene(
     val name: String = "Scene",
     val backgroundColor: Color = Color.White,
     val images: List<SceneImage> = emptyList(),
+    val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
+    val markupTexts: List<CanvasMarkupText> = emptyList(),
     /**
      * Default horizontal / vertical spacing (in scene units) used by
      * auto-layout. The desktop .pur format does not standardize a
@@ -762,6 +786,18 @@ data class PockRefUiState(
     val spenMode: com.pockref.app.spen.SpenMode =
         com.pockref.app.spen.SpenMode.DOUBLE_TAP,
     val images: List<SceneImage> = emptyList(),
+    val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
+    val markupTexts: List<CanvasMarkupText> = emptyList(),
+    val markupModeActive: Boolean = false,
+    val markupTool: CanvasMarkupTool = CanvasMarkupTool.PEN,
+    val markupVisible: Boolean = true,
+    val draftMarkupStroke: CanvasMarkupStroke? = null,
+    val markupSessionBaseStrokes: List<CanvasMarkupStroke>? = null,
+    val markupSessionBaseTexts: List<CanvasMarkupText>? = null,
+    val pendingMarkupTextPosition: Offset? = null,
+    val pendingMarkupTextValue: String = "",
+    val pendingMarkupTextFontSize: Float = 80f,
+    val editingMarkupTextId: String? = null,
     /**
      * Scene-level default spacing (horizontal / vertical, in scene
      * units) used by auto-layout. Persisted as part of the scene-level
@@ -1592,9 +1628,14 @@ fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
     name = sceneName,
     backgroundColor = backgroundColor,
     images = images.sortedBy { it.zIndex },
+    markupStrokes = markupStrokes,
+    markupTexts = markupTexts,
     defaultSpacing = sceneDefaultSpacing,
     defaultAlignment = sceneDefaultAlignment,
 )
+
+internal val PockRefUiState.hasSceneContent: Boolean
+    get() = images.isNotEmpty() || markupStrokes.isNotEmpty() || markupTexts.isNotEmpty()
 
 /**
  * V_NOW (2026-06-08 "global image lock" feature):

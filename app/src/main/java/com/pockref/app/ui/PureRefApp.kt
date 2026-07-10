@@ -4,7 +4,9 @@ package com.pockref.app.ui
 
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Environment
@@ -105,6 +107,8 @@ import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LinearScale
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
 // LockOpen import: V_NOW the single-image-locked
 // panel uses the OPEN padlock to convey "tap to
 // unlock" — distinct from the multi-select panel
@@ -117,10 +121,15 @@ import androidx.compose.material.icons.rounded.LockOpen
 // the old line 1312; now that branch also uses Lock with
 // active=allLocked.
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Brush
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Rotate90DegreesCw
 import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.ZoomIn
@@ -138,6 +147,7 @@ import androidx.compose.material.icons.rounded.PhotoSizeSelectLarge
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.SwipeRight
 import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.TextFields
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -252,6 +262,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.PointerEvent
@@ -308,8 +320,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material.icons.rounded.Settings
 import com.pockref.app.model.AlignMode
 import com.pockref.app.R
+import com.pockref.app.data.ImageDecodePolicy
 import com.pockref.app.data.ThemeMode
 import com.pockref.app.model.BackgroundPreset
+import com.pockref.app.model.CanvasMarkupStroke
+import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.ColorAdjust
 import com.pockref.app.ui.theme.Dimens
 import com.pockref.app.model.CropAspect
@@ -320,6 +335,7 @@ import com.pockref.app.ui.logs.LogExportFab
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.SelectionMode
+import com.pockref.app.model.hasSceneContent
 import com.pockref.app.model.isImageLocked
 import com.pockref.app.model.Size2D
 import com.pockref.app.ui.settings.SettingsPanel
@@ -341,6 +357,12 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private enum class ImageTransformMode { NONE, SCALE, ROTATE }
+
+private data class RotationHandleDragState(
+    val pivotScreen: Offset,
+    val previousAngleRad: Float,
+)
+
 // V_NOW (user feedback "P1-B4 mode 切换 cooldown"):
 // see [modeCommitTimeMs] in [PockRefCanvas]'s pointer
 // loop. [MODE_COOLDOWN_MS] is the wall-clock window
@@ -741,7 +763,7 @@ fun PockRefApp(
     //      system and the Activity finishes (Android: returns
     //      to the home screen, satisfying "无文件打开状态
     //      直接退出软件回到桌面").
-    val sceneIsOpen = state.images.isNotEmpty() || state.canDirectSave
+    val sceneIsOpen = state.hasSceneContent || state.canDirectSave
     val unsavedDialogShowing = state.showUnsavedChangesDialog
     // V_NOW (2026-06-10, "启动页多选" back-press contract):
     // when the start page is in multi-select mode, the
@@ -768,12 +790,18 @@ fun PockRefApp(
     // when both are open).
     val recentMultiSelectActive = state.recentMultiSelectMode && !sceneIsOpen
     BackHandler(
-        enabled = menuExpanded ||
+        enabled = state.pendingMarkupTextPosition != null ||
+            state.markupModeActive ||
+            menuExpanded ||
             recentMultiSelectActive ||
             state.bulkDeleteConfirmOpen ||
             (sceneIsOpen && !unsavedDialogShowing),
     ) {
         when {
+            state.pendingMarkupTextPosition != null ->
+                onAction(PockRefAction.CancelMarkupText)
+            state.markupModeActive ->
+                onAction(PockRefAction.CancelMarkupSession)
             state.bulkDeleteConfirmOpen ->
                 onAction(PockRefAction.DismissBulkDeleteConfirm)
             recentMultiSelectActive ->
@@ -794,7 +822,7 @@ fun PockRefApp(
     // above the top toolbar / minimap / FAB. Both the
     // canvas (in case the in-canvas draw path is still
     // hit) and the overlay read the same state.
-    val isHoveringImage = state.hoverPreviewImageId != null
+    val isHoveringImage = state.hoverPreviewImageId != null && !state.markupModeActive
     val hoverProgress by animateFloatAsState(
         targetValue = if (isHoveringImage) 1f else 0f,
         animationSpec = tween(durationMillis = 350, easing = { t -> 1f - (1f - t) * (1f - t) }),
@@ -807,6 +835,61 @@ fun PockRefApp(
     // decode pipeline (LaunchedEffects) flow through to
     // the overlay's read on the next recomposition.
     val canvasBitmapCache = remember { mutableStateMapOf<String, Pair<Int, ImageBitmap>>() }
+    val gifPlaybackSources = remember { mutableStateMapOf<String, GifPlaybackSource>() }
+    val gifPlaybackStates = remember { mutableStateMapOf<String, GifPlaybackState>() }
+    val gifImagesForPlayback = remember(state.images) {
+        state.images.filter { image ->
+            isGifMimeType(image.mimeType) && image.cropRect == null
+        }
+    }
+    val selectedGifPlaybackImageId = remember(
+        state.images,
+        state.selectedImageIds,
+        state.selectedImageId,
+    ) {
+        val selectedId = when {
+            state.selectedImageIds.size == 1 -> state.selectedImageIds.first()
+            state.selectedImageIds.isEmpty() -> state.selectedImageId
+            else -> null
+        }
+        state.images.firstOrNull { image ->
+            image.id == selectedId &&
+                isGifMimeType(image.mimeType) &&
+                image.cropRect == null
+        }?.id
+    }
+
+    LaunchedEffect(
+        gifImagesForPlayback.map { image ->
+            listOf(image.id, image.imageBytes.size, image.imageByteOffset, image.imageByteLength)
+        },
+        imageDecoder,
+        imageLazyLoader,
+    ) {
+        gifImagesForPlayback.forEach { image ->
+            if (gifPlaybackSources[image.id] == null) {
+                val source = withContext(Dispatchers.Default) {
+                    val bytes = resolveGifBytes(image, imageDecoder, imageLazyLoader)
+                        ?: return@withContext null
+                    decodeGifPlaybackSource(bytes)
+                } ?: return@forEach
+                gifPlaybackSources[image.id] = source
+            }
+            if (gifPlaybackStates[image.id] == null) {
+                gifPlaybackStates[image.id] = GifPlaybackState()
+            }
+        }
+    }
+
+    gifPlaybackSources.entries.toList().forEach { (imageId, source) ->
+        val playback = gifPlaybackStates[imageId] ?: GifPlaybackState()
+        LaunchedEffect(imageId, source, playback) {
+            if (!playback.isPlaying) return@LaunchedEffect
+            delay(source.timeline.durationForFrame(playback.frameIndex).toLong())
+            val nextFrame = (playback.frameIndex + 1) % source.timeline.frameCount
+            gifPlaybackStates[imageId] = playback.copy(frameIndex = nextFrame)
+        }
+    }
     // Cache-eviction DisposableEffect: when the set of
     // images shrinks (e.g. user deleted one), drop the
     // corresponding cache entries. Lifted with the cache
@@ -817,6 +900,12 @@ fun PockRefApp(
         val currentIds = state.images.map { it.id }.toSet()
         canvasBitmapCache.keys.filterNot { it in currentIds }.forEach { key ->
             canvasBitmapCache.remove(key)
+        }
+        gifPlaybackSources.keys.filterNot { it in currentIds }.forEach { key ->
+            gifPlaybackSources.remove(key)
+        }
+        gifPlaybackStates.keys.filterNot { it in currentIds }.forEach { key ->
+            gifPlaybackStates.remove(key)
         }
         onDispose { }
     }
@@ -843,6 +932,8 @@ fun PockRefApp(
             if (oldKey != null && oldKey != newKey) {
                 // Image bytes or intrinsic dimensions changed — evict stale cache
                 canvasBitmapCache.remove(id)
+                gifPlaybackSources.remove(id)
+                gifPlaybackStates.remove(id)
             }
             imageCacheKeys[id] = newKey
         }
@@ -935,10 +1026,25 @@ fun PockRefApp(
             )
         }
         val filename = state.pendingSaveSceneName.ifBlank { "Untitled.pur" }
+        // V_NOW (2026-06-20, 1.3.2): [DocumentsContract.createDocument]
+        // requires a *document* URI (path ending in
+        // `/document/<id>`), not the raw tree URI that
+        // [OpenDocumentTree] returns (path ending in `/tree/<id>`).
+        // Passing the tree URI causes
+        // `IllegalArgumentException: Invalid URI:
+        // content://.../tree/primary%3APictures` on Samsung One UI
+        // 6 (SM-X810 confirmed via PockRefSave log), so the user's
+        // "新建的 .pur 文件没法保存" report comes back as a silent
+        // failure with no scene on disk. Convert tree → document
+        // the same way [exportBatchToTree] does
+        // (PureRefViewModelScene.kt exportBatchToTree()).
         val documentUri = try {
+            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+            val parentDocUri =
+                DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
             DocumentsContract.createDocument(
                 context.contentResolver,
-                treeUri,
+                parentDocUri,
                 com.pockref.app.MainActivity.PUR_SCENE_MIME,
                 filename,
             )
@@ -966,6 +1072,9 @@ fun PockRefApp(
     }
     val exportJpgLauncher = rememberLauncherForActivityResult(CreateDocument("image/jpeg")) { uri ->
         uri?.let { onAction(PockRefAction.ConfirmExport(it, com.pockref.app.model.ExportFormat.JPEG)) }
+    }
+    val exportGifLauncher = rememberLauncherForActivityResult(CreateDocument("image/gif")) { uri ->
+        uri?.let { onAction(PockRefAction.ConfirmExportGif(it)) }
     }
     // Canvas export: export the entire canvas as a single PNG.
     // V_NOW (2026-06-16): the URI-returning callback reads the
@@ -1345,6 +1454,9 @@ fun PockRefApp(
                 // needs the [onMenuDismiss] param.
                  imageLazyLoader = imageLazyLoader,
                  imageDecoder = imageDecoder,
+                 gifPlaybackSources = gifPlaybackSources,
+                 gifPlaybackStates = gifPlaybackStates,
+                 selectedGifPlaybackImageId = selectedGifPlaybackImageId,
                  // V_NOW (2026-06-16): thread the export trigger.
                  exportInProgressFlow = exportInProgressFlow,
                  onStartLogExport = onStartLogExport,
@@ -1446,8 +1558,9 @@ fun PockRefApp(
                     Dimens.BottomPanelChromeSize
                 fabLeftDp < sheetRightDp
             }
-            if (state.images.isNotEmpty() && state.cropImageId == null &&
+            if (state.hasSceneContent && state.cropImageId == null &&
                 state.practiceState == null && !isLockEngaged &&
+                !state.markupModeActive &&
                 !fabOverlapsSheet
             ) {
                 BottomRightActionPanel(
@@ -1857,10 +1970,20 @@ fun PockRefApp(
             // [ToggleGlobalImageLock] and
             // [ToggleLockCanvasFrozen] reducers for
             // the two reset paths).
-            if (state.practiceState == null && state.images.isNotEmpty() &&
+            if (state.practiceState == null && !state.markupModeActive &&
                 !state.lockButtonHidden) {
-            val lockInteractionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-            val isLockHovered by lockInteractionSource.collectIsHoveredAsState()
+                val hasLockButton = state.images.isNotEmpty()
+                val hasMarkup = state.markupStrokes.any { it.isRenderable } ||
+                    state.markupTexts.any { it.text.isNotBlank() }
+                if (hasMarkup) {
+                    MarkupVisibilityButton(
+                        visible = state.markupVisible,
+                        hasLockButton = hasLockButton,
+                        onToggle = { onAction(PockRefAction.ToggleMarkupVisibility) },
+                        statusBarTopDp = statusBarTopDp,
+                    )
+                }
+                if (hasLockButton) {
             // V_NOW (2026-06-10): the global-lock button
             // is extracted to [GlobalLockButton] so the
             // [combinedClickable] opt-in lives at the
@@ -1876,6 +1999,7 @@ fun PockRefApp(
                 onAction = onAction,
                 statusBarTopDp = statusBarTopDp,
             )
+                }
             }  // close if (state.practiceState == null) gating the lock toggle
 
             if (state.isBusy && !state.batchOptimizeState.isRunning) {
@@ -1922,17 +2046,33 @@ fun PockRefApp(
                 // gets its own file in the chosen folder).
                 val multiCount = state.selectedImageIds.size
                 val isMulti = multiCount >= 2
-                ExportDialogHost(
-                    selectedName = state.images.find { it.id == state.selectedImageId }?.name ?: "untitled",
-                    isMulti = isMulti,
-                    selectedCount = if (isMulti) multiCount else 1,
-                    exportBatchInitialUri = exportBatchInitialUri,
-                    exportPngLauncher = exportPngLauncher,
-                    exportJpgLauncher = exportJpgLauncher,
-                    exportBatchPngLauncher = exportBatchPngLauncher,
-                    exportBatchJpgLauncher = exportBatchJpgLauncher,
-                    onDismiss = { onAction(PockRefAction.CancelExport) },
-                )
+                val selectedId = state.selectedImageIds.singleOrNull() ?: state.selectedImageId
+                val selectedExportImage = state.images.firstOrNull { image ->
+                    image.id == selectedId
+                }
+                val exportsOriginalGif = !isMulti &&
+                    selectedExportImage != null &&
+                    isGifMimeType(selectedExportImage.mimeType) &&
+                    selectedExportImage.cropRect == null
+                val gifExportImage = if (exportsOriginalGif) selectedExportImage else null
+                if (gifExportImage != null) {
+                    LaunchedEffect(gifExportImage.id) {
+                        exportGifLauncher.launch("${gifExportImage.name}.gif")
+                        onAction(PockRefAction.CancelExport)
+                    }
+                } else {
+                    ExportDialogHost(
+                        selectedName = selectedExportImage?.name ?: "untitled",
+                        isMulti = isMulti,
+                        selectedCount = if (isMulti) multiCount else 1,
+                        exportBatchInitialUri = exportBatchInitialUri,
+                        exportPngLauncher = exportPngLauncher,
+                        exportJpgLauncher = exportJpgLauncher,
+                        exportBatchPngLauncher = exportBatchPngLauncher,
+                        exportBatchJpgLauncher = exportBatchJpgLauncher,
+                        onDismiss = { onAction(PockRefAction.CancelExport) },
+                    )
+                }
             }
             // V_NOW (2026-06-16): the canvas-export options
             // dialog. Was previously a dead state — the
@@ -1974,6 +2114,17 @@ fun PockRefApp(
                     onDismiss = {
                         onAction(PockRefAction.DismissSaveSceneNameDialog)
                     },
+                )
+            }
+            if (state.pendingMarkupTextPosition != null) {
+                MarkupTextDialog(
+                    value = state.pendingMarkupTextValue,
+                    fontSize = state.pendingMarkupTextFontSize,
+                    isEditing = state.editingMarkupTextId != null,
+                    onValueChange = { onAction(PockRefAction.SetPendingMarkupText(it)) },
+                    onFontSizeChange = { onAction(PockRefAction.SetPendingMarkupTextFontSize(it)) },
+                    onConfirm = { onAction(PockRefAction.CommitMarkupText) },
+                    onDismiss = { onAction(PockRefAction.CancelMarkupText) },
                 )
             }
         }
@@ -2034,6 +2185,9 @@ fun PockRefApp(
     // so the magnifier image sits ABOVE the chrome).
     hoverProgress: Float = 0f,
     canvasBitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
+    gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
+    selectedGifPlaybackImageId: String?,
     // V_NOW (2026-06-16, "启动页导出运行日志" feature):
     // Threaded down from [PockRefApp] so [LogExportFab]
     // (mounted on the start-page branch of this Box) can
@@ -2082,8 +2236,20 @@ fun PockRefApp(
             imageDecoder = imageDecoder,
             hoverProgress = hoverProgress,
             bitmapCache = canvasBitmapCache,
+            gifPlaybackSources = gifPlaybackSources,
+            gifPlaybackStates = gifPlaybackStates,
+            selectedGifPlaybackImageId = selectedGifPlaybackImageId,
         )
-        if (state.images.isEmpty()) {
+        if (state.markupModeActive) {
+            MarkupModeBar(
+                onCancel = { onAction(PockRefAction.CancelMarkupSession) },
+                onDone = { onAction(PockRefAction.SetMarkupModeActive(false)) },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = statusBarTopDp + Dimens.CornerInset),
+            )
+        }
+        if (!state.hasSceneContent) {
             // V_NOW (2026-06-10, "启动页多选 + 底部 Bulk
             // Action Bar 置顶"): the start-page multi-select
             // chrome. Three siblings of the centered
@@ -2252,7 +2418,8 @@ fun PockRefApp(
                             ?: imageLazyLoader?.readImageBytes(off, len)
                     },
                 )
-            } else if (state.selectedImageIds.isNotEmpty() && !isLockEngaged) {
+            } else if (state.selectedImageIds.isNotEmpty() && !isLockEngaged &&
+                !state.markupModeActive) {
                 // V_NOW (P2-C1): M3 ModalBottomSheet
                 // replaces the legacy
                 // SelectionFloatingToolbar. Visibility
@@ -2282,6 +2449,9 @@ fun PockRefApp(
                 SelectionBottomSheet(
                     state = state,
                     onAction = onAction,
+                    gifPlaybackSources = gifPlaybackSources,
+                    gifPlaybackStates = gifPlaybackStates,
+                    selectedGifPlaybackImageId = selectedGifPlaybackImageId,
                 )
                 // V_NOW (2026-06-08 速写练习 commit 3):
                 // full-screen practice view. Renders only
@@ -2420,6 +2590,7 @@ fun PockRefApp(
                 // practice session (the user is staring
                 // at an image, not selecting).
                 if (state.practiceState == null && !isLockEngaged &&
+                    !state.markupModeActive &&
                     // V_NOW (2026-06-10, "使用 sheet
                     // 时取消 chip 显示"): the top-
                     // centre mode chip and the
@@ -2520,7 +2691,8 @@ fun PockRefApp(
             // anyway, so skipping the render saves a
             // few pref writes per second of a long
             // session.
-            if (state.cropImageId == null && state.practiceState == null && !isLockEngaged) {
+            if (state.cropImageId == null && state.practiceState == null && !isLockEngaged &&
+                !state.markupModeActive) {
                 // V_NOW: wrap in BoxWithConstraints so the
                 // drag-clamping math below can read the
                 // parent size (the call site itself is outside
@@ -2675,6 +2847,9 @@ fun PockRefApp(
 private fun SelectionBottomSheet(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
+    gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
+    gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
+    selectedGifPlaybackImageId: String?,
 ) {
     val selectedCount = state.selectedImageIds.size
     if (selectedCount == 0) return
@@ -2694,6 +2869,10 @@ private fun SelectionBottomSheet(
             state.images.firstOrNull { it.id == id }?.flipX == true
         }
     val isLockedPanel = allSelectedLocked
+    val selectedGifPlaybackSource = selectedGifPlaybackImageId
+        ?.let { gifPlaybackSources[it] }
+    val selectedGifPlaybackState = selectedGifPlaybackImageId
+        ?.let { gifPlaybackStates[it] ?: GifPlaybackState() }
 
     var dismissedByUser by remember { mutableStateOf(false) }
     LaunchedEffect(state.selectionSheetShowTick) {
@@ -2756,6 +2935,21 @@ private fun SelectionBottomSheet(
                 thickness = 1.dp,
             )
             Spacer(Modifier.height(14.dp))
+
+            val gifImageId = selectedGifPlaybackImageId
+            if (gifImageId != null && selectedGifPlaybackSource != null && selectedGifPlaybackState != null) {
+                GifFrameControlBar(
+                    source = selectedGifPlaybackSource,
+                    playback = selectedGifPlaybackState,
+                    onPlaybackChange = { next ->
+                        gifPlaybackStates[gifImageId] = next
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                )
+                Spacer(Modifier.height(12.dp))
+            }
 
             if (isLockedPanel) {
                 Row(
@@ -3045,6 +3239,133 @@ private fun SelectionBottomSheet(
                     }
                 }
             }
+        }
+	    }
+}
+
+
+@Composable
+private fun GifFrameControlBar(
+    source: GifPlaybackSource,
+    playback: GifPlaybackState,
+    onPlaybackChange: (GifPlaybackState) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val timeline = source.timeline
+    val frameIndex = playback.frameIndex.coerceIn(0, timeline.lastFrameIndex)
+    val frameCount = timeline.frameCount.coerceAtLeast(1)
+    val previousFrame = if (frameIndex == 0) timeline.lastFrameIndex else frameIndex - 1
+    val nextFrame = if (frameIndex >= timeline.lastFrameIndex) 0 else frameIndex + 1
+    val sliderSteps = if (frameCount in 3..160) frameCount - 2 else 0
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(Dimens.ChipCornerRadius),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+        ),
+        tonalElevation = 0.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "GIF",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(end = 4.dp),
+                )
+                Text(
+                    text = "第 ${frameIndex + 1}/$frameCount 帧",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(
+                    onClick = {
+                        onPlaybackChange(
+                            playback.copy(
+                                frameIndex = previousFrame,
+                                isPlaying = false,
+                            ),
+                        )
+                    },
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SkipPrevious,
+                        contentDescription = "上一帧",
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        onPlaybackChange(
+                            playback.copy(
+                                frameIndex = frameIndex,
+                                isPlaying = !playback.isPlaying,
+                            ),
+                        )
+                    },
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = if (playback.isPlaying) {
+                            Icons.Rounded.Pause
+                        } else {
+                            Icons.Rounded.PlayArrow
+                        },
+                        contentDescription = if (playback.isPlaying) "暂停" else "播放",
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        onPlaybackChange(
+                            playback.copy(
+                                frameIndex = nextFrame,
+                                isPlaying = false,
+                            ),
+                        )
+                    },
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SkipNext,
+                        contentDescription = "下一帧",
+                    )
+                }
+            }
+            Slider(
+                value = frameIndex.toFloat(),
+                onValueChange = { value ->
+                    onPlaybackChange(
+                        playback.copy(
+                            frameIndex = value.roundToInt().coerceIn(0, timeline.lastFrameIndex),
+                            isPlaying = false,
+                        ),
+                    )
+                },
+                valueRange = 0f..timeline.lastFrameIndex.toFloat().coerceAtLeast(1f),
+                steps = sliderSteps,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics {
+                        contentDescription = "GIF 帧进度"
+                        progressBarRangeInfo = ProgressBarRangeInfo(
+                            current = frameIndex.toFloat(),
+                            range = 0f..timeline.lastFrameIndex.toFloat().coerceAtLeast(1f),
+                            steps = sliderSteps,
+                        )
+                    },
+            )
         }
     }
 }
@@ -7204,6 +7525,9 @@ private fun PockRefCanvas(
     // in [PockRefApp] for the cache-eviction effect that
     // used to live here.
     bitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
+    gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
+    selectedGifPlaybackImageId: String?,
 ) {
     // V2: bitmapCache is now passed in from the [PockRefApp]
     // scope (see the [PockRefApp] declaration of the same
@@ -7432,8 +7756,27 @@ private fun PockRefCanvas(
         }
     }
 
+    val focusedHighResImageId = remember(
+        state.fittedImageId,
+        state.selectedImageIds,
+        state.selectedImageId,
+    ) {
+        val fittedId = state.fittedImageId
+        if (fittedId != null &&
+            (state.selectedImageIds == setOf(fittedId) || state.selectedImageId == fittedId)
+        ) {
+            fittedId
+        } else {
+            null
+        }
+    }
+
     // Scene-changed effect: load all images that aren't cached
-    LaunchedEffect(state.images.map { Triple(it.id, it.imageBytes.size, it.mimeType) }) {
+    LaunchedEffect(
+        state.images.map { Triple(it.id, it.imageBytes.size, it.mimeType) },
+        state.canvasViewportSize,
+        focusedHighResImageId,
+    ) {
         val s = currentState
         val viewport = worldViewportRect(
             canvasOffset = s.canvasOffset,
@@ -7444,17 +7787,26 @@ private fun PockRefCanvas(
         pipeline.onSceneChanged(
             images = s.images,
             viewportRect = android.graphics.RectF(viewport.left, viewport.top, viewport.right, viewport.bottom),
-            canvasScale = s.canvasScale,
             cachedImageIds = bitmapCache.keys.toSet(),
         ) { image ->
-            val displayW = (image.displaySize.width * s.canvasScale).toInt().coerceAtLeast(1)
-            val displayH = (image.displaySize.height * s.canvasScale).toInt().coerceAtLeast(1)
-            displayW to displayH
+            ImageDecodePolicy.requestFor(
+                image = image,
+                canvasScale = s.canvasScale,
+                viewportWidth = s.canvasViewportSize.width,
+                viewportHeight = s.canvasViewportSize.height,
+                isFocusedImage = image.id == focusedHighResImageId,
+            )
         }
     }
 
     // Viewport-changed effect: decode newly-visible images + upgrade zoom levels
-    LaunchedEffect(state.canvasOffset, state.canvasScale, state.images) {
+    LaunchedEffect(
+        state.canvasOffset,
+        state.canvasScale,
+        state.canvasViewportSize,
+        state.images,
+        focusedHighResImageId,
+    ) {
         val s = currentState
         val viewport = worldViewportRect(
             canvasOffset = s.canvasOffset,
@@ -7467,13 +7819,16 @@ private fun PockRefCanvas(
         pipeline.onViewportChanged(
             images = s.images,
             viewportRect = android.graphics.RectF(viewport.left, viewport.top, viewport.right, viewport.bottom),
-            canvasScale = s.canvasScale,
             cachedImageIds = bitmapCache.keys.toSet(),
             cachedLevels = cachedLevels,
         ) { image ->
-            val displayW = (image.displaySize.width * s.canvasScale).toInt().coerceAtLeast(1)
-            val displayH = (image.displaySize.height * s.canvasScale).toInt().coerceAtLeast(1)
-            displayW to displayH
+            ImageDecodePolicy.requestFor(
+                image = image,
+                canvasScale = s.canvasScale,
+                viewportWidth = s.canvasViewportSize.width,
+                viewportHeight = s.canvasViewportSize.height,
+                isFocusedImage = image.id == focusedHighResImageId,
+            )
         }
     }
 
@@ -7686,7 +8041,7 @@ private fun PockRefCanvas(
                     // pointerInput has nothing useful to do
                     // when there are no images to drag /
                     // select / transform.
-                    if (currentState.images.isEmpty()) return@awaitEachGesture
+                    if (!currentState.hasSceneContent) return@awaitEachGesture
                     down.consume()
                     // If the crop overlay is active, skip all
                     // canvas gesture processing so touches on
@@ -7696,53 +8051,181 @@ private fun PockRefCanvas(
                     val downPos = down.position
                     val downTime = System.currentTimeMillis()
                     val s = currentState
-                    val hitId = hitTestImage(s, downPos, Size(size.width.toFloat(), size.height.toFloat()))
-
                     // V_NOW (user feedback "P0-A1 阈值按 density
                     // 缩放"): the file-scope *DP constants (e.g.
-                    // [DRAG_TAP_THRESHOLD_DP])
-                    // are interpreted in "device-independent
-                    // pixels" and need to be multiplied by the
-                    // current screen density to get the raw
-                    // pixel values the pointer math uses. We
-                    // capture [density] once per gesture (not
-                    // per frame) so a configuration change mid-
-                    // gesture would still let the gesture run to
-                    // completion under the values it started
-                    // with — the next gesture picks up the new
-                    // density. [density] is forwarded in from
-                    // the [PockRefCanvas] composable scope
-                    // because [LocalDensity.current] is not
-                    // callable inside a non-@Composable
-                    // [awaitEachGesture] body.
+                    // [DRAG_TAP_THRESHOLD_DP]) are interpreted in
+                    // device-independent pixels and need to be
+                    // multiplied by the current screen density.
                     val dragTapThresholdPx = with(density) { DRAG_TAP_THRESHOLD_DP.dp.toPx() }
                     val tapMaxDragPx = with(density) { TAP_MAX_DRAG_DP.dp.toPx() }
                     val gestureMovedThresholdPx = with(density) { GESTURE_MOVED_THRESHOLD_DP.dp.toPx() }
                     val doubleTapMaxDistPx = with(density) { DOUBLE_TAP_MAX_DIST_DP.dp.toPx() }
                     val edgeAutoScrollThresholdPx = with(density) { EDGE_AUTO_SCROLL_THRESHOLD_DP.dp.toPx() }
+                    if (s.markupModeActive) {
+                        fun screenToMarkupWorld(point: Offset, snapshot: PockRefUiState): Offset {
+                            val scale = snapshot.canvasScale.coerceAtLeast(0.0001f)
+                            return Offset(
+                                x = (point.x - size.width.toFloat() / 2f - snapshot.canvasOffset.x) / scale,
+                                y = (point.y - size.height.toFloat() / 2f - snapshot.canvasOffset.y) / scale,
+                            )
+                        }
+                        var transformStarted = false
+                        var previousDistance = 0f
+                        var previousPanCentroid = Offset.Zero
+                        fun handleMarkupCanvasTransform(changes: List<PointerInputChange>) {
+                            val activeChanges = changes.filter { it.pressed }
+                            if (activeChanges.size < 2) return
+                            val p0 = activeChanges[0].position
+                            val p1 = activeChanges[1].position
+                            val centroid = (p0 + p1) / 2f
+                            val distance = (p0 - p1).getDistance()
+                            if (!transformStarted) {
+                                previousDistance = distance
+                                previousPanCentroid = centroid
+                                transformStarted = true
+                                return
+                            }
+                            val distanceDelta = if (previousDistance > 0f) distance / previousDistance else 1f
+                            val panDelta = canvasPanDeltaForPointerCount(
+                                pointerCount = activeChanges.size,
+                                previousCentroid = previousPanCentroid,
+                                centroid = centroid,
+                            )
+                            if (panDelta != Offset.Zero) {
+                                currentOnAction(PockRefAction.PanCanvas(panDelta))
+                            }
+                            if (
+                                distanceDelta != 1f &&
+                                isGestureEnabled(currentState.gestureToggles, GestureId.PINCH_ZOOM)
+                            ) {
+                                currentOnAction(PockRefAction.ZoomCanvas(distanceDelta, centroid))
+                            }
+                            previousDistance = distance
+                            previousPanCentroid = centroid
+                        }
+                        if (firstEvent.changes.count { it.pressed } >= 2) {
+                            handleMarkupCanvasTransform(firstEvent.changes)
+                            firstEvent.changes.forEach { it.consume() }
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val changes = event.changes
+                                if (changes.count { it.pressed } >= 2) {
+                                    handleMarkupCanvasTransform(changes)
+                                }
+                                changes.forEach { it.consume() }
+                                if (changes.none { it.pressed }) break
+                            }
+                            return@awaitEachGesture
+                        }
+                        currentOnAction(PockRefAction.BeginMarkupStroke(screenToMarkupWorld(downPos, s)))
+                        var cancelled = false
+                        var navigatingCanvas = false
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            val changes = event.changes
+                            if (navigatingCanvas) {
+                                if (changes.count { it.pressed } >= 2) {
+                                    handleMarkupCanvasTransform(changes)
+                                }
+                                changes.forEach { it.consume() }
+                                if (changes.none { it.pressed }) break
+                                continue
+                            }
+                            if (changes.count { it.pressed } >= 2) {
+                                cancelled = true
+                                navigatingCanvas = true
+                                currentOnAction(PockRefAction.CancelMarkupStroke)
+                                handleMarkupCanvasTransform(changes)
+                                changes.forEach { it.consume() }
+                                if (changes.none { it.pressed }) break
+                                continue
+                            }
+                            val change = changes.firstOrNull { it.id == down.id } ?: changes.firstOrNull()
+                            if (change == null) {
+                                cancelled = true
+                                break
+                            }
+                            if (!change.pressed) {
+                                change.consume()
+                                break
+                            }
+                            currentOnAction(
+                                PockRefAction.UpdateMarkupStroke(
+                                    screenToMarkupWorld(change.position, currentState),
+                                ),
+                            )
+                            change.consume()
+                        }
+                        if (!navigatingCanvas) {
+                            currentOnAction(
+                                if (cancelled) PockRefAction.CancelMarkupStroke
+                                else PockRefAction.CommitMarkupStroke,
+                            )
+                        }
+                        return@awaitEachGesture
+                    }
+                    if (s.markupVisible) {
+                        val hitText = hitTestMarkupText(
+                            texts = s.markupTexts,
+                            point = downPos,
+                            centerOffset = Offset(size.width.toFloat() / 2f, size.height.toFloat() / 2f),
+                            canvasOffset = s.canvasOffset,
+                            canvasScale = s.canvasScale,
+                        )
+                        if (hitText != null) {
+                            var draggingText = false
+                            var previousTextDragPosition = downPos
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val changes = event.changes
+                                if (changes.count { it.pressed } >= 2) {
+                                    if (draggingText) currentOnAction(PockRefAction.EndSceneGesture)
+                                    changes.forEach { it.consume() }
+                                    return@awaitEachGesture
+                                }
+                                val change = changes.firstOrNull { it.id == down.id } ?: changes.firstOrNull()
+                                if (change == null) {
+                                    if (draggingText) currentOnAction(PockRefAction.EndSceneGesture)
+                                    return@awaitEachGesture
+                                }
+                                if (!change.pressed) {
+                                    change.consume()
+                                    if (draggingText) {
+                                        currentOnAction(PockRefAction.EndSceneGesture)
+                                    } else {
+                                        currentOnAction(PockRefAction.EditMarkupText(hitText.id))
+                                    }
+                                    return@awaitEachGesture
+                                }
+                                val totalDrag = change.position - downPos
+                                if (!draggingText && totalDrag.getDistance() >= dragTapThresholdPx) {
+                                    draggingText = true
+                                    currentOnAction(PockRefAction.BeginSceneGesture)
+                                }
+                                if (draggingText) {
+                                    val scale = currentState.canvasScale.coerceAtLeast(0.0001f)
+                                    val deltaScreen = change.position - previousTextDragPosition
+                                    previousTextDragPosition = change.position
+                                    currentOnAction(
+                                        PockRefAction.MoveMarkupText(
+                                            textId = hitText.id,
+                                            delta = Offset(deltaScreen.x / scale, deltaScreen.y / scale),
+                                        ),
+                                    )
+                                    change.consume()
+                                }
+                            }
+                        }
+                    }
+                    val hitId = hitTestImage(s, downPos, Size(size.width.toFloat(), size.height.toFloat()))
 
                     var activeDragImageId: String? = null
-                    // V_NOW (2026-06-11): separate the
-                    // "image the user tapped" identity from
-                    // [activeDragImageId] so the
-                    // pointer-move path can detect
-                    // image-drag vs canvas-pan independently
-                    // of double-tap detection. In global
-                    // lock mode the user must be able to
-                    // single-finger drag ON an image to
-                    // pan the canvas (matching the
-                    // "view-only" contract) but a
-                    // quick-tap-then-second-tap must still
-                    // fire double-tap-to-focus on that
-                    // image. We can't reuse
-                    // [activeDragImageId] for both
-                    // because the pointer-move branch
-                    // (`if (dragId != null)`) would steal
-                    // the gesture and dispatch
-                    // [BeginImageDrag] before the canvas-
-                    // pan branch could ever run.
+                    // Separate the "image the user tapped"
+                    // identity from [activeDragImageId] so
+                    // locked/global-lock images can still
+                    // participate in tap and double-tap focus
+                    // without arming image drag.
                     var tapTargetImageId: String? = null
-                    var dragCanvas = false
                     var lassoActive = false
                     var lassoStart: Offset? = null
                     var boxSelectStart: Offset? = null
@@ -7794,6 +8277,10 @@ private fun PockRefCanvas(
                     // on every frame while non-null.
                     var groupCornerDrag: GroupCornerDragState? = null
                     val cornerHitRadiusPx = with(density) { CORNER_HIT_RADIUS_DP.dp.toPx() }
+                    var rotationHandleDrag: RotationHandleDragState? = null
+                    var rotationHandleDragActive = false
+                    val rotationHandleOffsetPx = with(density) { ROTATION_HANDLE_OFFSET_DP.dp.toPx() }
+                    val rotationHandleHitRadiusPx = with(density) { ROTATION_HANDLE_HIT_RADIUS_DP.dp.toPx() }
                     // V_NOW: long-press on a selected image in
                     // multi-select mode triggers the
                     // SelectionBottomSheet. Track whether the
@@ -7974,6 +8461,50 @@ private fun PockRefCanvas(
                                     !cs2.isImageLocked(it.id)
                                 }
                             if (anyUnlocked) {
+                                val rotationGeometry = if (hasSingleSelection) {
+                                    val ct = cornerImages.first()
+                                    projectImageRotationHandleToScreen(
+                                        imageCenter = ct.center,
+                                        imageWidth = ct.displaySize.width.toFloat() * ct.scale,
+                                        imageHeight = ct.displaySize.height.toFloat() * ct.scale,
+                                        rotationDegrees = ct.rotationDegrees,
+                                        handleOffsetPx = rotationHandleOffsetPx,
+                                        canvasScale = cs2.canvasScale,
+                                        canvasOffset = cs2.canvasOffset,
+                                        viewportWidth = size.width.toFloat(),
+                                        viewportHeight = size.height.toFloat(),
+                                    )
+                                } else {
+                                    projectGroupRotationHandleToScreen(
+                                        groupAabb = groupSelectionAabb(cornerImages),
+                                        handleOffsetPx = rotationHandleOffsetPx,
+                                        canvasScale = cs2.canvasScale,
+                                        canvasOffset = cs2.canvasOffset,
+                                        viewportWidth = size.width.toFloat(),
+                                        viewportHeight = size.height.toFloat(),
+                                    )
+                                }
+                                if (hitTestRotationHandle(rotationGeometry, downPos, rotationHandleHitRadiusPx)) {
+                                    val pivotWorld = if (hasSingleSelection) {
+                                        cornerImages.first().center
+                                    } else {
+                                        groupSelectionAabb(cornerImages).center
+                                    }
+                                    val pivotScreen = Offset(
+                                        x = cs2Center.x + pivotWorld.x * cs2.canvasScale,
+                                        y = cs2Center.y + pivotWorld.y * cs2.canvasScale,
+                                    )
+                                    rotationHandleDrag = RotationHandleDragState(
+                                        pivotScreen = pivotScreen,
+                                        previousAngleRad = atan2(
+                                            downPos.y - pivotScreen.y,
+                                            downPos.x - pivotScreen.x,
+                                        ),
+                                    )
+                                    currentOnAction(PockRefAction.BeginSceneGesture)
+                                    rotationHandleDragActive = true
+                                }
+
                                 // V_NOW (2026-06-11 "旋转图片
                                 // 无法用角点缩放" fix):
                                 // for SINGLE, project the
@@ -7996,60 +8527,61 @@ private fun PockRefCanvas(
                                 // MULTI/BOX still uses the
                                 // group AABB (the group chrome
                                 // IS the AABB box).
-                                val gHitIdx: Int
-                                val gProjected: List<Offset>
-                                val cornerAabb: Rect
-                                if (hasSingleSelection) {
-                                    val ct = cornerImages.first()
-                                    val imgW = ct.displaySize.width.toFloat() * ct.scale
-                                    val imgH = ct.displaySize.height.toFloat() * ct.scale
-                                    gProjected = projectImageCornersToScreen(
-                                        imageCenter = ct.center,
-                                        imageWidth = imgW,
-                                        imageHeight = imgH,
-                                        rotationDegrees = ct.rotationDegrees,
-                                        canvasScale = cs2.canvasScale,
-                                        canvasOffset = cs2.canvasOffset,
-                                        viewportWidth = size.width.toFloat(),
-                                        viewportHeight = size.height.toFloat(),
-                                    )
-                                    gHitIdx = hitTestCornerHandle(
-                                        projectedCorners = gProjected,
-                                        screenPoint = downPos,
-                                        hitRadiusPx = cornerHitRadiusPx,
-                                    )
-                                    cornerAabb = rotatedFootprintAabb(
-                                        center = ct.center,
-                                        displayW = ct.displaySize.width.toFloat(),
-                                        displayH = ct.displaySize.height.toFloat(),
-                                        scale = ct.scale,
-                                        rotationDegrees = ct.rotationDegrees,
-                                    )
-                                } else {
-                                    cornerAabb = groupSelectionAabb(cornerImages).rect
-                                    val gaabbObj = GroupAabb(
-                                        rect = cornerAabb,
-                                        center = Offset(
-                                            (cornerAabb.left + cornerAabb.right) / 2f,
-                                            (cornerAabb.top + cornerAabb.bottom) / 2f,
-                                        ),
-                                        width = cornerAabb.width,
-                                        height = cornerAabb.height,
-                                    )
-                                    gProjected = projectGroupAabbCornersToScreen(
-                                        groupAabb = gaabbObj,
-                                        canvasScale = cs2.canvasScale,
-                                        canvasOffset = cs2.canvasOffset,
-                                        viewportWidth = size.width.toFloat(),
-                                        viewportHeight = size.height.toFloat(),
-                                    )
-                                    gHitIdx = hitTestCornerHandle(
-                                        projectedCorners = gProjected,
-                                        screenPoint = downPos,
-                                        hitRadiusPx = cornerHitRadiusPx,
-                                    )
-                                }
-                                if (gHitIdx >= 0 && cornerAabb.width > 1f && cornerAabb.height > 1f) {
+                                if (rotationHandleDrag == null) {
+                                    val gHitIdx: Int
+                                    val gProjected: List<Offset>
+                                    val cornerAabb: Rect
+                                    if (hasSingleSelection) {
+                                        val ct = cornerImages.first()
+                                        val imgW = ct.displaySize.width.toFloat() * ct.scale
+                                        val imgH = ct.displaySize.height.toFloat() * ct.scale
+                                        gProjected = projectImageCornersToScreen(
+                                            imageCenter = ct.center,
+                                            imageWidth = imgW,
+                                            imageHeight = imgH,
+                                            rotationDegrees = ct.rotationDegrees,
+                                            canvasScale = cs2.canvasScale,
+                                            canvasOffset = cs2.canvasOffset,
+                                            viewportWidth = size.width.toFloat(),
+                                            viewportHeight = size.height.toFloat(),
+                                        )
+                                        gHitIdx = hitTestCornerHandle(
+                                            projectedCorners = gProjected,
+                                            screenPoint = downPos,
+                                            hitRadiusPx = cornerHitRadiusPx,
+                                        )
+                                        cornerAabb = rotatedFootprintAabb(
+                                            center = ct.center,
+                                            displayW = ct.displaySize.width.toFloat(),
+                                            displayH = ct.displaySize.height.toFloat(),
+                                            scale = ct.scale,
+                                            rotationDegrees = ct.rotationDegrees,
+                                        )
+                                    } else {
+                                        cornerAabb = groupSelectionAabb(cornerImages).rect
+                                        val gaabbObj = GroupAabb(
+                                            rect = cornerAabb,
+                                            center = Offset(
+                                                (cornerAabb.left + cornerAabb.right) / 2f,
+                                                (cornerAabb.top + cornerAabb.bottom) / 2f,
+                                            ),
+                                            width = cornerAabb.width,
+                                            height = cornerAabb.height,
+                                        )
+                                        gProjected = projectGroupAabbCornersToScreen(
+                                            groupAabb = gaabbObj,
+                                            canvasScale = cs2.canvasScale,
+                                            canvasOffset = cs2.canvasOffset,
+                                            viewportWidth = size.width.toFloat(),
+                                            viewportHeight = size.height.toFloat(),
+                                        )
+                                        gHitIdx = hitTestCornerHandle(
+                                            projectedCorners = gProjected,
+                                            screenPoint = downPos,
+                                            hitRadiusPx = cornerHitRadiusPx,
+                                        )
+                                    }
+                                    if (gHitIdx >= 0 && cornerAabb.width > 1f && cornerAabb.height > 1f) {
                                     val gAnchorScreen = gProjected[3 - gHitIdx]
                                     val gDiag = kotlin.math.hypot(
                                         gProjected[gHitIdx].x - gAnchorScreen.x,
@@ -8139,6 +8671,7 @@ private fun PockRefCanvas(
                                                 .associate { it.id to it.scale },
                                             initialGroupDiagonalScreen = gDiag,
                                             initialMoveScreen = gProjected[gHitIdx],
+                                            initialFingerOffsetFromHandle = downPos - gProjected[gHitIdx],
                                             initialAnchorScreen = gAnchorScreen,
                                             initialGroupCenterWorld = gGroupCenterWorld,
                                             initialCenters = cornerImages
@@ -8162,11 +8695,15 @@ private fun PockRefCanvas(
                                         cornerDragActive = true
                                     }
                                 }
+                                }
                             }
                         }
                     }
 
-                    if (stylusButtonDown && groupCornerDrag == null) {
+                    if (rotationHandleDrag != null) {
+                        // Rotation handle owns this gesture; the move loop below
+                        // turns pointer angle deltas into TransformSelectedImage.
+                    } else if (stylusButtonDown && groupCornerDrag == null) {
                         // Force BOX mode for this gesture. The down
                         // might have hit an image — we ignore the hit
                         // because the S Pen button is for selection,
@@ -8196,51 +8733,10 @@ private fun PockRefCanvas(
                         // whether to arm the drag or just
                         // record the hit for double-tap.
                         if (s.globalImageLock) {
-                            // V_NOW (2026-06-11): in global
-                            // lock mode the image is
-                            // "view-only" — the user must
-                            // be able to single-finger drag
-                            // ON the image to pan the
-                            // canvas (matching the
-                            // "view-only" contract).
-                            //
-                            // We do NOT set
-                            // [activeDragImageId] here. That
-                            // variable is what the
-                            // pointer-move branch checks to
-                            // decide whether to dispatch
-                            // [BeginImageDrag]; setting it
-                            // would steal the gesture from
-                            // the canvas-pan branch and
-                            // cause the very bug we're
-                            // fixing (locked image blocks
-                            // canvas pan).
-                            //
-                            // We DO set [tapTargetImageId]
-                            // so pointer-up double-tap
-                            // detection can still fire
-                            // [FitImageToScreen] on the
-                            // hit image.
+                            // Keep tap / double-tap focus on
+                            // globally locked images, but do
+                            // not arm single-finger canvas pan.
                             tapTargetImageId = hitId
-                            // V_NOW (2026-06-11 "全局锁定下双击
-                            // 取消聚焦失败" fix): when the
-                            // tapped image IS the currently
-                            // focused image, do NOT set
-                            // [dragCanvas = true]. The user's
-                            // intent is double-tap to unfocus,
-                            // not pan the canvas. If we arm
-                            // canvas pan, the first tap's
-                            // micro-movement dispatches
-                            // [PanCanvas] which clears
-                            // [fittedImageId] before the
-                            // second tap's [FitImageToScreen]
-                            // can detect the "already focused
-                            // → unfocus" condition — the
-                            // unfocus silently no-ops because
-                            // [fittedImageId] is already null.
-                            if (s.fittedImageId != hitId) {
-                                dragCanvas = true
-                            }
                         } else if (s.boxSelectMode && hitId !in s.selectedImageIds && groupCornerDrag == null) {
                             currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                             boxSelectStart = downPos
@@ -8270,36 +8766,10 @@ private fun PockRefCanvas(
                             // Only direct drag is blocked.
                             val hitImage = s.images.firstOrNull { it.id == hitId }
                             val moveEnabled = isGestureEnabled(s.gestureToggles, GestureId.MOVE_IMAGE)
-                            // V_NOW (2026-06-10 #4 lock mode
-                            // parity): when the hit image is
-                            // [per-image locked], the previous
-                            // behavior was a silent no-op
-                            // ([activeDragImageId] stayed null,
-                            // and the surrounding if-else if
-                            // chain had already consumed this
-                            // branch so the trailing `dragCanvas
-                            // = true` line never ran either —
-                            // total dead gesture). Match the
-                            // [globalImageLock] behavior (see
-                            // the gate at L7014 above and the
-                            // 2026-06-08 v3 fix history): a
-                            // locked image is "view-only",
-                            // single-finger drag on it should
-                            // pan the canvas instead. The
-                            // same [MOVE_IMAGE] toggle the
-                            // empty-canvas pan branch at L7120
-                            // uses also gates this fallback —
-                            // the gesture toggle list has no
-                            // separate "pan canvas" entry, so
-                            // the user's existing "单指拖动"
-                            // preference is honored.
                             val imageLocked = hitImage?.locked == true
                             when {
                                 !imageLocked && moveEnabled -> {
                                     activeDragImageId = hitId
-                                }
-                                imageLocked && moveEnabled -> {
-                                    dragCanvas = true
                                 }
                             }
                         }
@@ -8324,8 +8794,6 @@ private fun PockRefCanvas(
                         // multi-select mode.
                         lassoActive = true
                         lassoStart = downPos
-                    } else if (isGestureEnabled(s.gestureToggles, GestureId.MOVE_IMAGE)) {
-                        dragCanvas = true
                     }
 
                     var transformMode = ImageTransformMode.NONE
@@ -8355,6 +8823,7 @@ private fun PockRefCanvas(
                     var modeCommitTimeMs: Long = 0L
                     var previousDistance = 0f
                     var previousAngle = 0f
+                    var previousPanCentroid = Offset.Zero
                     var initialZoom = 1f
                     var initialRotation = 0f
                     var transformStarted = false
@@ -8367,12 +8836,9 @@ private fun PockRefCanvas(
                     // [LaunchedEffect] at the
                     // [PockRefCanvas] level) just reads
                     // the latest value. Eligible only for
-                    // image drag / box-select / lasso —
-                    // not for canvas pan ([dragCanvas]),
-                    // since the user is already driving
-                    // the canvas with their finger and an
-                    // auto-scroll on top would double the
-                    // pan speed.
+                    // image drag / box-select / lasso. Canvas
+                    // pan is two-finger only and stays outside
+                    // this single-pointer edge auto-scroll path.
                     lastPointerPosState.value = downPos
                     autoScrollEligibleState.value = false
                     // Multi-finger tap detection. [peakPointerCount]
@@ -8414,6 +8880,11 @@ private fun PockRefCanvas(
                         }
 
                         if (pointerCount >= 2) {
+                            if (rotationHandleDragActive) {
+                                currentOnAction(PockRefAction.EndSceneGesture)
+                                rotationHandleDragActive = false
+                                rotationHandleDrag = null
+                            }
                             if (activeDragImageId != null && dragStarted) {
                                 currentOnAction(PockRefAction.CommitImageDrag)
                             } else if (activeDragImageId != null) {
@@ -8421,7 +8892,6 @@ private fun PockRefCanvas(
                             }
                             activeDragImageId = null
                             tapTargetImageId = null
-                            dragCanvas = false
                             lassoActive = false
 
                             // V_NOW (user spec "双指缩放选中图片"):
@@ -8549,6 +9019,7 @@ private fun PockRefCanvas(
                             if (currentState.lockCanvasFrozen) {
                                 previousDistance = distance
                                 previousAngle = angle
+                                previousPanCentroid = centroid
                                 changes.forEach { it.consume() }
                                 continue
                             }
@@ -8556,6 +9027,7 @@ private fun PockRefCanvas(
                             if (!transformStarted) {
                                 previousDistance = distance
                                 previousAngle = angle
+                                previousPanCentroid = centroid
                                 initialZoom = 1f
                                 initialRotation = 0f
                                 transformStarted = true
@@ -8567,9 +9039,18 @@ private fun PockRefCanvas(
 
                             val distanceDelta = if (previousDistance > 0f) distance / previousDistance else 1f
                             val angleDelta = angle - previousAngle
+                            val panDelta = canvasPanDeltaForPointerCount(
+                                pointerCount = pointerCount,
+                                previousCentroid = previousPanCentroid,
+                                centroid = centroid,
+                            )
                             val normalizedAngleDelta = if (angleDelta > PI.toFloat()) angleDelta - 2f * PI.toFloat()
                                 else if (angleDelta < -PI.toFloat()) angleDelta + 2f * PI.toFloat()
                                 else angleDelta
+
+                            if (panDelta != Offset.Zero) {
+                                currentOnAction(PockRefAction.PanCanvas(panDelta))
+                            }
 
                             initialZoom *= distanceDelta
                             initialRotation += normalizedAngleDelta
@@ -8723,6 +9204,7 @@ private fun PockRefCanvas(
 
                             previousDistance = distance
                             previousAngle = angle
+                            previousPanCentroid = centroid
                             changes.forEach { it.consume() }
                         } else if (pointerCount == 1) {
                             if (transformStarted) {
@@ -8759,6 +9241,30 @@ private fun PockRefCanvas(
                             // keeps the opposite corner pinned
                             // for SINGLE the same way it does
                             // for GROUP.
+                            val rotationDrag = rotationHandleDrag
+                            if (rotationDrag != null) {
+                                val currentAngle = atan2(
+                                    change.position.y - rotationDrag.pivotScreen.y,
+                                    change.position.x - rotationDrag.pivotScreen.x,
+                                )
+                                val angleDelta = shortestAngleDelta(rotationDrag.previousAngleRad, currentAngle)
+                                if (angleDelta != 0f) {
+                                    currentOnAction(
+                                        PockRefAction.TransformSelectedImage(
+                                            scaleChange = 1f,
+                                            rotationChange = (angleDelta * 180f / PI).toFloat(),
+                                            pan = Offset.Zero,
+                                            worldPivot = null,
+                                        ),
+                                    )
+                                    rotationHandleDrag = rotationDrag.copy(previousAngleRad = currentAngle)
+                                }
+                                change.consume()
+                                lastPointerPosState.value = change.position
+                                autoScrollEligibleState.value = false
+                                continue
+                            }
+
                             val gcorner = groupCornerDrag
                             if (gcorner != null) {
                                 val cs2 = currentState
@@ -8766,9 +9272,13 @@ private fun PockRefCanvas(
                                     size.width.toFloat() / 2f + cs2.canvasOffset.x,
                                     size.height.toFloat() / 2f + cs2.canvasOffset.y,
                                 )
+                                val currentMoveScreen = cornerHandleMovePointForFinger(
+                                    fingerPosition = change.position,
+                                    initialFingerOffsetFromHandle = gcorner.initialFingerOffsetFromHandle,
+                                )
                                 val currentMoveWorld = Offset(
-                                    (change.position.x - cs2Center.x) / cs2.canvasScale,
-                                    (change.position.y - cs2Center.y) / cs2.canvasScale,
+                                    (currentMoveScreen.x - cs2Center.x) / cs2.canvasScale,
+                                    (currentMoveScreen.y - cs2Center.y) / cs2.canvasScale,
                                 )
                                 // V_NOW (2026-06-11 "旋转图片角点缩放" fix):
                                 // for SINGLE, use [computeCornerDragResult]
@@ -8788,6 +9298,8 @@ private fun PockRefCanvas(
                                         rotationDegrees = gcorner.singleRotationDegrees,
                                         anchorSignX = gcorner.singleAnchorSignX,
                                         anchorSignY = gcorner.singleAnchorSignY,
+                                        minScaleFactor = 0.1f / gcorner.singleInitialScale,
+                                        maxScaleFactor = 8.0f / gcorner.singleInitialScale,
                                     )
                                     val newScale = (gcorner.singleInitialScale * scaleFactor)
                                         .coerceIn(0.1f, 8.0f)
@@ -8922,8 +9434,6 @@ private fun PockRefCanvas(
                                         minOf(ls.y, change.position.y),
                                     )
                                 } ?: change.position
-                            } else if (dragCanvas) {
-                                currentOnAction(PockRefAction.PanCanvas(Offset(dragAmount.x, dragAmount.y)))
                             }
                             // Drag-to-edge auto-scroll handoff.
                             // Update the shared state with the
@@ -8978,6 +9488,12 @@ private fun PockRefCanvas(
                         currentOnAction(PockRefAction.EndSceneGesture)
                         cornerDragActive = false
                         groupCornerDrag = null
+                    }
+
+                    if (rotationHandleDragActive) {
+                        currentOnAction(PockRefAction.EndSceneGesture)
+                        rotationHandleDragActive = false
+                        rotationHandleDrag = null
                     }
 
                     // V_NOW (2026-06-10 #3 corner-handle
@@ -9576,11 +10092,19 @@ private fun PockRefCanvas(
                 val aabb = imageWorldAabb(image)
                 if (!rectsIntersect(aabb, viewRect)) return@forEach
             }
+            val gifSource = gifPlaybackSources[image.id]
+            val gifState = if (gifSource != null) {
+                gifPlaybackStates[image.id] ?: GifPlaybackState()
+            } else {
+                null
+            }
             val cached = bitmapCache[image.id]?.second
-            if (cached != null) {
+            if (cached != null || gifSource != null) {
                 drawSceneImage(
                     image = image,
                     bitmap = cached,
+                    gifPlaybackSource = gifSource,
+                    gifPlaybackState = gifState,
                     isSelected = image.id in state.selectedImageIds,
                     isBoxSelectPreview = image.id in state.boxSelectPreviewIds,
                     centerOffset = centerOffset,
@@ -9736,6 +10260,34 @@ private fun PockRefCanvas(
             }
         }
 
+        if (state.markupVisible) {
+            state.markupStrokes.forEach { stroke ->
+                drawMarkupStroke(
+                    stroke = stroke,
+                    centerOffset = centerOffset,
+                    canvasScale = state.canvasScale,
+                    canvasOffset = state.canvasOffset,
+                )
+            }
+            state.draftMarkupStroke?.let { stroke ->
+                drawMarkupStroke(
+                    stroke = stroke,
+                    centerOffset = centerOffset,
+                    canvasScale = state.canvasScale,
+                    canvasOffset = state.canvasOffset,
+                )
+            }
+            state.markupTexts.forEach { text ->
+                drawMarkupText(
+                    item = text,
+                    centerOffset = centerOffset,
+                    canvasScale = state.canvasScale,
+                    canvasOffset = state.canvasOffset,
+                    isEditing = state.editingMarkupTextId == text.id,
+                )
+            }
+        }
+
         // V2: hover-magnifier draw moved OUT of this
         // canvas into the [HoverMagnifierOverlay]
         // Composable, which is the last child of the
@@ -9779,6 +10331,101 @@ private fun DrawScope.worldXToScreen(worldX: Float, centerOffset: Offset, canvas
 
 private fun DrawScope.worldYToScreen(worldY: Float, centerOffset: Offset, canvasOffset: Offset, canvasScale: Float): Float =
     centerOffset.y + canvasOffset.y + worldY * canvasScale
+
+private fun DrawScope.drawMarkupStroke(
+    stroke: CanvasMarkupStroke,
+    centerOffset: Offset,
+    canvasScale: Float,
+    canvasOffset: Offset,
+) {
+    if (!stroke.isRenderable) return
+    val strokeWidth = (stroke.lineWidth * canvasScale).coerceAtLeast(1.5f)
+    val screenPoints = stroke.points.map { point ->
+        Offset(
+            worldXToScreen(point.x, centerOffset, canvasOffset, canvasScale),
+            worldYToScreen(point.y, centerOffset, canvasOffset, canvasScale),
+        )
+    }
+    val first = screenPoints.firstOrNull() ?: return
+    val path = androidx.compose.ui.graphics.Path().apply {
+        moveTo(first.x, first.y)
+        if (screenPoints.size == 2) {
+            lineTo(screenPoints[1].x, screenPoints[1].y)
+        } else {
+            for (index in 1 until screenPoints.lastIndex) {
+                val current = screenPoints[index]
+                val next = screenPoints[index + 1]
+                val mid = (current + next) / 2f
+                quadraticBezierTo(current.x, current.y, mid.x, mid.y)
+            }
+            val last = screenPoints.last()
+            lineTo(last.x, last.y)
+        }
+    }
+    drawPath(
+        path = path,
+        color = stroke.color,
+        style = Stroke(
+            width = strokeWidth,
+            cap = StrokeCap.Round,
+            join = StrokeJoin.Round,
+        ),
+    )
+}
+
+private fun DrawScope.drawMarkupText(
+    item: CanvasMarkupText,
+    centerOffset: Offset,
+    canvasScale: Float,
+    canvasOffset: Offset,
+    isEditing: Boolean,
+) {
+    val text = item.text.trim()
+    if (text.isEmpty()) return
+    val x = worldXToScreen(item.position.x, centerOffset, canvasOffset, canvasScale)
+    val y = worldYToScreen(item.position.y, centerOffset, canvasOffset, canvasScale)
+    val textSize = (item.fontSize * canvasScale).coerceAtLeast(8f)
+    val bounds = markupTextScreenBounds(item, centerOffset, canvasOffset, canvasScale)
+    if (bounds != null) {
+        drawRoundRect(
+            color = Color.White.copy(alpha = 0.88f),
+            topLeft = bounds.topLeft,
+            size = bounds.size,
+            cornerRadius = CornerRadius(8f, 8f),
+        )
+        drawRoundRect(
+            color = item.color.copy(alpha = if (isEditing) 1f else 0.72f),
+            topLeft = bounds.topLeft,
+            size = bounds.size,
+            cornerRadius = CornerRadius(8f, 8f),
+            style = Stroke(width = if (isEditing) 4f else 2.5f),
+        )
+    }
+    drawIntoCanvas { canvas ->
+        val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.White.toArgb()
+            this.textSize = textSize
+            textAlign = Paint.Align.CENTER
+            style = Paint.Style.STROKE
+            strokeWidth = (textSize * 0.12f).coerceAtLeast(2f)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = item.color.toArgb()
+            this.textSize = textSize
+            textAlign = Paint.Align.CENTER
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        val lineHeight = textSize * 1.18f
+        val lines = text.lines().filter { it.isNotBlank() }
+        val firstBaseline = y - (lineHeight * (lines.size - 1) / 2f)
+        lines.forEachIndexed { index, line ->
+            val baseline = firstBaseline + index * lineHeight
+            canvas.nativeCanvas.drawText(line, x, baseline, outlinePaint)
+            canvas.nativeCanvas.drawText(line, x, baseline, paint)
+        }
+    }
+}
 
 /**
  * Draw edge-to-edge snap guide lines for the active drag. One line per
@@ -10064,6 +10711,7 @@ private data class GroupCornerDragState(
     val initialScales: Map<String, Float>,
     val initialGroupDiagonalScreen: Float,
     val initialMoveScreen: Offset,
+    val initialFingerOffsetFromHandle: Offset,
     val initialAnchorScreen: Offset,
     val initialGroupCenterWorld: Offset,
     val initialCenters: Map<String, Offset>,
@@ -10136,17 +10784,52 @@ private data class GroupCornerDragState(
 /**
  * V_NOW (4-corner scale handles): the hit-test
  * radius for grabbing a corner handle. Picked at
- * 24dp so a fingertip landing on or just outside
- * the 8-10dp white dot still grabs the corner.
+ * 32dp so a fingertip landing near the white dot
+ * still grabs the corner before image dragging wins.
  * Bigger than the visual handle (the white circle
- * is ~10dp radius = 20dp diameter; 24dp hit gives
- * ~4dp of slop around the edge), small enough
+ * is ~10dp radius = 20dp diameter), small enough
  * that a corner grab doesn't accidentally swallow
  * taps on the image interior (the 4 corners of a
  * 1000x1500dp image are > 800dp apart, so the hit
  * circles never overlap).
  */
-private const val CORNER_HIT_RADIUS_DP = 24f
+private const val CORNER_HIT_RADIUS_DP = 32f
+private const val ROTATION_HANDLE_OFFSET_DP = 32f
+private const val ROTATION_HANDLE_HIT_RADIUS_DP = 24f
+
+private fun DrawScope.drawRotationHandleChrome(
+    geometry: RotationHandleGeometry,
+    canvasScale: Float,
+) {
+    val strokePx = max(3f, canvasScale * 3f)
+    val handleRadius = max(10f, canvasScale * 5f)
+    val handleInnerRadius = max(4f, canvasScale * 2f)
+    val handleColor = Color(0xFF6AD6FF)
+    drawLine(
+        color = Color(0x556AD6FF),
+        start = geometry.anchor,
+        end = geometry.handleCenter,
+        strokeWidth = max(8f, canvasScale * 8f),
+        cap = StrokeCap.Round,
+    )
+    drawLine(
+        color = handleColor,
+        start = geometry.anchor,
+        end = geometry.handleCenter,
+        strokeWidth = strokePx,
+        cap = StrokeCap.Round,
+    )
+    drawCircle(
+        color = Color.White,
+        radius = handleRadius,
+        center = geometry.handleCenter,
+    )
+    drawCircle(
+        color = handleColor,
+        radius = handleInnerRadius,
+        center = geometry.handleCenter,
+    )
+}
 
 private fun DrawScope.drawImagePlaceholder(
     image: SceneImage,
@@ -10241,7 +10924,9 @@ private fun DrawScope.drawLockedIndicator(
 
 private fun DrawScope.drawSceneImage(
     image: SceneImage,
-    bitmap: ImageBitmap,
+    bitmap: ImageBitmap?,
+    gifPlaybackSource: GifPlaybackSource? = null,
+    gifPlaybackState: GifPlaybackState? = null,
     isSelected: Boolean,
     isBoxSelectPreview: Boolean = false,
     centerOffset: Offset,
@@ -10303,7 +10988,15 @@ private fun DrawScope.drawSceneImage(
                 // so the cropped region fills the display
                 // rect exactly.
                 val crop = image.cropRect
-                if (crop != null) {
+                if (gifPlaybackSource != null && gifPlaybackState != null && crop == null) {
+                    drawGifMovieFrame(
+                        source = gifPlaybackSource,
+                        playback = gifPlaybackState,
+                        width = width,
+                        height = height,
+                        colorAdjust = image.colorAdjust,
+                    )
+                } else if (bitmap != null && crop != null) {
                     val srcW = bitmap.width
                     val srcH = bitmap.height
                     val srcOffset = androidx.compose.ui.unit.IntOffset(
@@ -10321,7 +11014,7 @@ private fun DrawScope.drawSceneImage(
                         dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
                         colorFilter = buildColorFilter(image.colorAdjust),
                     )
-                } else {
+                } else if (bitmap != null) {
                     drawImage(
                         image = bitmap,
                         dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
@@ -10362,8 +11055,8 @@ private fun DrawScope.drawSceneImage(
                     // single group-AABB box with
                     // its own 4 corner handles.
                     if (selectedCount < 2) {
-                        val handleRadius = max(8f, canvasScale * 4f)
-                        val handleInnerRadius = max(3f, canvasScale * 1.5f)
+                        val handleRadius = max(10f, canvasScale * 5f)
+                        val handleInnerRadius = max(4f, canvasScale * 2f)
                         val handleCenterColor = Color(0xFF6AD6FF)
                         val cornerPositions = listOf(
                             Offset(0f, 0f),
@@ -10410,8 +11103,53 @@ private fun DrawScope.drawSceneImage(
                         size = Size(width, height),
                         style = Stroke(width = flashStroke),
                     )
-                }
-            }
+	                }
+	            }
+	        }
+	    }
+    if (isSelected && selectedCount < 2) {
+        drawRotationHandleChrome(
+            geometry = projectImageRotationHandleToScreen(
+                imageCenter = image.center + dragOffset,
+                imageWidth = image.displaySize.width * image.scale,
+                imageHeight = image.displaySize.height * image.scale,
+                rotationDegrees = image.rotationDegrees,
+                handleOffsetPx = ROTATION_HANDLE_OFFSET_DP.dp.toPx(),
+                canvasScale = canvasScale,
+                canvasOffset = canvasOffset,
+                viewportWidth = size.width,
+                viewportHeight = size.height,
+            ),
+            canvasScale = canvasScale,
+        )
+    }
+}
+
+@Suppress("DEPRECATION")
+private fun DrawScope.drawGifMovieFrame(
+    source: GifPlaybackSource,
+    playback: GifPlaybackState,
+    width: Float,
+    height: Float,
+    colorAdjust: ColorAdjust,
+) {
+    val movie = source.movie
+    val movieWidth = movie.width()
+    val movieHeight = movie.height()
+    if (movieWidth <= 0 || movieHeight <= 0 || width <= 0f || height <= 0f) return
+
+    movie.setTime(source.timeline.timeForFrame(playback.frameIndex))
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+        colorFilter = buildColorMatrix(colorAdjust)?.let { ColorMatrixColorFilter(it) }
+    }
+    drawIntoCanvas { canvas ->
+        val nativeCanvas = canvas.nativeCanvas
+        val checkpoint = nativeCanvas.save()
+        try {
+            nativeCanvas.scale(width / movieWidth.toFloat(), height / movieHeight.toFloat())
+            movie.draw(nativeCanvas, 0f, 0f, paint)
+        } finally {
+            nativeCanvas.restoreToCount(checkpoint)
         }
     }
 }
@@ -10545,8 +11283,8 @@ private fun DrawScope.drawGroupSelectionChrome(
     // the same so a user moving between SINGLE
     // and MULTI modes gets identical-looking
     // handles.
-    val handleRadius = max(8f, canvasScale * 4f)
-    val handleInnerRadius = max(3f, canvasScale * 1.5f)
+    val handleRadius = max(10f, canvasScale * 5f)
+    val handleInnerRadius = max(4f, canvasScale * 2f)
     val handleCenterColor = Color(0xFF6AD6FF)
     val cornerPositions = listOf(
         Offset(left, top),
@@ -10566,6 +11304,17 @@ private fun DrawScope.drawGroupSelectionChrome(
             center = pos,
         )
     }
+    drawRotationHandleChrome(
+        geometry = projectGroupRotationHandleToScreen(
+            groupAabb = aabb,
+            handleOffsetPx = ROTATION_HANDLE_OFFSET_DP.dp.toPx(),
+            canvasScale = canvasScale,
+            canvasOffset = canvasOffset,
+            viewportWidth = size.width,
+            viewportHeight = size.height,
+        ),
+        canvasScale = canvasScale,
+    )
 }
 
 private fun DrawScope.drawHoverMagnifier(
@@ -10786,6 +11535,14 @@ internal fun computeEdgeAutoScroll(
     return Offset(dx, dy)
 }
 
+internal fun canvasPanDeltaForPointerCount(
+    pointerCount: Int,
+    previousCentroid: Offset,
+    centroid: Offset,
+): Offset {
+    return if (pointerCount == 2) centroid - previousCentroid else Offset.Zero
+}
+
 private fun hitTestImagesAt(
     state: PockRefUiState,
     point: Offset,
@@ -10973,6 +11730,21 @@ internal fun imageRotatedAabb(image: SceneImage): Rect {
 
 private fun rectsIntersect(a: Rect, b: Rect): Boolean =
     a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+
+private fun resolveGifBytes(
+    image: SceneImage,
+    imageDecoder: com.pockref.app.data.SceneImageDecoder?,
+    imageLazyLoader: com.pockref.app.data.PurFileParser?,
+): ByteArray? {
+    if (!isGifMimeType(image.mimeType)) return null
+    if (image.imageBytes.isNotEmpty()) return image.imageBytes
+    return if (image.imageByteOffset >= 0 && image.imageByteLength > 0) {
+        imageDecoder?.readImageBytes(image.imageByteOffset, image.imageByteLength)
+            ?: imageLazyLoader?.readImageBytes(image.imageByteOffset, image.imageByteLength)
+    } else {
+        null
+    }
+}
 
 private fun buildColorFilter(adjust: ColorAdjust): ColorFilter? {
     val matrix = buildColorMatrix(adjust) ?: return null
@@ -11305,6 +12077,110 @@ private fun SaveSceneNameDialog(
             }
         },
     )
+}
+
+@Composable
+private fun MarkupTextDialog(
+    value: String,
+    fontSize: Float,
+    isEditing: Boolean,
+    onValueChange: (String) -> Unit,
+    onFontSizeChange: (Float) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isEditing) "编辑文本" else "添加文本") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    label = { Text("文本") },
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = "字号 ${fontSize.roundToInt()}",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Slider(
+                        value = fontSize,
+                        onValueChange = onFontSizeChange,
+                        valueRange = 24f..240f,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                enabled = value.trim().isNotEmpty(),
+            ) {
+                Text(if (isEditing) "保存" else "添加")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        },
+    )
+}
+
+@Composable
+private fun MarkupModeBar(
+    onCancel: () -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
+        tonalElevation = 0.dp,
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = onCancel) {
+                Text("取消")
+            }
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Brush,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = "标记",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            TextButton(onClick = onDone) {
+                Text("完成")
+            }
+        }
+    }
 }
 
 /**
@@ -11793,6 +12669,22 @@ private fun BoxScope.BottomRightActionPanel(
                 ),
             ) {
                 Column {
+                    BottomPanelListItem(
+                        icon = Icons.Rounded.Brush,
+                        contentDescription = "标记",
+                        onClick = {
+                            onMenuDismiss()
+                            onAction(PockRefAction.SetMarkupModeActive(true))
+                        },
+                    )
+                    BottomPanelListItem(
+                        icon = Icons.Rounded.TextFields,
+                        contentDescription = "添加文本",
+                        onClick = {
+                            onMenuDismiss()
+                            onAction(PockRefAction.RequestMarkupText)
+                        },
+                    )
                     // 1. Settings — dispatches
                     //    [PockRefAction.SetSettingsSheetOpen(true)]
                     //    which the reducer applies to
@@ -12067,6 +12959,62 @@ private fun BottomPanelListItem(
 // hoisted to the function declaration so it covers
 // [combinedClickable] inside the [Modifier] chain
 // without needing per-call suppression.
+@Composable
+private fun BoxScope.MarkupVisibilityButton(
+    visible: Boolean,
+    hasLockButton: Boolean,
+    onToggle: () -> Unit,
+    statusBarTopDp: Dp,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val stateLayer = when {
+        isPressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        isHovered -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+        else -> Color.Transparent
+    }
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(
+                top = statusBarTopDp + Dimens.CornerInset,
+                end = if (hasLockButton) {
+                    Dimens.CornerInset + Dimens.BottomPanelChromeSize + 8.dp
+                } else {
+                    Dimens.CornerInset
+                },
+            )
+            .size(Dimens.BottomPanelChromeSize)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            )
+            .background(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
+                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            )
+            .background(
+                color = stateLayer,
+                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onToggle,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (visible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+            contentDescription = if (visible) "隐藏标记" else "显示标记",
+            modifier = Modifier.size(24.dp),
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
 @Composable
 private fun BoxScope.GlobalLockButton(
     state: PockRefUiState,

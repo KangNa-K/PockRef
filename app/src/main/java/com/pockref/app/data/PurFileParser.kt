@@ -1,15 +1,24 @@
 package com.pockref.app.data
 
+import android.database.sqlite.SQLiteDatabase
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.ColorAdjust
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -19,6 +28,28 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
 import kotlin.math.sqrt
+
+internal fun pureRefNotePlainText(html: String): String {
+    val withoutStyle = html
+        .replace(Regex("(?is)<style[^>]*>.*?</style>"), "\n")
+        .replace(Regex("(?is)<head[^>]*>.*?</head>"), "\n")
+    val withBreaks = withoutStyle
+        .replace(Regex("(?i)<br\\s*/?>"), "\n")
+        .replace(Regex("(?i)</p\\s*>"), "\n")
+        .replace(Regex("(?i)</li\\s*>"), "\n")
+    return withBreaks
+        .replace(Regex("(?is)<[^>]+>"), "")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString("\n")
+}
 
 class PurFileParser {
 
@@ -78,8 +109,11 @@ class PurFileParser {
             inputRaf.readFully(headerBytes)
             val header = parseHeader(headerBytes, file.length())
 
-            val scene = parseV1Format(inputRaf, file, header)
-            return scene
+            return if (header.formatVersion.startsWith("2.")) {
+                parseV2Format(inputRaf, file, header)
+            } else {
+                parseV1Format(inputRaf, file, header)
+            }
         } finally {
             inputRaf.close()
         }
@@ -229,6 +263,422 @@ class PurFileParser {
         if (offset + 8 > bytes.size) return 0.0
         val buf = ByteBuffer.wrap(bytes, offset, 8).order(ByteOrder.BIG_ENDIAN)
         return buf.double
+    }
+
+    private data class V2Transform(
+        val m11: Double = 1.0,
+        val m12: Double = 0.0,
+        val m21: Double = 0.0,
+        val m22: Double = 1.0,
+        val dx: Double = 0.0,
+        val dy: Double = 0.0,
+    ) {
+        fun applying(other: V2Transform): V2Transform = V2Transform(
+            m11 = m11 * other.m11 + m21 * other.m12,
+            m12 = m12 * other.m11 + m22 * other.m12,
+            m21 = m11 * other.m21 + m21 * other.m22,
+            m22 = m12 * other.m21 + m22 * other.m22,
+            dx = m11 * other.dx + m21 * other.dy + dx,
+            dy = m12 * other.dx + m22 * other.dy + dy,
+        )
+
+        fun applyingTo(x: Double, y: Double): Offset = Offset(
+            (m11 * x + m21 * y + dx).toFloat(),
+            (m12 * x + m22 * y + dy).toFloat(),
+        )
+    }
+
+    private data class V2Size(val width: Double, val height: Double)
+
+    private data class V2RasterTarget(
+        val rasterWidth: Int,
+        val rasterHeight: Int,
+        val scale: Float,
+    )
+
+    private data class V2RenderedDrawing(
+        val logicalBounds: RectF,
+        val rasterWidth: Int,
+        val rasterHeight: Int,
+        val bytes: ByteArray,
+    )
+
+    private fun parseV2Format(raf: RandomAccessFile, file: File, header: PurHeader): PockRefScene {
+        val sqliteOffset = findV2SQLiteHeaderOffset(raf, file.length(), header.sqliteOffset)
+            ?: error("PureRef v2 SQLite header not found")
+        val dbFile = prepareV2SQLiteDatabase(file, sqliteOffset)
+        try {
+            val db = SQLiteDatabase.openDatabase(
+                dbFile.absolutePath,
+                null,
+                SQLiteDatabase.OPEN_READONLY,
+            )
+            try {
+                val images = readV2SceneImages(db)
+                val notes = readV2Notes(db)
+                val drawings = readV2DrawingImages(db)
+                val name = readV2DisplayName(db)
+                return PockRefScene(
+                    version = 2,
+                    name = name,
+                    backgroundColor = Color(0xFF111111),
+                    images = (images + drawings).sortedBy { it.zIndex },
+                    markupTexts = notes,
+                )
+            } finally {
+                db.close()
+            }
+        } finally {
+            try { dbFile.delete() } catch (_: Exception) {}
+        }
+    }
+
+    private fun findV2SQLiteHeaderOffset(raf: RandomAccessFile, fileLength: Long, hint: Long): Long? {
+        if (hint in 0 until fileLength && hint + V2_SQLITE_HEADER.size <= fileLength) {
+            val bytes = ByteArray(V2_SQLITE_HEADER.size)
+            raf.seek(hint)
+            raf.readFully(bytes)
+            if (bytes.contentEquals(V2_SQLITE_HEADER)) return hint
+        }
+
+        val buffer = ByteArray(1024 * 1024)
+        var filePos = 0L
+        var overlap = ByteArray(0)
+        raf.seek(0)
+        while (filePos < fileLength) {
+            val read = raf.read(buffer)
+            if (read <= 0) break
+            val chunk = ByteArray(overlap.size + read)
+            System.arraycopy(overlap, 0, chunk, 0, overlap.size)
+            System.arraycopy(buffer, 0, chunk, overlap.size, read)
+            val index = chunk.indexOfSubArray(V2_SQLITE_HEADER)
+            if (index >= 0) return filePos - overlap.size + index
+            val keep = minOf(V2_SQLITE_HEADER.size - 1, chunk.size)
+            overlap = chunk.copyOfRange(chunk.size - keep, chunk.size)
+            filePos += read
+        }
+        return null
+    }
+
+    private fun prepareV2SQLiteDatabase(file: File, sqliteHeaderOffset: Long): File {
+        val prefixLength = file.length() - sqliteHeaderOffset
+        require(prefixLength > 0 && prefixLength < sqliteHeaderOffset) {
+            "Invalid PureRef v2 SQLite rotation: prefix=$prefixLength sqliteOffset=$sqliteHeaderOffset"
+        }
+        val outFile = File.createTempFile("pockref_v2_", ".sqlite")
+        outFile.deleteOnExit()
+        RandomAccessFile(file, "r").use { input ->
+            FileOutputStream(outFile).use { output ->
+                copyRegion(input, output, sqliteHeaderOffset, prefixLength)
+                copyRegion(input, output, prefixLength, sqliteHeaderOffset - prefixLength)
+            }
+        }
+        return outFile
+    }
+
+    private fun copyRegion(input: RandomAccessFile, output: FileOutputStream, start: Long, length: Long) {
+        val buffer = ByteArray(1024 * 1024)
+        var remaining = length
+        input.seek(start)
+        while (remaining > 0) {
+            val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+            if (read <= 0) break
+            output.write(buffer, 0, read)
+            remaining -= read
+        }
+    }
+
+    private fun readV2SceneImages(db: SQLiteDatabase): List<SceneImage> {
+        val sql = """
+            SELECT ii.id, ii.image, im.width, im.height, im.format, it.opacity, it.z, it.locked,
+                   it.transform, ii.image_transform
+            FROM items_images ii
+            JOIN images im ON im.id = ii.image
+            JOIN items it ON it.id = ii.id
+            WHERE im.data IS NOT NULL
+            ORDER BY it.z, ii.id
+        """.trimIndent()
+
+        val images = mutableListOf<SceneImage>()
+        db.rawQuery(sql, emptyArray()).use { cursor ->
+            while (cursor.moveToNext()) {
+                val itemId = cursor.getLong(0)
+                val imageId = cursor.getLong(1)
+                val width = cursor.getInt(2).coerceAtLeast(1)
+                val height = cursor.getInt(3).coerceAtLeast(1)
+                val format = if (cursor.isNull(4)) "" else cursor.getString(4).orEmpty()
+                val z = cursor.getDouble(6)
+                val locked = cursor.getInt(7) != 0
+                val itemTransform = v2TransformFrom(sqliteTextPayload(cursor, 8)) ?: V2Transform()
+                val imageTransform = v2TransformFrom(sqliteTextPayload(cursor, 9))
+                    ?: centeredImageTransform(width, height)
+                val bytes = readV2ImageBlob(db, imageId) ?: continue
+                val combined = itemTransform.applying(imageTransform)
+                val center = combined.applyingTo(width / 2.0, height / 2.0)
+                val displayWidth = maxOf(1.0, hypot(combined.m11, combined.m12) * width)
+                val displayHeight = maxOf(1.0, hypot(combined.m21, combined.m22) * height)
+                images += SceneImage(
+                    id = "pur-v2-image-$itemId",
+                    name = "image_$itemId",
+                    mimeType = v2MimeType(format, bytes),
+                    imageBytes = bytes,
+                    intrinsicWidth = width,
+                    intrinsicHeight = height,
+                    center = center,
+                    displaySize = Size2D(displayWidth.toFloat(), displayHeight.toFloat()),
+                    rotationDegrees = Math.toDegrees(atan2(combined.m12, combined.m11)).toFloat(),
+                    flipX = combined.m11 < 0,
+                    flipY = combined.m22 < 0,
+                    zIndex = z.toInt(),
+                    locked = locked,
+                )
+            }
+        }
+        return images
+    }
+
+    private fun readV2Notes(db: SQLiteDatabase): List<CanvasMarkupText> {
+        val sql = """
+            SELECT n.id, n.text, n.fixed_size, n.background_color, it.opacity, it.z,
+                   it.locked, it.transform
+            FROM items_notes n
+            JOIN items it ON it.id = n.id
+            ORDER BY it.z, n.id
+        """.trimIndent()
+        val notes = mutableListOf<CanvasMarkupText>()
+        db.rawQuery(sql, emptyArray()).use { cursor ->
+            while (cursor.moveToNext()) {
+                val itemId = cursor.getLong(0)
+                val html = if (cursor.isNull(1)) "" else cursor.getString(1).orEmpty()
+                val text = pureRefNotePlainText(html)
+                if (text.isBlank()) continue
+                val fixedSize = v2SizeFrom(sqliteTextPayload(cursor, 2))
+                val transform = v2TransformFrom(sqliteTextPayload(cursor, 7)) ?: V2Transform()
+                notes += CanvasMarkupText(
+                    id = "pur-v2-note-$itemId",
+                    text = text,
+                    position = Offset(transform.dx.toFloat(), transform.dy.toFloat()),
+                    fontSize = ((fixedSize?.height?.toFloat() ?: 320f) / text.lines().size.coerceAtLeast(1))
+                        .coerceIn(24f, 240f),
+                )
+            }
+        }
+        return notes
+    }
+
+    private fun readV2DrawingImages(db: SQLiteDatabase): List<SceneImage> {
+        val sql = """
+            SELECT d.id, d.strokes, it.transform, it.z, it.locked
+            FROM items_drawings d
+            JOIN items it ON it.id = d.id
+            ORDER BY it.z, d.id
+        """.trimIndent()
+        val drawings = mutableListOf<SceneImage>()
+        db.rawQuery(sql, emptyArray()).use { cursor ->
+            while (cursor.moveToNext()) {
+                val itemId = cursor.getLong(0)
+                val payload = sqliteTextPayload(cursor, 1) ?: continue
+                val transform = v2TransformFrom(sqliteTextPayload(cursor, 2)) ?: V2Transform()
+                val z = cursor.getDouble(3)
+                val locked = cursor.getInt(4) != 0
+                val rendered = renderV2DrawingPng(payload, transform) ?: continue
+                drawings += SceneImage(
+                    id = "pur-v2-drawing-$itemId",
+                    name = "drawing_$itemId",
+                    mimeType = "image/png",
+                    imageBytes = rendered.bytes,
+                    intrinsicWidth = rendered.rasterWidth,
+                    intrinsicHeight = rendered.rasterHeight,
+                    center = Offset(rendered.logicalBounds.centerX(), rendered.logicalBounds.centerY()),
+                    displaySize = Size2D(rendered.logicalBounds.width(), rendered.logicalBounds.height()),
+                    zIndex = z.toInt(),
+                    locked = locked,
+                )
+            }
+        }
+        return drawings
+    }
+
+    private fun readV2DisplayName(db: SQLiteDatabase): String {
+        return runCatching {
+            db.rawQuery("SELECT last_load_path FROM metadata LIMIT 1", emptyArray()).use { cursor ->
+                if (!cursor.moveToFirst() || cursor.isNull(0)) return ""
+                File(cursor.getString(0)).nameWithoutExtension
+            }
+        }.getOrDefault("")
+    }
+
+    private fun readV2ImageBlob(db: SQLiteDatabase, imageId: Long): ByteArray? {
+        runCatching {
+            db.compileStatement("SELECT data FROM images WHERE id = ?").use { statement ->
+                statement.bindLong(1, imageId)
+                statement.simpleQueryForBlobFileDescriptor()?.use { pfd ->
+                    return ParcelFileDescriptor.AutoCloseInputStream(pfd).use { it.readBytes() }
+                }
+            }
+        }.onFailure {
+            Log.w(TAG, "V2 blob FD read failed for image $imageId; falling back to Cursor", it)
+        }
+
+        return runCatching {
+            db.rawQuery("SELECT data FROM images WHERE id = ?", arrayOf(imageId.toString())).use { cursor ->
+                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getBlob(0) else null
+            }
+        }.onFailure {
+            Log.w(TAG, "V2 blob Cursor read failed for image $imageId", it)
+        }.getOrNull()
+    }
+
+    private fun v2TransformFrom(payload: ByteArray?): V2Transform? {
+        if (payload == null || payload.size < 77) return null
+        val start = 5
+        fun f(index: Int): Double = readDoubleBE(payload, start + index * 8)
+        return V2Transform(
+            m11 = f(0),
+            m12 = f(1),
+            m21 = f(3),
+            m22 = f(4),
+            dx = f(6),
+            dy = f(7),
+        )
+    }
+
+    private fun centeredImageTransform(width: Int, height: Int): V2Transform = V2Transform(
+        dx = -width / 2.0,
+        dy = -height / 2.0,
+    )
+
+    private fun v2SizeFrom(payload: ByteArray?): V2Size? {
+        if (payload == null || payload.size < 21) return null
+        val width = readDoubleBE(payload, 5)
+        val height = readDoubleBE(payload, 13)
+        return if (width.isFinite() && height.isFinite() && width > 0 && height > 0) {
+            V2Size(width, height)
+        } else {
+            null
+        }
+    }
+
+    private fun sqliteTextPayload(cursor: android.database.Cursor, index: Int): ByteArray? {
+        if (cursor.isNull(index)) return null
+        val text = runCatching { cursor.getString(index) }.getOrNull()
+        if (text != null) {
+            return text.mapNotNull { ch -> ch.code.takeIf { it <= 0xFF }?.toByte() }.toByteArray()
+        }
+        return runCatching {
+            cursor.getBlob(index).toString(Charsets.UTF_8)
+                .mapNotNull { ch -> ch.code.takeIf { it <= 0xFF }?.toByte() }
+                .toByteArray()
+        }.getOrNull()
+    }
+
+    private fun v2MimeType(format: String, bytes: ByteArray): String {
+        val normalized = format.trim().lowercase()
+        return when {
+            normalized == "png" -> "image/png"
+            normalized == "jpg" || normalized == "jpeg" -> "image/jpeg"
+            normalized == "gif" -> "image/gif"
+            normalized == "webp" -> "image/webp"
+            bytes.size >= 6 && (String(bytes, 0, 6) == "GIF87a" || String(bytes, 0, 6) == "GIF89a") -> "image/gif"
+            bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> "image/jpeg"
+            bytes.size >= 4 && bytes[0] == 0x89.toByte() && String(bytes, 1, 3) == "PNG" -> "image/png"
+            bytes.size >= 12 && String(bytes, 0, 4) == "RIFF" && String(bytes, 8, 4) == "WEBP" -> "image/webp"
+            else -> "application/octet-stream"
+        }
+    }
+
+    private fun renderV2DrawingPng(payload: ByteArray, transform: V2Transform): V2RenderedDrawing? {
+        val typeName = "QList<GraphicsDrawItem::Stroke>".toByteArray(Charsets.UTF_8)
+        val typeStart = payload.indexOfSubArray(typeName)
+        if (typeStart < 0) return null
+        var cursor = typeStart + typeName.size + 5
+        val strokeCountOffset = typeStart + typeName.size + 4
+        if (strokeCountOffset >= payload.size || cursor > payload.size) return null
+        val strokeCount = payload[strokeCountOffset].toInt() and 0xFF
+        if (strokeCount <= 0 || strokeCount >= 10_000) return null
+
+        data class Stroke(val width: Float, val points: List<Offset>)
+        val strokes = mutableListOf<Stroke>()
+        val bounds = RectF()
+        var hasBounds = false
+        repeat(strokeCount) {
+            if (cursor + 24 > payload.size) return@repeat
+            val lineWidth = readDoubleBE(payload, cursor + 12).takeIf { it.isFinite() && it > 0 } ?: 1.0
+            val pointCount = readUInt32BE(payload, cursor + 20).toInt()
+            if (pointCount < 2 || pointCount >= 100_000) return@repeat
+            cursor += 24
+            if (cursor + pointCount * 20 > payload.size) return@repeat
+            val points = mutableListOf<Offset>()
+            repeat(pointCount) {
+                cursor += 4
+                val p = transform.applyingTo(readDoubleBE(payload, cursor), readDoubleBE(payload, cursor + 8))
+                cursor += 16
+                if (p.x.isFinite() && p.y.isFinite()) {
+                    points += p
+                    if (!hasBounds) {
+                        bounds.set(p.x, p.y, p.x, p.y)
+                        hasBounds = true
+                    } else {
+                        bounds.union(p.x, p.y)
+                    }
+                }
+            }
+            if (points.size >= 2) strokes += Stroke(lineWidth.toFloat(), points)
+            if (cursor + 28 <= payload.size) cursor += 28 else return@repeat
+        }
+        if (!hasBounds || strokes.isEmpty()) return null
+
+        val pad = 16f
+        val logicalWidth = maxOf(1.0, (bounds.width() + pad * 2f).toDouble())
+        val logicalHeight = maxOf(1.0, (bounds.height() + pad * 2f).toDouble())
+        val target = limitV2GeneratedRaster(logicalWidth, logicalHeight) ?: return null
+        val bitmap = Bitmap.createBitmap(target.rasterWidth, target.rasterHeight, Bitmap.Config.ARGB_8888)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.RED
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val out = ByteArrayOutputStream()
+        try {
+            val canvas = Canvas(bitmap)
+            for (stroke in strokes) {
+                paint.strokeWidth = maxOf(1f, stroke.width * target.scale)
+                for (i in 0 until stroke.points.lastIndex) {
+                    val a = stroke.points[i]
+                    val b = stroke.points[i + 1]
+                    canvas.drawLine(
+                        (a.x - bounds.left + pad) * target.scale,
+                        (a.y - bounds.top + pad) * target.scale,
+                        (b.x - bounds.left + pad) * target.scale,
+                        (b.y - bounds.top + pad) * target.scale,
+                        paint,
+                    )
+                }
+            }
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        } finally {
+            bitmap.recycle()
+        }
+        val imageBounds = RectF(bounds.left - pad, bounds.top - pad, bounds.right + pad, bounds.bottom + pad)
+        return V2RenderedDrawing(
+            logicalBounds = imageBounds,
+            rasterWidth = target.rasterWidth,
+            rasterHeight = target.rasterHeight,
+            bytes = out.toByteArray(),
+        )
+    }
+
+    private fun limitV2GeneratedRaster(logicalWidth: Double, logicalHeight: Double): V2RasterTarget? {
+        if (!logicalWidth.isFinite() || !logicalHeight.isFinite()) return null
+        val width = logicalWidth.coerceAtLeast(1.0)
+        val height = logicalHeight.coerceAtLeast(1.0)
+        val longSideScale = MAX_V2_GENERATED_RASTER_LONG_SIDE / maxOf(width, height)
+        val pixelScale = sqrt(MAX_V2_GENERATED_RASTER_PIXELS / (width * height))
+        val scale = minOf(1.0, longSideScale, pixelScale).toFloat()
+        val rasterWidth = (width * scale).toInt().coerceIn(1, MAX_V2_GENERATED_RASTER_LONG_SIDE.toInt())
+        val rasterHeight = (height * scale).toInt().coerceIn(1, MAX_V2_GENERATED_RASTER_LONG_SIDE.toInt())
+        return V2RasterTarget(rasterWidth, rasterHeight, scale)
     }
 
     private fun parseV1Format(raf: RandomAccessFile, file: File, header: PurHeader): PockRefScene {
@@ -585,7 +1035,44 @@ class PurFileParser {
         if (data == null || data.isEmpty()) return 0 to 0
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
-        return bounds.outWidth to bounds.outHeight
+        if (bounds.outWidth > 0 && bounds.outHeight > 0) return bounds.outWidth to bounds.outHeight
+        return probePngSize(data) ?: probeJpegSize(data) ?: (0 to 0)
+    }
+
+    private fun probePngSize(data: ByteArray): Pair<Int, Int>? {
+        if (data.size < 24) return null
+        val isPng = data[0] == 0x89.toByte() &&
+            data[1] == 'P'.code.toByte() &&
+            data[2] == 'N'.code.toByte() &&
+            data[3] == 'G'.code.toByte()
+        if (!isPng) return null
+        val width = readInt32BE(data, 16)
+        val height = readInt32BE(data, 20)
+        return if (width > 0 && height > 0) width to height else null
+    }
+
+    private fun probeJpegSize(data: ByteArray): Pair<Int, Int>? {
+        if (data.size < 4 || data[0] != 0xFF.toByte() || data[1] != 0xD8.toByte()) return null
+        var cursor = 2
+        while (cursor + 4 < data.size) {
+            while (cursor < data.size && data[cursor] != 0xFF.toByte()) cursor++
+            while (cursor < data.size && data[cursor] == 0xFF.toByte()) cursor++
+            if (cursor >= data.size) return null
+            val marker = data[cursor].toInt() and 0xFF
+            cursor++
+            if (marker == 0xD9 || marker == 0xDA) return null
+            if (marker == 0x01 || marker in 0xD0..0xD7) continue
+            if (cursor + 2 > data.size) return null
+            val segmentLength = readUInt16BE(data, cursor)
+            if (segmentLength < 2 || cursor + segmentLength > data.size) return null
+            if (marker in JPEG_SIZE_MARKERS && cursor + 7 <= data.size) {
+                val height = readUInt16BE(data, cursor + 3)
+                val width = readUInt16BE(data, cursor + 5)
+                if (width > 0 && height > 0) return width to height
+            }
+            cursor += segmentLength
+        }
+        return null
     }
 
     private fun readUInt32BE(bytes: ByteArray, offset: Int): Long {
@@ -618,8 +1105,15 @@ class PurFileParser {
 
     companion object {
         private const val TAG = "PurFileParser"
+        private val V2_SQLITE_HEADER = "SQLite format 3\u0000".toByteArray(Charsets.UTF_8)
+        private const val MAX_V2_GENERATED_RASTER_LONG_SIDE = 4096.0
+        private const val MAX_V2_GENERATED_RASTER_PIXELS = 8_000_000.0
         private const val HEADER_MIN_SIZE = 0x6C
-        // ASCII "PRAC" (PockRef Android Coloradjust) in big-endian. Marks
+        private val JPEG_SIZE_MARKERS = setOf(
+            0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+            0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+        )
+        // ASCII "PRCA" (PockRef ColorAdjust) in big-endian. Marks
         // the start of a colorAdjust block inside an Android-written
         // legacy .pur transform; desktop .pur files end their transform
         // block with a different 25-byte trailer (double 0.0 + int 1 +
@@ -630,6 +1124,21 @@ class PurFileParser {
         // Must stay in sync with PurSceneCodec.COLOR_ADJUST_SENTINEL.
         private const val COLOR_ADJUST_SENTINEL = 0x50524341
     }
+}
+
+private fun ByteArray.indexOfSubArray(needle: ByteArray): Int {
+    if (needle.isEmpty() || needle.size > size) return -1
+    for (i in 0..size - needle.size) {
+        var matches = true
+        for (j in needle.indices) {
+            if (this[i + j] != needle[j]) {
+                matches = false
+                break
+            }
+        }
+        if (matches) return i
+    }
+    return -1
 }
 
 private class RandomAccessFileRegionInputStream(

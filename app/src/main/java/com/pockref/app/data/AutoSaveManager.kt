@@ -135,9 +135,7 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
             if (currentSceneUri != null) {
                 try {
                     contentResolver.openOutputStream(currentSceneUri, "wt")?.use { output ->
-                        backupFile.inputStream().use { input ->
-                            input.copyTo(output, 65536)
-                        }
+                        writeDesktopCompatible(scene, output)
                     }
                     Log.d(TAG, "autoSave: wrote to original URI $currentSceneUri")
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -180,6 +178,10 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
         }
 
         return backupFile
+    }
+
+    private fun writeDesktopCompatible(scene: PockRefScene, output: java.io.OutputStream) {
+        codec.writeDesktopCompatible(scene, output, appContext.cacheDir)
     }
 
     private fun cleanupOldBackups() {

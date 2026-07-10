@@ -2,11 +2,18 @@ package com.pockref.app.data
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Path
 import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import com.pockref.app.model.CanvasMarkupStroke
+import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.ColorAdjust
 import com.pockref.app.model.CropRect
+import com.pockref.app.model.ImageAlignment
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
@@ -21,9 +28,13 @@ import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.util.zip.CRC32
+import java.util.zip.DeflaterOutputStream
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.sin
 
 class PurSceneCodec {
@@ -65,7 +76,30 @@ class PurSceneCodec {
                 output.writeFloatLe(crop.bottom)
             }
         }
+        output.writeMarkupBlock(scene)
     }
+
+    fun writeDesktopCompatible(scene: PockRefScene, output: OutputStream, workDir: File) {
+        writeLegacyStreaming(
+            scene = scene.withDesktopMarkupOverlay(),
+            output = output,
+            workDir = workDir,
+            includePockRefExtensions = false,
+        )
+    }
+
+    private data class LegacySceneExtension(
+        val defaultSpacing: Size2D = Size2D(8f, 8f),
+        val defaultAlignment: ImageAlignment = ImageAlignment.CENTER,
+        val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
+        val markupTexts: List<CanvasMarkupText> = emptyList(),
+    )
+
+    private data class DesktopMarkupOverlay(
+        val bytes: ByteArray,
+        val width: Int,
+        val height: Int,
+    )
 
     fun writeLegacy(scene: PockRefScene, output: OutputStream) {
         val images = scene.images.sortedBy { it.zIndex }
@@ -107,6 +141,7 @@ class PurSceneCodec {
         }
 
         legacy.writeStringUtf16Be(scene.name)
+        legacy.writeLegacySceneMetadata(scene)
         val fileLength = legacy.size()
 
         imageRecords.forEach { record ->
@@ -141,7 +176,221 @@ class PurSceneCodec {
         output.write(withRefs)
     }
 
+    private fun legacySceneMetadataPayload(scene: PockRefScene): ByteArray =
+        ByteArrayOutputStream().apply {
+            writeDoubleBe(scene.defaultSpacing.width.toDouble())
+            writeDoubleBe(scene.defaultSpacing.height.toDouble())
+            writeIntBe(scene.defaultAlignment.ordinal)
+            writeMarkupBlock(scene)
+        }.toByteArray()
+
+    private fun OutputStream.writeLegacySceneMetadata(scene: PockRefScene) {
+        val metadataPayload = legacySceneMetadataPayload(scene)
+        writeIntBe(metadataPayload.size)
+        write(metadataPayload)
+    }
+
+    private fun RandomAccessFile.writeLegacySceneMetadata(scene: PockRefScene) {
+        val metadataPayload = legacySceneMetadataPayload(scene)
+        writeIntBe(metadataPayload.size)
+        write(metadataPayload)
+    }
+
+    private fun OutputStream.writeMarkupBlock(scene: PockRefScene) {
+        write(MARKUP_MAGIC)
+        writeIntLe(scene.markupStrokes.size)
+        scene.markupStrokes.forEach { stroke ->
+            writeStringUtf8(stroke.id)
+            writeLongLe(stroke.color.value.toLong())
+            writeFloatLe(stroke.lineWidth)
+            writeIntLe(stroke.points.size)
+            stroke.points.forEach { point ->
+                writeFloatLe(point.x)
+                writeFloatLe(point.y)
+            }
+        }
+        writeIntLe(scene.markupTexts.size)
+        scene.markupTexts.forEach { text ->
+            writeStringUtf8(text.id)
+            writeStringUtf8(text.text)
+            writeFloatLe(text.position.x)
+            writeFloatLe(text.position.y)
+            writeLongLe(text.color.value.toLong())
+            writeFloatLe(text.fontSize)
+        }
+    }
+
+    private fun PockRefScene.withDesktopMarkupOverlay(): PockRefScene {
+        val renderableStrokes = markupStrokes.filter { it.isRenderable }
+        val renderableTexts = markupTexts.filter { it.text.isNotBlank() }
+        if (renderableStrokes.isEmpty() && renderableTexts.isEmpty()) {
+            return copy(markupStrokes = emptyList(), markupTexts = emptyList())
+        }
+
+        val bounds = desktopMarkupBounds(renderableStrokes, renderableTexts)
+            ?: return copy(markupStrokes = emptyList(), markupTexts = emptyList())
+        val overlay = renderDesktopMarkupOverlay(renderableStrokes, renderableTexts, bounds)
+            ?: return copy(markupStrokes = emptyList(), markupTexts = emptyList())
+        val (minX, minY, maxX, maxY) = bounds
+        val overlayImage = SceneImage(
+            id = "pockref-markup-overlay",
+            name = "PockRef Markup",
+            mimeType = "image/png",
+            imageBytes = overlay.bytes,
+            intrinsicWidth = overlay.width,
+            intrinsicHeight = overlay.height,
+            center = Offset((minX + maxX) / 2f, (minY + maxY) / 2f),
+            displaySize = Size2D(maxOf(1f, maxX - minX), maxOf(1f, maxY - minY)),
+            zIndex = (images.maxOfOrNull { it.zIndex } ?: -1) + 1,
+        )
+        return copy(
+            images = images + overlayImage,
+            markupStrokes = emptyList(),
+            markupTexts = emptyList(),
+        )
+    }
+
+    private fun desktopMarkupBounds(
+        strokes: List<CanvasMarkupStroke>,
+        texts: List<CanvasMarkupText>,
+    ): List<Float>? {
+        var minX = Float.POSITIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+
+        fun include(x: Float, y: Float) {
+            minX = minOf(minX, x)
+            minY = minOf(minY, y)
+            maxX = maxOf(maxX, x)
+            maxY = maxOf(maxY, y)
+        }
+
+        strokes.forEach { stroke ->
+            val padding = stroke.lineWidth.coerceAtLeast(1f) * 2f
+            stroke.points.forEach { point ->
+                include(point.x - padding, point.y - padding)
+                include(point.x + padding, point.y + padding)
+            }
+        }
+        texts.forEach { text ->
+            val lines = text.text.lines().filter { it.isNotBlank() }
+            if (lines.isEmpty()) return@forEach
+            val fontSize = text.fontSize.coerceAtLeast(1f)
+            val width = lines.maxOf { it.length }.coerceAtLeast(1) * fontSize * 0.7f
+            val height = (lines.size * fontSize * 1.25f).coerceAtLeast(fontSize)
+            include(text.position.x - width / 2f - fontSize * 0.2f, text.position.y - height / 2f - fontSize * 0.35f)
+            include(text.position.x + width / 2f + fontSize * 0.2f, text.position.y + height / 2f + fontSize * 0.35f)
+        }
+
+        if (!minX.isFinite() || !minY.isFinite() || !maxX.isFinite() || !maxY.isFinite()) return null
+        if (maxX <= minX || maxY <= minY) return null
+        return listOf(minX, minY, maxX, maxY)
+    }
+
+    private fun renderDesktopMarkupOverlay(
+        strokes: List<CanvasMarkupStroke>,
+        texts: List<CanvasMarkupText>,
+        bounds: List<Float>,
+    ): DesktopMarkupOverlay? {
+        val (minX, minY, maxX, maxY) = bounds
+        val worldWidth = maxOf(1f, maxX - minX)
+        val worldHeight = maxOf(1f, maxY - minY)
+        val density = minOf(2f, DESKTOP_MARKUP_OVERLAY_MAX_SIDE / max(worldWidth, worldHeight))
+            .coerceAtMost(1f)
+            .coerceAtLeast(DESKTOP_MARKUP_OVERLAY_MIN_DENSITY)
+        val width = maxOf(1, ceil(worldWidth * density).toInt())
+        val height = maxOf(1, ceil(worldHeight * density).toInt())
+
+        return try {
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            val factor = density
+            strokes.forEach { stroke ->
+                if (!stroke.isRenderable) return@forEach
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = stroke.color.toArgb()
+                    style = Paint.Style.STROKE
+                    strokeCap = Paint.Cap.ROUND
+                    strokeJoin = Paint.Join.ROUND
+                    strokeWidth = (stroke.lineWidth * factor).coerceAtLeast(1f)
+                }
+                val first = stroke.points.firstOrNull() ?: return@forEach
+                val path = Path().apply {
+                    moveTo((first.x - minX) * factor, (first.y - minY) * factor)
+                    if (stroke.points.size == 2) {
+                        val point = stroke.points[1]
+                        lineTo((point.x - minX) * factor, (point.y - minY) * factor)
+                    } else {
+                        for (index in 1 until stroke.points.lastIndex) {
+                            val current = stroke.points[index]
+                            val next = stroke.points[index + 1]
+                            quadTo(
+                                (current.x - minX) * factor,
+                                (current.y - minY) * factor,
+                                ((current.x + next.x) / 2f - minX) * factor,
+                                ((current.y + next.y) / 2f - minY) * factor,
+                            )
+                        }
+                        val last = stroke.points.last()
+                        lineTo((last.x - minX) * factor, (last.y - minY) * factor)
+                    }
+                }
+                canvas.drawPath(path, paint)
+            }
+            texts.forEach { text ->
+                val lines = text.text.lines().filter { it.isNotBlank() }
+                if (lines.isEmpty()) return@forEach
+                val textSize = (text.fontSize * factor).coerceAtLeast(8f)
+                val x = (text.position.x - minX) * factor
+                val y = (text.position.y - minY) * factor
+                val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.White.toArgb()
+                    this.textSize = textSize
+                    textAlign = Paint.Align.CENTER
+                    style = Paint.Style.STROKE
+                    strokeWidth = (textSize * 0.12f).coerceAtLeast(2f)
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                }
+                val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = text.color.toArgb()
+                    this.textSize = textSize
+                    textAlign = Paint.Align.CENTER
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                }
+                val lineHeight = textSize * 1.18f
+                val firstBaseline = y - (lineHeight * (lines.size - 1) / 2f)
+                lines.forEachIndexed { index, line ->
+                    val baseline = firstBaseline + index * lineHeight
+                    canvas.drawText(line, x, baseline, outlinePaint)
+                    canvas.drawText(line, x, baseline, fillPaint)
+                }
+            }
+            ByteArrayOutputStream().use { output ->
+                val compressed = bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                bitmap.recycle()
+                val bytes = output.toByteArray()
+                if (compressed && bytes.isNotEmpty()) {
+                    DesktopMarkupOverlay(bytes, width, height)
+                } else {
+                    DesktopMarkupOverlay(createTransparentPng(width, height), width, height)
+                }
+            }
+        } catch (_: Throwable) {
+            DesktopMarkupOverlay(createTransparentPng(width, height), width, height)
+        }
+    }
+
     fun writeLegacyStreaming(scene: PockRefScene, output: OutputStream, workDir: File) {
+        writeLegacyStreaming(scene, output, workDir, includePockRefExtensions = true)
+    }
+
+    private fun writeLegacyStreaming(
+        scene: PockRefScene,
+        output: OutputStream,
+        workDir: File,
+        includePockRefExtensions: Boolean,
+    ) {
         val images = scene.images.sortedBy { it.zIndex }
         workDir.mkdirs()
         val tempFile = File.createTempFile("pockref_legacy_stream_", ".pur", workDir)
@@ -156,7 +405,11 @@ class PurSceneCodec {
 
                 images.forEachIndexed { index, image ->
                     val start = raf.filePointer
-                    writeLegacyImageBytesStreaming(image, bufferedOutput)
+                    writeLegacyImageBytesStreaming(
+                        image = image,
+                        output = bufferedOutput,
+                        allowWebp = includePockRefExtensions,
+                    )
                     bufferedOutput.flush()
                     val end = raf.filePointer
                     val matrix = matrixForLegacy(image)
@@ -183,25 +436,17 @@ class PurSceneCodec {
                 }
 
                 imageRecords.forEach { record ->
-                    writeLegacyImageTransform(raf, record.transform)
+                    writeLegacyImageTransform(
+                        output = raf,
+                        transform = record.transform,
+                        includeColorAdjust = includePockRefExtensions,
+                    )
                 }
 
                 raf.writeStringUtf16Be(scene.name)
-                // Scene-level metadata block (PockRef-Android extension):
-                //   [length:4 BE int] [spacingX:8 BE double] [spacingY:8 BE double] [alignment:4 BE int]
-                // Length is the byte count of the payload after the length
-                // prefix, so 0 means "no metadata" (legacy desktop .pur
-                // files). Readers that see a length > MAX_METADATA_BYTES
-                // treat it as garbage and skip; this keeps us safe against
-                // misaligned positions when reading files written before
-                // this extension.
-                val metadataPayload = ByteArray(SCENE_METADATA_PAYLOAD_SIZE)
-                val payloadView = java.nio.ByteBuffer.wrap(metadataPayload).order(java.nio.ByteOrder.BIG_ENDIAN)
-                payloadView.putDouble(scene.defaultSpacing.width.toDouble())
-                payloadView.putDouble(scene.defaultSpacing.height.toDouble())
-                payloadView.putInt(scene.defaultAlignment.ordinal)
-                raf.writeIntBe(metadataPayload.size)
-                raf.write(metadataPayload)
+                if (includePockRefExtensions) {
+                    raf.writeLegacySceneMetadata(scene)
+                }
 
                 val fileLength = raf.filePointer
 
@@ -223,7 +468,7 @@ class PurSceneCodec {
         }
     }
 
-    private fun writeLegacyImageBytesStreaming(image: SceneImage, output: OutputStream) {
+    private fun writeLegacyImageBytesStreaming(image: SceneImage, output: OutputStream, allowWebp: Boolean = true) {
         val bytes = resolveImageBytes(image)
         if (bytes.isEmpty()) error("No image data for ${image.name}")
 
@@ -235,7 +480,7 @@ class PurSceneCodec {
             bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
             bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte()
 
-        if (isPng || isJpeg || isWebp) {
+        if (isPng || isJpeg || (allowWebp && isWebp)) {
             output.write(bytes)
         } else {
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -332,13 +577,15 @@ class PurSceneCodec {
         try {
             val copiedBytes = tempFile.outputStream().use { out -> input.copyTo(out, 65536) }
             require(copiedBytes > 0L) { "Input stream produced 0 bytes" }
-            return readFromFile(tempFile)
+            return readFromFile(tempFile, customImagesDiskBacked = false)
         } finally {
             tempFile.delete()
         }
     }
 
-    fun readFromFile(file: File): PockRefScene {
+    fun readFromFile(file: File): PockRefScene = readFromFile(file, customImagesDiskBacked = true)
+
+    private fun readFromFile(file: File, customImagesDiskBacked: Boolean): PockRefScene {
         val raf = RandomAccessFile(file, "r")
         try {
             val fileLen = raf.length()
@@ -348,17 +595,26 @@ class PurSceneCodec {
             raf.readFully(header)
 
             if (header.hasPrefix(MAGIC)) {
-                raf.seek(0)
-                val bytes = readAllBytes(raf, fileLen)
-                return readCustomScene(bytes)
+                return if (customImagesDiskBacked) {
+                    raf.seek(MAGIC.size.toLong())
+                    readCustomSceneFromFile(raf, fileLen).also {
+                        purFileParser.bindSourceFile(file)
+                        imageDecoder.setSourceFile(file)
+                    }
+                } else {
+                    raf.seek(0)
+                    val bytes = readAllBytes(raf, fileLen)
+                    readCustomScene(bytes)
+                }
             }
 
             if (looksLikeDesktopPur(raf, header)) {
                 try {
                     val scene = purFileParser.parseFromFile(file)
+                    val extendedScene = applyLegacySceneExtension(file, scene)
                     purFileParser.bindSourceFile(file)
                     imageDecoder.setSourceFile(file)
-                    return scene
+                    return extendedScene
                 } catch (e: Exception) {
                     Log.w(TAG, "Structured desktop .pur parser failed, trying embedded image fallback", e)
                     tryReadEmbeddedImagesFallback(file, fileLen)?.let { return it }
@@ -375,7 +631,7 @@ class PurSceneCodec {
                         val scene = purFileParser.parseFromFile(file)
                         purFileParser.bindSourceFile(file)
                         imageDecoder.setSourceFile(file)
-                        scene
+                        applyLegacySceneExtension(file, scene)
                     } catch (e2: Exception) {
                         Log.w(TAG, "Desktop parser failed for large legacy file", e2)
                         tryReadEmbeddedImagesFallback(file, fileLen)?.let { return it }
@@ -391,7 +647,7 @@ class PurSceneCodec {
                         val scene = purFileParser.parseFromFile(file)
                         purFileParser.bindSourceFile(file)
                         imageDecoder.setSourceFile(file)
-                        scene
+                        applyLegacySceneExtension(file, scene)
                     } catch (e2: Exception) {
                         Log.w(TAG, "Desktop parser also failed for large file", e2)
                         throw oom
@@ -405,7 +661,7 @@ class PurSceneCodec {
                         val scene = purFileParser.parseFromFile(file)
                         purFileParser.bindSourceFile(file)
                         imageDecoder.setSourceFile(file)
-                        return scene
+                        return applyLegacySceneExtension(file, scene)
                     } catch (e2: Exception) {
                         Log.w(TAG, "Desktop parser also failed", e2)
                         throw e
@@ -418,7 +674,7 @@ class PurSceneCodec {
                 val scene = purFileParser.parseFromFile(file)
                 purFileParser.bindSourceFile(file)
                 imageDecoder.setSourceFile(file)
-                return scene
+                return applyLegacySceneExtension(file, scene)
             } catch (e: Exception) {
                 Log.e(TAG, "parseFromFile fallback also failed", e)
                 tryReadEmbeddedImagesFallback(file, fileLen)?.let { return it }
@@ -438,6 +694,132 @@ class PurSceneCodec {
         return bytes
     }
 
+    private fun applyLegacySceneExtension(file: File, scene: PockRefScene): PockRefScene {
+        val extension = readLegacySceneExtensionFromFile(file) ?: return scene
+        return scene.copy(
+            defaultSpacing = extension.defaultSpacing,
+            defaultAlignment = extension.defaultAlignment,
+            markupStrokes = extension.markupStrokes,
+            markupTexts = extension.markupTexts,
+        )
+    }
+
+    private fun readLegacySceneExtensionFromFile(file: File): LegacySceneExtension? = runCatching {
+        RandomAccessFile(file, "r").use { raf ->
+            val fileLen = raf.length()
+            if (fileLen < 224L) return@runCatching null
+            val header = ByteArray(minOf(fileLen.toInt(), 224))
+            raf.readFully(header)
+            val parsedHeader = purFileParser.parseHeader(header, fileLen)
+            val indexOffset = parsedHeader.sqliteOffset
+            if (indexOffset <= 0L || indexOffset > fileLen) return@runCatching null
+            if (parsedHeader.formatVersion.startsWith("2.")) return@runCatching null
+
+            val imageCount = parsedHeader.numImages
+            val extensionStart = if (imageCount == 0) {
+                224L
+            } else {
+                val indexSize = (fileLen - indexOffset).toInt().coerceAtLeast(0)
+                val entrySize = when {
+                    imageCount > 0 && indexSize >= imageCount * 20 -> 20
+                    imageCount > 0 && indexSize >= imageCount * 12 -> 12
+                    else -> return@runCatching null
+                }
+                var maxImageEnd = 224L
+                raf.seek(indexOffset)
+                repeat(imageCount) {
+                    if (entrySize == 20) {
+                        raf.readIntBe()
+                        raf.readLongBe()
+                        val end = raf.readLongBe()
+                        if (end > maxImageEnd) maxImageEnd = end
+                    } else {
+                        raf.readIntBe()
+                        raf.readIntBe()
+                        val end = raf.readIntBe().toLong()
+                        if (end > maxImageEnd) maxImageEnd = end
+                    }
+                }
+                maxImageEnd
+            }
+
+            if (extensionStart < 0L || extensionStart >= indexOffset) return@runCatching null
+            val extensionLength = indexOffset - extensionStart
+            if (extensionLength > Int.MAX_VALUE) return@runCatching null
+            raf.seek(extensionStart)
+            val bytes = ByteArray(extensionLength.toInt())
+            raf.readFully(bytes)
+            readLegacySceneExtensionFromSegment(
+                bytes = bytes,
+                imageCount = imageCount,
+                baseOffset = extensionStart,
+            )
+        }
+    }.getOrNull()
+
+    private fun readLegacySceneExtensionFromSegment(
+        bytes: ByteArray,
+        imageCount: Int,
+        baseOffset: Long,
+    ): LegacySceneExtension? {
+        var cursor = 0
+        repeat(imageCount) {
+            if (cursor + 8 > bytes.size) return null
+            val endAddress = readLongBe(bytes, cursor)
+            val next = (endAddress - baseOffset).toInt()
+            if (next <= cursor || next > bytes.size) return null
+            cursor = next
+        }
+
+        if (cursor + 4 > bytes.size) return null
+        val nameByteLength = readIntBe(bytes, cursor)
+        if (nameByteLength < 0 || cursor + 4 + nameByteLength > bytes.size) return null
+        cursor += 4 + nameByteLength
+
+        return readLegacySceneExtensionAt(bytes, cursor, bytes.size)?.first
+    }
+
+    private fun readLegacySceneExtensionAt(
+        bytes: ByteArray,
+        offset: Int,
+        limit: Int,
+    ): Pair<LegacySceneExtension, Int>? {
+        if (offset + 4 > limit || limit > bytes.size) return null
+        val metadataLen = readIntBe(bytes, offset)
+        val payloadStart = offset + 4
+        val payloadEnd = payloadStart + metadataLen
+        if (metadataLen < SCENE_METADATA_PAYLOAD_SIZE || payloadEnd > limit) return null
+
+        val payloadBuf = ByteBuffer.wrap(bytes, payloadStart, SCENE_METADATA_PAYLOAD_SIZE)
+            .order(ByteOrder.BIG_ENDIAN)
+        val defaultSpacing = Size2D(
+            width = payloadBuf.getDouble().toFloat(),
+            height = payloadBuf.getDouble().toFloat(),
+        )
+        val alignmentOrdinal = payloadBuf.getInt()
+        val defaultAlignment = ImageAlignment.entries.getOrNull(alignmentOrdinal)
+            ?: ImageAlignment.CENTER
+
+        val (markupStrokes, markupTexts) = if (payloadEnd - payloadStart > SCENE_METADATA_PAYLOAD_SIZE) {
+            DataInputStream(
+                ByteArrayInputStream(
+                    bytes,
+                    payloadStart + SCENE_METADATA_PAYLOAD_SIZE,
+                    payloadEnd - payloadStart - SCENE_METADATA_PAYLOAD_SIZE,
+                ),
+            ).use { readMarkupTail(it) }
+        } else {
+            emptyList<CanvasMarkupStroke>() to emptyList()
+        }
+
+        return LegacySceneExtension(
+            defaultSpacing = defaultSpacing,
+            defaultAlignment = defaultAlignment,
+            markupStrokes = markupStrokes,
+            markupTexts = markupTexts,
+        ) to payloadEnd
+    }
+
     private fun tryReadEmbeddedImagesFallback(file: File, fileLen: Long): PockRefScene? {
         if (fileLen <= 0L || fileLen > EMBEDDED_IMAGE_FALLBACK_MAX_BYTES) return null
         return runCatching {
@@ -452,6 +834,11 @@ class PurSceneCodec {
         if (header.size < HEADER_MIN_SIZE) return false
         try {
             val parsedHeader = purFileParser.parseHeader(header, raf.length())
+            if (parsedHeader.formatVersion.startsWith("2.")
+                && parsedHeader.sqliteOffset > 0 && parsedHeader.sqliteOffset < raf.length()
+            ) {
+                return true
+            }
             if (parsedHeader.numImages > 0
                 && parsedHeader.sqliteOffset > 0 && parsedHeader.sqliteOffset < raf.length()
             ) {
@@ -538,7 +925,155 @@ class PurSceneCodec {
                 add(img)
             }
         }
-        return PockRefScene(version = version, name = name, backgroundColor = backgroundColor, images = images)
+        val (markupStrokes, markupTexts) = readMarkupTail(data)
+        return PockRefScene(
+            version = version,
+            name = name,
+            backgroundColor = backgroundColor,
+            images = images,
+            markupStrokes = markupStrokes,
+            markupTexts = markupTexts,
+        )
+    }
+
+    private fun readCustomSceneFromFile(raf: RandomAccessFile, fileLen: Long): PockRefScene {
+        val version = raf.readIntLe()
+        val name = raf.readStringUtf8()
+        val backgroundColor = Color(raf.readLongLe().toULong())
+        val imageCount = raf.readIntLe()
+        require(imageCount >= 0) { "Negative image count: $imageCount" }
+        val images = buildList(imageCount) {
+            repeat(imageCount) {
+                val id = raf.readStringUtf8()
+                val imageName = raf.readStringUtf8()
+                val mimeType = raf.readStringUtf8()
+                val imageLength = raf.readIntLe()
+                require(imageLength >= 0) { "Negative image byte length for $imageName" }
+                val imageOffset = raf.filePointer
+                require(imageOffset <= Int.MAX_VALUE && imageLength <= Int.MAX_VALUE) {
+                    "Custom scene image range is too large: offset=$imageOffset length=$imageLength"
+                }
+                raf.skipFully(imageLength.toLong(), fileLen)
+                val base = SceneImage(
+                    id = id,
+                    name = imageName,
+                    mimeType = mimeType,
+                    imageByteOffset = imageOffset.toInt(),
+                    imageByteLength = imageLength,
+                    intrinsicWidth = raf.readIntLe(),
+                    intrinsicHeight = raf.readIntLe(),
+                    center = Offset(raf.readFloatLe(), raf.readFloatLe()),
+                    displaySize = Size2D(raf.readFloatLe(), raf.readFloatLe()),
+                    colorAdjust = ColorAdjust(
+                        brightness = raf.readFloatLe(),
+                        contrast = raf.readFloatLe(),
+                        saturation = raf.readFloatLe(),
+                    ),
+                    rotationDegrees = raf.readFloatLe(),
+                    scale = raf.readFloatLe(),
+                    flipX = raf.readBooleanByte(),
+                    flipY = raf.readBooleanByte(),
+                    zIndex = raf.readIntLe(),
+                )
+                val image = if (version >= 2) {
+                    val locked = raf.readBooleanByte()
+                    val hasCrop = raf.readBooleanByte()
+                    val cropRect = if (hasCrop) {
+                        CropRect(
+                            left = raf.readFloatLe(),
+                            top = raf.readFloatLe(),
+                            right = raf.readFloatLe(),
+                            bottom = raf.readFloatLe(),
+                        )
+                    } else {
+                        null
+                    }
+                    base.copy(locked = locked, cropRect = cropRect)
+                } else {
+                    base
+                }
+                add(image)
+            }
+        }
+        val (markupStrokes, markupTexts) = readMarkupTail(raf, fileLen)
+        return PockRefScene(
+            version = version,
+            name = name,
+            backgroundColor = backgroundColor,
+            images = images,
+            markupStrokes = markupStrokes,
+            markupTexts = markupTexts,
+        )
+    }
+
+    private fun readMarkupTail(data: DataInputStream): Pair<List<CanvasMarkupStroke>, List<CanvasMarkupText>> {
+        if (data.available() < MARKUP_MAGIC.size) return emptyList<CanvasMarkupStroke>() to emptyList()
+        val marker = ByteArray(MARKUP_MAGIC.size)
+        data.readFully(marker)
+        if (!marker.contentEquals(MARKUP_MAGIC)) return emptyList<CanvasMarkupStroke>() to emptyList()
+        val strokes = buildList {
+            repeat(data.readIntLe().coerceAtLeast(0)) {
+                val id = data.readStringUtf8()
+                val color = Color(data.readLongLe().toULong())
+                val lineWidth = data.readFloatLe()
+                val pointCount = data.readIntLe().coerceAtLeast(0)
+                val points = buildList(pointCount) {
+                    repeat(pointCount) {
+                        add(Offset(data.readFloatLe(), data.readFloatLe()))
+                    }
+                }
+                add(CanvasMarkupStroke(id = id, color = color, lineWidth = lineWidth, points = points))
+            }
+        }
+        val texts = buildList {
+            repeat(data.readIntLe().coerceAtLeast(0)) {
+                add(
+                    CanvasMarkupText(
+                        id = data.readStringUtf8(),
+                        text = data.readStringUtf8(),
+                        position = Offset(data.readFloatLe(), data.readFloatLe()),
+                        color = Color(data.readLongLe().toULong()),
+                        fontSize = data.readFloatLe(),
+                    ),
+                )
+            }
+        }
+        return strokes to texts
+    }
+
+    private fun readMarkupTail(raf: RandomAccessFile, fileLen: Long): Pair<List<CanvasMarkupStroke>, List<CanvasMarkupText>> {
+        if (fileLen - raf.filePointer < MARKUP_MAGIC.size) return emptyList<CanvasMarkupStroke>() to emptyList()
+        val marker = ByteArray(MARKUP_MAGIC.size)
+        raf.readFully(marker)
+        if (!marker.contentEquals(MARKUP_MAGIC)) return emptyList<CanvasMarkupStroke>() to emptyList()
+        val strokes = buildList {
+            repeat(raf.readIntLe().coerceAtLeast(0)) {
+                val id = raf.readStringUtf8()
+                val color = Color(raf.readLongLe().toULong())
+                val lineWidth = raf.readFloatLe()
+                val pointCount = raf.readIntLe().coerceAtLeast(0)
+                val points = buildList(pointCount) {
+                    repeat(pointCount) {
+                        add(Offset(raf.readFloatLe(), raf.readFloatLe()))
+                    }
+                }
+                add(CanvasMarkupStroke(id = id, color = color, lineWidth = lineWidth, points = points))
+            }
+        }
+        val texts = buildList {
+            repeat(raf.readIntLe().coerceAtLeast(0)) {
+                add(
+                    CanvasMarkupText(
+                        id = raf.readStringUtf8(),
+                        text = raf.readStringUtf8(),
+                        position = Offset(raf.readFloatLe(), raf.readFloatLe()),
+                        color = Color(raf.readLongLe().toULong()),
+                        fontSize = raf.readFloatLe(),
+                    ),
+                )
+            }
+        }
+        return strokes to texts
     }
 
     private fun readLegacyPurScene(bytes: ByteArray): PockRefScene {
@@ -685,32 +1220,14 @@ class PurSceneCodec {
 
         val folderLocation = readStringUtf16Be(bytes, cursor).also { cursor += 4 + it.byteLengthUtf16Be() }
 
-        // Scene-level metadata block (PockRef-Android extension). The
-        // length prefix is bounded — anything > MAX_SCENE_METADATA_BYTES
-        // is treated as garbage (a legacy desktop file has nothing here,
-        // so the bytes at this position are UTF-16 scene-name tail
-        // fragments, not a real length). In that case we keep the
-        // default spacing/alignment and rewind the cursor so the index
-        // area is read from the position the file actually uses.
-        var defaultSpacing = com.pockref.app.model.Size2D(8f, 8f)
-        var defaultAlignment = com.pockref.app.model.ImageAlignment.CENTER
-        if (cursor + 4 <= bytes.size) {
-            val metadataLen = readIntBe(bytes, cursor)
-            if (metadataLen in 1..MAX_SCENE_METADATA_BYTES && cursor + 4 + metadataLen <= bytes.size) {
-                val payloadStart = cursor + 4
-                if (metadataLen == SCENE_METADATA_PAYLOAD_SIZE) {
-                    val payloadBuf = java.nio.ByteBuffer.wrap(bytes, payloadStart, metadataLen)
-                        .order(java.nio.ByteOrder.BIG_ENDIAN)
-                    defaultSpacing = com.pockref.app.model.Size2D(
-                        width = payloadBuf.getDouble().toFloat(),
-                        height = payloadBuf.getDouble().toFloat(),
-                    )
-                    val alignmentOrdinal = payloadBuf.getInt()
-                    val candidates = com.pockref.app.model.ImageAlignment.entries
-                    defaultAlignment = candidates.getOrNull(alignmentOrdinal) ?: defaultAlignment
-                }
-                cursor = payloadStart + metadataLen
-            }
+        var extension = LegacySceneExtension()
+        readLegacySceneExtensionAt(
+            bytes = bytes,
+            offset = cursor,
+            limit = indexOffset.toInt().coerceAtMost(bytes.size),
+        )?.let { (parsed, nextCursor) ->
+            extension = parsed
+            cursor = nextCursor
         }
 
         val images = mutableListOf<SceneImage>()
@@ -776,8 +1293,10 @@ class PurSceneCodec {
             name = folderLocation.ifBlank { "" },
             backgroundColor = Color(0xFF111111),
             images = images.sortedBy { it.zIndex },
-            defaultSpacing = defaultSpacing,
-            defaultAlignment = defaultAlignment,
+            markupStrokes = extension.markupStrokes,
+            markupTexts = extension.markupTexts,
+            defaultSpacing = extension.defaultSpacing,
+            defaultAlignment = extension.defaultAlignment,
         )
     }
 
@@ -836,6 +1355,41 @@ class PurSceneCodec {
             backgroundColor = Color(0xFF111111),
             images = images,
         )
+    }
+
+    private fun createTransparentPng(width: Int, height: Int): ByteArray {
+        val rowSize = 1 + width * 4
+        val raw = ByteArray(rowSize * height)
+        ByteArrayOutputStream().use { zlibBytes ->
+            DeflaterOutputStream(zlibBytes).use { it.write(raw) }
+            val compressed = zlibBytes.toByteArray()
+            return ByteArrayOutputStream().apply {
+                write(PNG_SIGNATURE)
+                writePngChunk("IHDR", ByteBuffer.allocate(13).order(ByteOrder.BIG_ENDIAN)
+                    .putInt(width)
+                    .putInt(height)
+                    .put(8)
+                    .put(6)
+                    .put(0)
+                    .put(0)
+                    .put(0)
+                    .array())
+                writePngChunk("IDAT", compressed)
+                writePngChunk("IEND", ByteArray(0))
+            }.toByteArray()
+        }
+    }
+
+    private fun OutputStream.writePngChunk(type: String, data: ByteArray) {
+        val typeBytes = type.toByteArray(Charsets.US_ASCII)
+        writeIntBe(data.size)
+        write(typeBytes)
+        write(data)
+        val crc = CRC32().apply {
+            update(typeBytes)
+            update(data)
+        }.value.toInt()
+        writeIntBe(crc)
     }
 
     private fun looksLikeDesktopPur(bytes: ByteArray): Boolean {
@@ -1006,8 +1560,8 @@ class PurSceneCodec {
         // of each transform block, so legacy desktop readers ignore it
         // cleanly while Android rehydrates it.
         //
-        // The 4-byte COLOR_ADJUST_SENTINEL ("PRAC" — PockRef Android
-        // Coloradjust) before the three doubles lets the reader distinguish
+        // The 4-byte COLOR_ADJUST_SENTINEL ("PRCA" — PockRef
+        // ColorAdjust) before the three doubles lets the reader distinguish
         // an Android-written transform from a desktop file: desktop's last
         // 25 bytes are a writeDoubleBe(0.0) + writeIntBe(1) + write(0) +
         // writeLongBe(-1L) + writeIntBe(0) trailer, and the first 4 of
@@ -1097,6 +1651,59 @@ class PurSceneCodec {
 
     private fun DataInputStream.readBooleanByte(): Boolean = readUnsignedByte() == 1
 
+    private fun RandomAccessFile.readStringUtf8(): String {
+        val size = readIntLe()
+        if (size < 0) {
+            throw EOFException("Negative string size")
+        }
+        val bytes = ByteArray(size)
+        readFully(bytes)
+        return String(bytes, Charsets.UTF_8)
+    }
+
+    private fun RandomAccessFile.readIntLe(): Int {
+        val bytes = ByteArray(4)
+        readFully(bytes)
+        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).int
+    }
+
+    private fun RandomAccessFile.readLongLe(): Long {
+        val bytes = ByteArray(8)
+        readFully(bytes)
+        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).long
+    }
+
+    private fun RandomAccessFile.readIntBe(): Int {
+        val bytes = ByteArray(4)
+        readFully(bytes)
+        return ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).int
+    }
+
+    private fun RandomAccessFile.readLongBe(): Long {
+        val bytes = ByteArray(8)
+        readFully(bytes)
+        return ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN).long
+    }
+
+    private fun RandomAccessFile.readFloatLe(): Float {
+        val bytes = ByteArray(4)
+        readFully(bytes)
+        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).float
+    }
+
+    private fun RandomAccessFile.readBooleanByte(): Boolean = readUnsignedByte() == 1
+
+    private fun RandomAccessFile.skipFully(byteCount: Long, fileLen: Long) {
+        if (byteCount < 0) {
+            throw EOFException("Negative skip length")
+        }
+        val next = filePointer + byteCount
+        if (next < filePointer || next > fileLen) {
+            throw EOFException("Image payload exceeds file bounds")
+        }
+        seek(next)
+    }
+
     private fun OutputStream.writeStringUtf8(value: String) {
         val bytes = value.toByteArray(Charsets.UTF_8)
         writeIntLe(bytes.size)
@@ -1154,16 +1761,15 @@ class PurSceneCodec {
         private const val TAG = "PurSceneCodec"
         private const val HEADER_MIN_SIZE = 0x6C
         private const val EMBEDDED_IMAGE_FALLBACK_MAX_BYTES = 64L * 1024L * 1024L
+        private const val DESKTOP_MARKUP_OVERLAY_MAX_SIDE = 4096f
+        private const val DESKTOP_MARKUP_OVERLAY_MIN_DENSITY = 0.1f
 
         // Scene-level metadata payload size (spacingX + spacingY + alignment).
         private const val SCENE_METADATA_PAYLOAD_SIZE = 8 + 8 + 4
-        // Sanity cap: a length prefix larger than this is treated as
-        // garbage (likely scene-name UTF-16 tail bytes misread as a
-        // length). Keeps legacy desktop .pur files readable.
-        private const val MAX_SCENE_METADATA_BYTES = 256
         private val MAGIC = byteArrayOf('P'.code.toByte(), 'R'.code.toByte(), 'F'.code.toByte(), 'A'.code.toByte())
+        private val MARKUP_MAGIC = byteArrayOf('M'.code.toByte(), 'R'.code.toByte(), 'K'.code.toByte(), '1'.code.toByte())
         private val LEGACY_IDENTITY_MATRIX = listOf(1.0, 0.0, 0.0, 1.0)
-        // ASCII "PRAC" (PockRef Android Coloradjust) in big-endian is
+        // ASCII "PRCA" (PockRef ColorAdjust) in big-endian is
         // declared at file scope (above the class) so the top-level
         // writeLegacyImageTransform(RandomAccessFile) overload can
         // also emit the sentinel. The class-internal readers and the
@@ -1255,7 +1861,7 @@ private fun readLongBe(bytes: ByteArray, index: Int): Long =
 private fun readDoubleBe(bytes: ByteArray, index: Int): Double =
     ByteBuffer.wrap(bytes, index, 8).order(ByteOrder.BIG_ENDIAN).double
 
-// ASCII "PRAC" (PockRef Android Coloradjust) in big-endian. Marks the
+// ASCII "PRCA" (PockRef ColorAdjust) in big-endian. Marks the
 // start of a colorAdjust block inside an Android-written legacy .pur
 // transform; desktop .pur files end their transform block with a
 // different 25-byte trailer (double 0.0 + int 1 + byte 0 + long -1 +
@@ -1316,6 +1922,14 @@ private fun RandomAccessFile.writeLegacyMatrix(matrix: List<Double>) {
 }
 
 private fun writeLegacyImageTransform(output: RandomAccessFile, transform: LegacyImageTransform) {
+    writeLegacyImageTransform(output, transform, includeColorAdjust = true)
+}
+
+private fun writeLegacyImageTransform(
+    output: RandomAccessFile,
+    transform: LegacyImageTransform,
+    includeColorAdjust: Boolean,
+) {
     val transformEnd = output.filePointer
     output.writeLongBe(0L)
     output.writeIntBe(34)
@@ -1339,22 +1953,15 @@ private fun writeLegacyImageTransform(output: RandomAccessFile, transform: Legac
         output.writeDoubleBe(transform.pointX[index])
         output.writeDoubleBe(transform.pointY[index])
     }
-    // colorAdjust is not in the original desktop .pur format but is a
-    // real user-tweakable field on SceneImage (brightness / contrast /
-    // saturation). We append it just before the trailer bytes; readers
-    // skip over the unknown bytes via the endAddress stored at the start
-    // of each transform block, so legacy desktop readers ignore it
-    // cleanly while Android rehydrates it.
-    //
-    // The 4-byte COLOR_ADJUST_SENTINEL ("PRAC" — PockRef Android
-    // Coloradjust) before the three doubles lets the reader distinguish
-    // an Android-written transform from a desktop file (see the matching
-    // block in writeLegacyImageTransform(ByteArrayOutputStream) for the
-    // full reasoning).
-    output.writeIntBe(COLOR_ADJUST_SENTINEL)
-    output.writeDoubleBe(transform.colorAdjust.brightness.toDouble())
-    output.writeDoubleBe(transform.colorAdjust.contrast.toDouble())
-    output.writeDoubleBe(transform.colorAdjust.saturation.toDouble())
+    if (includeColorAdjust) {
+        // colorAdjust is a PockRef-only legacy extension. Desktop PureRef
+        // 2.1.x aborts on files that carry it, so the strict desktop writer
+        // omits this block and writes only the original trailer below.
+        output.writeIntBe(COLOR_ADJUST_SENTINEL)
+        output.writeDoubleBe(transform.colorAdjust.brightness.toDouble())
+        output.writeDoubleBe(transform.colorAdjust.contrast.toDouble())
+        output.writeDoubleBe(transform.colorAdjust.saturation.toDouble())
+    }
     output.writeDoubleBe(0.0)
     output.writeIntBe(1)
     output.write(0)

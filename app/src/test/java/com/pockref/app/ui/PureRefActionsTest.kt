@@ -169,7 +169,7 @@ class PockRefActionsTest {
     // the previous (134→146) callout missed.
     // The change is additive — no variant was
     // renamed or removed.
-    private val expectedVariantCount: Int = 158
+    private val expectedVariantCount: Int = 162
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

@@ -11,6 +11,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.ImageOptimizer
+import com.pockref.app.data.decodeOriginalImage
+import com.pockref.app.model.CanvasMarkupStroke
+import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.CropAspect
 import com.pockref.app.model.CropRect
 import com.pockref.app.model.ExportFormat
@@ -165,8 +168,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
     /**
      * Decode a single clipboard item's URI into
      * (bytes, mimeType, width, height). Returns null
-     * on any decode failure (open fails, optimizer
-     * produces 0×0 output, etc.). Caller decides
+     * on any decode failure (open fails, image bounds
+     * are invalid, etc.). Caller decides
      * what to do with nulls.
      */
     private fun decodeClipboardItem(uri: Uri): ClipboardDecodedImage? {
@@ -182,8 +185,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 else -> "image/jpeg"
             }
         }
-        val result = mainVm.imageOptimizer.optimize(rawBytes, mime)
-        if (result.width <= 0 || result.height <= 0) return null
+        val result = decodeOriginalImage(rawBytes, mime)
+            ?: return null
         return ClipboardDecodedImage(
             bytes = result.bytes,
             mimeType = result.mimeType,
@@ -413,8 +416,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     uris.mapIndexedNotNull { index, uri ->
                         val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@mapIndexedNotNull null
                         val originalMime = mainVm.contentResolver.getType(uri) ?: "application/octet-stream"
-                        val result = mainVm.imageOptimizer.optimize(rawBytes, originalMime)
-                        if (result.width <= 0 || result.height <= 0) return@mapIndexedNotNull null
+                        val result = decodeOriginalImage(rawBytes, originalMime)
+                            ?: return@mapIndexedNotNull null
                         val baseWidth = result.width.toFloat().coerceAtMost(720f)
                         val scale = baseWidth / result.width.toFloat()
                         val baseHeight = result.height * scale
@@ -520,7 +523,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.setBusy(false)
         }
     }
-    fun loadScene(uri: Uri) {
+    fun loadScene(uri: Uri, dropRecentOnFailure: Boolean = false) {
         mainVm.currentSceneUri = uri
         val fileName = mainVm.queryDisplayNameSync(uri) ?: ""
         mainVm.isImportedPurFile = fileName.endsWith(".pur", ignoreCase = true)
@@ -536,16 +539,15 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (error: Throwable) {
-                // V_NOW (2026-06-11): report the error
-                // but keep the recent-scenes entry so the
-                // user can re-attempt (e.g. the file may
-                // be temporarily locked or in a transient
-                // bad state) or delete it manually from
-                // the start page. Auto-removing was too
-                // aggressive — the user wanted the
-                // recent entry to survive a failed open
-                // attempt.
-                mainVm.reportError("打开文件失败:找不到文件", error)
+                // User request: when a recent file fails to
+                // open from the launch page, remove only the
+                // stale recent-list entry. Do not call
+                // RemoveRecentScene here — that path deletes
+                // the underlying .pur file for swipe-delete.
+                if (dropRecentOnFailure) {
+                    mainVm.dropRecentSceneFromList(uri.toString())
+                }
+                mainVm.reportError(openSceneFailureMessage(error), error)
                 mainVm.setBusy(false)
                 return@launch
             }
@@ -576,6 +578,17 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     backgroundColor = bg,
                     backgroundCustomColor = bg,
                     images = scene.images,
+                    markupStrokes = scene.markupStrokes,
+                    markupTexts = scene.markupTexts,
+                    markupVisible = true,
+                    markupModeActive = false,
+                    draftMarkupStroke = null,
+                    markupSessionBaseStrokes = null,
+                    markupSessionBaseTexts = null,
+                    pendingMarkupTextPosition = null,
+                    pendingMarkupTextValue = "",
+                    pendingMarkupTextFontSize = 80f,
+                    editingMarkupTextId = null,
                     // Newly opened scene starts with nothing selected —
                     // the user picks by tapping. The previous behavior
                     // (auto-select the last image) made the "edit
@@ -599,6 +612,35 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.batchController.fitToScreen()
             mainVm.setBusy(false)
         }
+    }
+
+    private fun openSceneFailureMessage(error: Throwable): String {
+        if (hasCause(error) { it is OutOfMemoryError }) {
+            return "打开文件失败:文件过大，内存不足"
+        }
+        if (hasCause(error) { it is SecurityException || it.isPermissionDeniedFileError() }) {
+            return "打开文件失败:没有文件读取权限"
+        }
+        if (hasCause(error) { it is java.io.FileNotFoundException }) {
+            return "打开文件失败:找不到文件"
+        }
+        return "打开文件失败"
+    }
+
+    private fun hasCause(error: Throwable, predicate: (Throwable) -> Boolean): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (predicate(current)) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    private fun Throwable.isPermissionDeniedFileError(): Boolean {
+        if (this !is java.io.FileNotFoundException) return false
+        val text = message.orEmpty()
+        return text.contains("EACCES", ignoreCase = true) ||
+            text.contains("Permission denied", ignoreCase = true)
     }
 
     fun saveScene(uri: Uri) {
@@ -901,19 +943,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 try {
                     val bufferedOut = java.io.BufferedOutputStream(FileOutputStream(tempOutput), 256 * 1024)
                     bufferedOut.use { tempFileOutput ->
-                        // V_NOW (2026-06-11): use the custom format
-                        // (write) instead of legacy format
-                        // (writeLegacyStreaming). The custom format
-                        // persists cropRect and locked fields that
-                        // the legacy format silently drops. When a
-                        // cropped image is saved in legacy format
-                        // and reloaded, cropRect is lost (defaults
-                        // to null) but displaySize retains the
-                        // cropped dimensions, so drawSceneImage
-                        // renders the full uncropped bitmap into the
-                        // cropped-aspect box, producing a stretched
-                        // image.
-                        mainVm.codec.write(scene, tempFileOutput)
+                        mainVm.codec.writeDesktopCompatible(scene, tempFileOutput, cacheDir)
                     }
 
                     val t1 = System.nanoTime()
@@ -1212,6 +1242,39 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 throw e
             } catch (error: Throwable) {
                 mainVm.reportError("导出图片失败: ${error.message ?: error.javaClass.simpleName}", error)
+            } finally {
+                mainVm.setBusy(false)
+            }
+        }
+    }
+
+    fun exportSelectedGif(uri: Uri) {
+        val state = mainVm._uiState.value
+        val imageId = when {
+            state.selectedImageIds.size == 1 -> state.selectedImageIds.first()
+            state.selectedImageIds.isEmpty() -> state.selectedImageId
+            else -> null
+        } ?: return
+        val image = state.images.firstOrNull { it.id == imageId } ?: return
+        if (!image.mimeType.equals("image/gif", ignoreCase = true)) return
+        if (image == state.images.find { it.id == state.cropImageId }) return
+
+        mainVm.viewModelScope.launch {
+            mainVm.setBusy(true)
+            try {
+                withContext(Dispatchers.IO) {
+                    val bytes = mainVm.resolveRawImageBytes(image)
+                    if (bytes.isEmpty()) error("无法读取 GIF 数据")
+                    val outputStream = mainVm.contentResolver.openOutputStream(uri)
+                        ?: error("无法打开目标 URI 的输出流")
+                    outputStream.use { stream ->
+                        stream.write(bytes)
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (error: Throwable) {
+                mainVm.reportError("导出 GIF 失败: ${error.message ?: error.javaClass.simpleName}", error)
             } finally {
                 mainVm.setBusy(false)
             }
@@ -1721,6 +1784,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         mainVm.undoStack.clear()
         mainVm.redoStack.clear()
         mainVm.currentSceneUri = null
+        mainVm.codec.release()
         mainVm.autoSaveManager.clearAutoSaveState()
         // V_NOW (follow-up after "1 min never fires"
         // bug): the previous version of this function
@@ -1754,6 +1818,17 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 backgroundCustomColor = defaultBg,
                 showBackgroundPicker = false,
                 images = emptyList(),
+                markupStrokes = emptyList(),
+                markupTexts = emptyList(),
+                markupVisible = true,
+                markupModeActive = false,
+                draftMarkupStroke = null,
+                markupSessionBaseStrokes = null,
+                markupSessionBaseTexts = null,
+                pendingMarkupTextPosition = null,
+                pendingMarkupTextValue = "",
+                pendingMarkupTextFontSize = 80f,
+                editingMarkupTextId = null,
                 selectedImageId = null,
                 selectedImageIds = emptySet(),
                 canUndo = false,
@@ -1881,7 +1956,17 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
     fun exportCanvas(uri: Uri, backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode) {
         val state = mainVm._uiState.value
         val images = state.images
-        if (images.isEmpty()) return
+        val markupStrokes = if (state.markupVisible) {
+            state.markupStrokes.filter { it.isRenderable }
+        } else {
+            emptyList()
+        }
+        val markupTexts = if (state.markupVisible) {
+            state.markupTexts.filter { it.text.isNotBlank() }
+        } else {
+            emptyList()
+        }
+        if (images.isEmpty() && markupStrokes.isEmpty() && markupTexts.isEmpty()) return
 
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
@@ -1930,6 +2015,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     var minY = Float.MAX_VALUE
                     var maxX = -Float.MAX_VALUE
                     var maxY = -Float.MAX_VALUE
+                    fun includeExportBounds(x: Float, y: Float) {
+                        if (!x.isFinite() || !y.isFinite()) return
+                        if (x < minX) minX = x
+                        if (y < minY) minY = y
+                        if (x > maxX) maxX = x
+                        if (y > maxY) maxY = y
+                    }
 
                     for (image in images) {
                         val bytes = mainVm.resolveImageBytes(image)
@@ -2017,7 +2109,16 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         }
                     }
 
-                    if (probes.isEmpty()) {
+                    markupStrokes.forEach { stroke ->
+                        expandMarkupStrokeBounds(stroke, ::includeExportBounds)
+                    }
+                    markupTexts.forEach { item ->
+                        expandMarkupTextBounds(item, ::includeExportBounds)
+                    }
+
+                    if (minX == Float.MAX_VALUE || minY == Float.MAX_VALUE ||
+                        maxX == -Float.MAX_VALUE || maxY == -Float.MAX_VALUE
+                    ) {
                         Log.w("ExportCanvas", "no images decoded; aborting")
                         return@withContext
                     }
@@ -2261,6 +2362,27 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         }
                     }
 
+                    markupStrokes.forEach { stroke ->
+                        renderMarkupStrokeToCanvas(
+                            canvas = canvas,
+                            stroke = stroke,
+                            minX = minX,
+                            minY = minY,
+                            scale = scale,
+                            exportDensity = exportDensity,
+                        )
+                    }
+                    markupTexts.forEach { item ->
+                        renderMarkupTextToCanvas(
+                            canvas = canvas,
+                            item = item,
+                            minX = minX,
+                            minY = minY,
+                            scale = scale,
+                            exportDensity = exportDensity,
+                        )
+                    }
+
                     // Write PNG to URI
                     val resolver = mainVm.contentResolver
                     resolver.openOutputStream(uri)?.use { stream ->
@@ -2371,6 +2493,103 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             canvas.drawBitmap(source, srcRect, dstRect, paint)
         } finally {
             canvas.restore()
+        }
+    }
+
+    private fun expandMarkupStrokeBounds(
+        stroke: CanvasMarkupStroke,
+        include: (Float, Float) -> Unit,
+    ) {
+        val padding = (stroke.lineWidth / 2f).coerceAtLeast(1f)
+        stroke.points.forEach { point ->
+            include(point.x - padding, point.y - padding)
+            include(point.x + padding, point.y + padding)
+        }
+    }
+
+    private fun expandMarkupTextBounds(
+        item: CanvasMarkupText,
+        include: (Float, Float) -> Unit,
+    ) {
+        val lines = item.text.lines().filter { it.isNotBlank() }
+        if (lines.isEmpty()) return
+        val fontSize = item.fontSize.coerceAtLeast(1f)
+        val width = lines.maxOf { it.length }.coerceAtLeast(1) * fontSize * 0.6f
+        val lineHeight = fontSize * 1.18f
+        val height = (lines.size * lineHeight).coerceAtLeast(fontSize)
+        include(item.position.x - width / 2f, item.position.y - height / 2f - fontSize * 0.25f)
+        include(item.position.x + width / 2f, item.position.y + height / 2f + fontSize * 0.25f)
+    }
+
+    private fun renderMarkupStrokeToCanvas(
+        canvas: android.graphics.Canvas,
+        stroke: CanvasMarkupStroke,
+        minX: Float,
+        minY: Float,
+        scale: Float,
+        exportDensity: Float,
+    ) {
+        if (!stroke.isRenderable) return
+        val factor = exportDensity * scale
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = stroke.color.toArgb()
+            style = android.graphics.Paint.Style.STROKE
+            strokeCap = android.graphics.Paint.Cap.ROUND
+            strokeJoin = android.graphics.Paint.Join.ROUND
+            strokeWidth = (stroke.lineWidth * factor).coerceAtLeast(1f)
+        }
+        val mapped = stroke.points.map { point ->
+            android.graphics.PointF(
+                (point.x - minX) * factor,
+                (point.y - minY) * factor,
+            )
+        }
+        val first = mapped.firstOrNull() ?: return
+        val path = android.graphics.Path().apply {
+            moveTo(first.x, first.y)
+            if (mapped.size == 2) {
+                lineTo(mapped[1].x, mapped[1].y)
+            } else {
+                for (index in 1 until mapped.lastIndex) {
+                    val current = mapped[index]
+                    val next = mapped[index + 1]
+                    quadTo(
+                        current.x,
+                        current.y,
+                        (current.x + next.x) / 2f,
+                        (current.y + next.y) / 2f,
+                    )
+                }
+                val last = mapped.last()
+                lineTo(last.x, last.y)
+            }
+        }
+        canvas.drawPath(path, paint)
+    }
+
+    private fun renderMarkupTextToCanvas(
+        canvas: android.graphics.Canvas,
+        item: CanvasMarkupText,
+        minX: Float,
+        minY: Float,
+        scale: Float,
+        exportDensity: Float,
+    ) {
+        val lines = item.text.lines().filter { it.isNotBlank() }
+        if (lines.isEmpty()) return
+        val factor = exportDensity * scale
+        val x = (item.position.x - minX) * factor
+        val y = (item.position.y - minY) * factor
+        val textSize = (item.fontSize * factor).coerceAtLeast(8f)
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = item.color.toArgb()
+            this.textSize = textSize
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+        val lineHeight = textSize * 1.18f
+        val firstBaseline = y - (lineHeight * (lines.size - 1) / 2f)
+        lines.forEachIndexed { index, line ->
+            canvas.drawText(line, x, firstBaseline + index * lineHeight, paint)
         }
     }
 }

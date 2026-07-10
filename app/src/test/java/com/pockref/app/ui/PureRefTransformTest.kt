@@ -754,6 +754,17 @@ class PockRefTransformTest {
     }
 
     @Test
+    fun cornerHandleMovePoint_preservesInitialFingerOffset() {
+        val adjusted = cornerHandleMovePointForFinger(
+            fingerPosition = Offset(208f, 83f),
+            initialFingerOffsetFromHandle = Offset(8f, 8f),
+        )
+
+        assertEquals(200f, adjusted.x, epsilon)
+        assertEquals(75f, adjusted.y, epsilon)
+    }
+
+    @Test
      fun cornerHandles_dragResult_doublesScale() {
         // Move the move-handle from (50, 75) to (200, 75) — i.e.
         // pulled to the right until the diagonal halves. Anchor
@@ -842,6 +853,24 @@ class PockRefTransformTest {
         assertEquals(0f, scale, epsilon)
         assertEquals(150f, newCenter.x, epsilon)
         assertEquals(125f, newCenter.y, epsilon)
+    }
+
+    @Test
+    fun cornerHandles_dragResult_clampsCenterWithScaleFactor() {
+        val (scale, newCenter) = computeCornerDragResult(
+            initialMoveWorld = Offset(50f, 75f),
+            initialAnchorWorld = Offset(150f, 125f),
+            currentMoveWorld = Offset(145f, 120f),
+            worldWidth = 100f,
+            worldHeight = 50f,
+            rotationDegrees = 0f,
+            minScaleFactor = 0.5f,
+            maxScaleFactor = 40f,
+        )
+
+        assertEquals(0.5f, scale, epsilon)
+        assertEquals(125f, newCenter.x, epsilon)
+        assertEquals(112.5f, newCenter.y, epsilon)
     }
 
     @Test
@@ -1219,6 +1248,49 @@ class PockRefTransformTest {
         assertTrue(
             "Expected softened group scale between 1.0 and 1.10, got $s",
             s in 1.0f..1.10f,
+        )
+    }
+
+    @Test
+    fun rotationHandle_forSingleImageSitsAboveRotatedTopEdge() {
+        val geometry = projectImageRotationHandleToScreen(
+            imageCenter = Offset.Zero,
+            imageWidth = 100f,
+            imageHeight = 80f,
+            rotationDegrees = 90f,
+            handleOffsetPx = 32f,
+            canvasScale = 1f,
+            canvasOffset = Offset.Zero,
+            viewportWidth = 200f,
+            viewportHeight = 200f,
+        )
+
+        assertEquals(140f, geometry.anchor.x, epsilon)
+        assertEquals(100f, geometry.anchor.y, epsilon)
+        assertEquals(172f, geometry.handleCenter.x, epsilon)
+        assertEquals(100f, geometry.handleCenter.y, epsilon)
+    }
+
+    @Test
+    fun rotationHandleHitTest_usesFingerFriendlyTouchRadius() {
+        val geometry = RotationHandleGeometry(
+            anchor = Offset(100f, 80f),
+            handleCenter = Offset(100f, 48f),
+        )
+
+        assertTrue(
+            hitTestRotationHandle(
+                geometry = geometry,
+                screenPoint = Offset(123f, 48f),
+                hitRadiusPx = 24f,
+            ),
+        )
+        assertTrue(
+            !hitTestRotationHandle(
+                geometry = geometry,
+                screenPoint = Offset(125f, 48f),
+                hitRadiusPx = 24f,
+            ),
         )
     }
 }

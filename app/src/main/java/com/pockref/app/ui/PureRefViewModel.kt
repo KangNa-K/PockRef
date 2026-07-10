@@ -20,6 +20,7 @@ import com.pockref.app.data.PurFileParser
 import com.pockref.app.data.PurSceneCodec
 import com.pockref.app.data.SceneImageDecoder
 import com.pockref.app.model.BackgroundPreset
+import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.decodeRecentScenes
 import com.pockref.app.model.PockRefUiState
@@ -87,6 +88,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
 
     internal val undoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
     internal val redoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
+    internal val markupHistory = MarkupHistory()
     internal var sceneGestureActive: Boolean = false
     internal var gestureUndoRecorded: Boolean = false
         // Resetting the flag (e.g. by loadScene in PockRefViewModelScene, which
@@ -464,6 +466,25 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             sb.append(img.colorAdjust.contrast.toBits())
             sb.append(img.colorAdjust.saturation.toBits())
         }
+        sb.append(scene.markupStrokes.size)
+        scene.markupStrokes.forEach { stroke ->
+            sb.append(stroke.id)
+            sb.append(stroke.color.value)
+            sb.append(stroke.lineWidth.toBits())
+            stroke.points.forEach { point ->
+                sb.append(point.x.toBits())
+                sb.append(point.y.toBits())
+            }
+        }
+        sb.append(scene.markupTexts.size)
+        scene.markupTexts.forEach { text ->
+            sb.append(text.id)
+            sb.append(text.text)
+            sb.append(text.position.x.toBits())
+            sb.append(text.position.y.toBits())
+            sb.append(text.color.value)
+            sb.append(text.fontSize.toBits())
+        }
         return sb.toString().hashCode().toString(16)
     }
 
@@ -498,7 +519,11 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
 
     internal fun syncDirectSaveState() {
         val directSave = isImportedPurFile && currentSceneUri != null && hasUnsavedChanges
-        val dirty = hasUnsavedChanges && _uiState.value.images.isNotEmpty()
+        val current = _uiState.value
+        val hasSceneContent = current.images.isNotEmpty() ||
+            current.markupStrokes.isNotEmpty() ||
+            current.markupTexts.isNotEmpty()
+        val dirty = hasUnsavedChanges && hasSceneContent
         val cur = _uiState.value
         if (cur.canDirectSave != directSave || cur.hasUnsavedChanges != dirty) {
             _uiState.update { it.copy(canDirectSave = directSave, hasUnsavedChanges = dirty) }
@@ -508,7 +533,9 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     val hasUnsavedChanges: Boolean
         get() {
             val scene = _uiState.value.toScene()
-            if (scene.images.isEmpty()) return false
+            if (scene.images.isEmpty() && scene.markupStrokes.isEmpty() && scene.markupTexts.isEmpty()) {
+                return false
+            }
             val currentHash = computeQuickHash(scene)
             return currentHash != lastSaveSnapshotHash
         }
@@ -520,13 +547,20 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         when (action) {
             PockRefAction.ResetView -> batchController.resetView()
             PockRefAction.FitToScreen -> batchController.fitToScreen()
-            PockRefAction.Undo -> transformController.undo()
-            PockRefAction.Redo -> transformController.redo()
+            PockRefAction.Undo -> {
+                if (_uiState.value.markupModeActive) undoMarkupStep() else transformController.undo()
+            }
+            PockRefAction.Redo -> {
+                if (_uiState.value.markupModeActive) redoMarkupStep() else transformController.redo()
+            }
             PockRefAction.ToggleMultiSelectMode -> selectionController.toggleMultiSelectMode()
             is PockRefAction.ImportImages -> sceneController.importImages(action.uris)
             is PockRefAction.LoadScene -> sceneController.loadScene(action.uri)
             is PockRefAction.SaveScene -> sceneController.saveScene(action.uri)
-            is PockRefAction.OpenRecentScene -> sceneController.loadScene(Uri.parse(action.uri))
+            is PockRefAction.OpenRecentScene -> sceneController.loadScene(
+                Uri.parse(action.uri),
+                dropRecentOnFailure = true,
+            )
             is PockRefAction.RemoveRecentScene -> removeRecentScene(action.uri)
             is PockRefAction.RenameRecentScene -> renameRecentScene(action.uri, action.newLabel)
             is PockRefAction.TogglePinRecentScene -> togglePinRecentScene(action.uri)
@@ -667,6 +701,30 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     it
                 }
+            }
+            is PockRefAction.SetMarkupModeActive -> setMarkupModeActive(action.active)
+            is PockRefAction.BeginMarkupStroke -> beginMarkupStroke(action.point)
+            is PockRefAction.UpdateMarkupStroke -> updateMarkupStroke(action.point)
+            PockRefAction.CommitMarkupStroke -> commitMarkupStroke()
+            PockRefAction.CancelMarkupStroke -> cancelMarkupStroke()
+            PockRefAction.CancelMarkupSession -> cancelMarkupSession()
+            PockRefAction.RequestMarkupText -> requestMarkupText()
+            is PockRefAction.EditMarkupText -> editMarkupText(action.textId)
+            is PockRefAction.MoveMarkupText -> moveMarkupText(action.textId, action.delta)
+            is PockRefAction.SetPendingMarkupText -> _uiState.update {
+                it.copy(pendingMarkupTextValue = action.value)
+            }
+            is PockRefAction.SetPendingMarkupTextFontSize -> _uiState.update {
+                it.copy(pendingMarkupTextFontSize = action.size.coerceIn(24f, 240f))
+            }
+            PockRefAction.CommitMarkupText -> commitMarkupText()
+            PockRefAction.CancelMarkupText -> _uiState.update {
+                it.copy(
+                    pendingMarkupTextPosition = null,
+                    pendingMarkupTextValue = "",
+                    pendingMarkupTextFontSize = 80f,
+                    editingMarkupTextId = null,
+                )
             }
             is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(action.point, action.showSheet)
             is PockRefAction.BringImageToFront -> transformController.bringImageToFront(action.imageId)
@@ -969,6 +1027,9 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  PockRefAction.ToggleLockButtonVisibility -> _uiState.update {
  it.copy(lockButtonHidden = !it.lockButtonHidden)
  }
+            PockRefAction.ToggleMarkupVisibility -> _uiState.update {
+                it.copy(markupVisible = !it.markupVisible)
+            }
             PockRefAction.BeginRenameScene -> _uiState.update {
                 it.copy(renameDialogValue = SceneNaming.sanitizeForStorage(it.sceneName))
             }
@@ -982,6 +1043,10 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.ConfirmExport -> {
                 _uiState.update { it.copy(showExportDialog = false) }
                 sceneController.exportSelected(action.uri, action.format)
+            }
+            is PockRefAction.ConfirmExportGif -> {
+                _uiState.update { it.copy(showExportDialog = false) }
+                sceneController.exportSelectedGif(action.uri)
             }
             is PockRefAction.ConfirmExportBatch -> {
                 _uiState.update { it.copy(showExportDialog = false) }
@@ -1749,9 +1814,11 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         // new gesture starts from a clean visual baseline. Mirrors
         // what beginImageDrag does for the drag state machine.
         _uiState.update {
-            it.copy(
-                angleSnapGuide = null,
-            ).syncHistoryFlags(undoStackSize, redoStackSize)
+            syncVisibleHistoryFlags(
+                it.copy(
+                    angleSnapGuide = null,
+                ),
+            )
         }
     }
 
@@ -1767,7 +1834,9 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             val after = _uiState.value
             if (before.sceneName != after.sceneName ||
                 before.backgroundColor != after.backgroundColor ||
-                before.images != after.images
+                before.images != after.images ||
+                before.markupStrokes != after.markupStrokes ||
+                before.markupTexts != after.markupTexts
             ) {
                 pushHistoryEntry(buildHistoryEntry(before, after, undoStack.size))
             }
@@ -1776,9 +1845,11 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         // gesture that owned it is now over. Mirrors the snapHighlight
         // / snapGuide clearing in commitImageDrag.
         _uiState.update {
-            it.copy(
-                angleSnapGuide = null,
-            ).normalizeSelection().syncHistoryFlags(undoStackSize, redoStackSize)
+            syncVisibleHistoryFlags(
+                it.copy(
+                    angleSnapGuide = null,
+                ).normalizeSelection(),
+            )
         }
     }
 
@@ -1787,7 +1858,9 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         val after = before.transform().normalizeSelection()
         if (before.sceneName != after.sceneName ||
             before.backgroundColor != after.backgroundColor ||
-            before.images != after.images
+            before.images != after.images ||
+            before.markupStrokes != after.markupStrokes ||
+            before.markupTexts != after.markupTexts
         ) {
             pushHistoryEntry(buildHistoryEntry(before, after, undoStack.size))
         }
@@ -1828,6 +1901,223 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             undoStack.removeFirst()
         }
         redoStack.clear()
+    }
+
+    private fun syncVisibleHistoryFlags(state: PockRefUiState): PockRefUiState =
+        if (state.markupModeActive) {
+            state.copy(canUndo = markupHistory.canUndo, canRedo = markupHistory.canRedo)
+        } else {
+            state.syncHistoryFlags(undoStackSize, redoStackSize)
+        }
+
+    internal fun undoMarkupStep() {
+        val current = _uiState.value
+        if (!current.markupModeActive) return
+        val snapshot = markupHistory.undo(current.toMarkupHistorySnapshot()) ?: return
+        _uiState.value = syncVisibleHistoryFlags(current.restoreMarkupHistorySnapshot(snapshot))
+    }
+
+    internal fun redoMarkupStep() {
+        val current = _uiState.value
+        if (!current.markupModeActive) return
+        val snapshot = markupHistory.redo(current.toMarkupHistorySnapshot()) ?: return
+        _uiState.value = syncVisibleHistoryFlags(current.restoreMarkupHistorySnapshot(snapshot))
+    }
+
+    internal fun setMarkupModeActive(active: Boolean) {
+        if (active) {
+            markupHistory.clear()
+            _uiState.update { current ->
+                current.copy(
+                    markupModeActive = true,
+                    bottomRightPanelExpanded = false,
+                    selectedImageId = null,
+                    selectedImageIds = emptySet(),
+                    multiSelectMode = false,
+                    boxSelectMode = false,
+                    boxSelectRect = null,
+                    boxSelectPreviewIds = emptySet(),
+                    draftMarkupStroke = null,
+                    markupSessionBaseStrokes = current.markupStrokes,
+                    markupSessionBaseTexts = current.markupTexts,
+                    pendingMarkupTextPosition = null,
+                    pendingMarkupTextValue = "",
+                    pendingMarkupTextFontSize = 80f,
+                    editingMarkupTextId = null,
+                    canUndo = false,
+                    canRedo = false,
+                )
+            }
+            return
+        }
+
+        val beforeState = _uiState.value
+        val baseStrokes = beforeState.markupSessionBaseStrokes
+        val baseTexts = beforeState.markupSessionBaseTexts
+        val afterState = beforeState.copy(
+            markupModeActive = false,
+            draftMarkupStroke = null,
+            markupSessionBaseStrokes = null,
+            markupSessionBaseTexts = null,
+            pendingMarkupTextPosition = null,
+            pendingMarkupTextValue = "",
+            pendingMarkupTextFontSize = 80f,
+            editingMarkupTextId = null,
+        ).syncHistoryFlags(undoStackSize, redoStackSize)
+        if (beforeState.markupModeActive && baseStrokes != null && baseTexts != null &&
+            (baseStrokes != afterState.markupStrokes || baseTexts != afterState.markupTexts)
+        ) {
+            val historyBefore = beforeState.copy(
+                markupStrokes = baseStrokes,
+                markupTexts = baseTexts,
+                markupModeActive = false,
+                draftMarkupStroke = null,
+                markupSessionBaseStrokes = null,
+                markupSessionBaseTexts = null,
+                pendingMarkupTextPosition = null,
+                pendingMarkupTextValue = "",
+                pendingMarkupTextFontSize = 80f,
+                editingMarkupTextId = null,
+            )
+            pushHistoryEntry(buildHistoryEntry(historyBefore, afterState, undoStack.size))
+        }
+        markupHistory.clear()
+        _uiState.value = afterState.syncHistoryFlags(undoStackSize, redoStackSize)
+        notifyContentChanged()
+    }
+
+    internal fun beginMarkupStroke(point: Offset) {
+        _uiState.update { current ->
+            if (!current.markupModeActive) current else current.copy(
+                draftMarkupStroke = CanvasMarkupStroke(
+                    lineWidth = (4f / current.canvasScale).coerceIn(1f, 80f),
+                    points = listOf(point),
+                ),
+            )
+        }
+    }
+
+    internal fun updateMarkupStroke(point: Offset) {
+        _uiState.update { current ->
+            val draft = current.draftMarkupStroke
+            if (!current.markupModeActive || draft == null) {
+                current
+            } else {
+                val last = draft.points.lastOrNull()
+                val minWorldDistance = (0.75f / current.canvasScale.coerceAtLeast(0.0001f))
+                    .coerceIn(0.02f, 2f)
+                if (last != null && (last - point).getDistance() < minWorldDistance) {
+                    current
+                } else {
+                    current.copy(draftMarkupStroke = draft.copy(points = draft.points + point))
+                }
+            }
+        }
+    }
+
+    internal fun commitMarkupStroke() {
+        _uiState.update { current ->
+            val draft = current.draftMarkupStroke
+            if (!current.markupModeActive || draft == null) {
+                current
+            } else {
+                val committed = regularizeMarkupStrokeForCommit(draft)
+                if (committed.isRenderable) {
+                    markupHistory.record(current.toMarkupHistorySnapshot())
+                }
+                syncVisibleHistoryFlags(
+                    current.copy(
+                        markupStrokes = if (committed.isRenderable) current.markupStrokes + committed else current.markupStrokes,
+                        draftMarkupStroke = null,
+                    ),
+                )
+            }
+        }
+    }
+
+    internal fun cancelMarkupStroke() {
+        _uiState.update { it.copy(draftMarkupStroke = null) }
+    }
+
+    internal fun cancelMarkupSession() {
+        markupHistory.clear()
+        _uiState.update { current ->
+            current.copy(
+                markupStrokes = current.markupSessionBaseStrokes ?: current.markupStrokes,
+                markupTexts = current.markupSessionBaseTexts ?: current.markupTexts,
+                markupModeActive = false,
+                draftMarkupStroke = null,
+                markupSessionBaseStrokes = null,
+                markupSessionBaseTexts = null,
+                pendingMarkupTextPosition = null,
+                pendingMarkupTextValue = "",
+                pendingMarkupTextFontSize = 80f,
+                editingMarkupTextId = null,
+            ).syncHistoryFlags(undoStackSize, redoStackSize)
+        }
+    }
+
+    internal fun requestMarkupText() {
+        val current = _uiState.value
+        val viewportCenter = Offset(
+            x = -current.canvasOffset.x / current.canvasScale,
+            y = -current.canvasOffset.y / current.canvasScale,
+        )
+        _uiState.update {
+            it.copy(
+                pendingMarkupTextPosition = viewportCenter,
+                pendingMarkupTextValue = "",
+                pendingMarkupTextFontSize = (80f / it.canvasScale).coerceIn(24f, 240f),
+                editingMarkupTextId = null,
+                bottomRightPanelExpanded = false,
+            )
+        }
+    }
+
+    internal fun editMarkupText(textId: String) {
+        val current = _uiState.value
+        val text = current.markupTexts.firstOrNull { it.id == textId } ?: return
+        _uiState.update {
+            it.copy(
+                pendingMarkupTextPosition = text.position,
+                pendingMarkupTextValue = text.text,
+                pendingMarkupTextFontSize = text.fontSize.coerceIn(24f, 240f),
+                editingMarkupTextId = text.id,
+                bottomRightPanelExpanded = false,
+            )
+        }
+    }
+
+    internal fun commitMarkupText() {
+        val current = _uiState.value
+        if (current.pendingMarkupTextPosition == null) return
+        if (current.markupModeActive) {
+            _uiState.update {
+                val before = it.toMarkupHistorySnapshot()
+                val after = commitPendingMarkupTextState(it)
+                if (before != after.toMarkupHistorySnapshot()) {
+                    markupHistory.record(before)
+                }
+                syncVisibleHistoryFlags(after)
+            }
+            return
+        }
+        mutateScene { commitPendingMarkupTextState(this) }
+    }
+
+    internal fun moveMarkupText(textId: String, delta: Offset) {
+        val current = _uiState.value
+        if (current.markupModeActive) {
+            if (sceneGestureActive && !gestureUndoRecorded) {
+                markupHistory.record(current.toMarkupHistorySnapshot())
+                gestureUndoRecorded = true
+            } else if (!sceneGestureActive) {
+                markupHistory.record(current.toMarkupHistorySnapshot())
+            }
+            _uiState.update { syncVisibleHistoryFlags(moveMarkupTextState(it, textId, delta)) }
+            return
+        }
+        updateSceneForGesture { moveMarkupTextState(this, textId, delta) }
     }
 
     // ---------------------------------------------------------------------
@@ -2041,6 +2331,19 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     // feedback.
     internal fun removeRecentScene(uri: String) {
         bulkDeleteRecentScenes(listOf(uri))
+    }
+
+    internal fun dropRecentSceneFromList(uri: String) {
+        val updated = _uiState.value.recentScenes.filterNot { it.uri == uri }
+        if (updated.size == _uiState.value.recentScenes.size) return
+        persistRecentScenes(updated)
+        _uiState.update { current ->
+            current.copy(
+                recentSelection = current.recentSelection - uri,
+                recentMultiSelectMode = current.recentMultiSelectMode &&
+                    (current.recentSelection - uri).isNotEmpty(),
+            )
+        }
     }
 
     private fun loadRecentScenes(): List<RecentSceneEntry> {
@@ -2579,14 +2882,18 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         val expectedSize = queryFileSizeSync(uri)
         val tempFile = File.createTempFile("pockref_scene_", ".pur", getApplication<Application>().cacheDir)
         val attempts = mutableListOf<String>()
+        val failures = mutableListOf<Throwable>()
         try {
             for (candidate in sceneUriCandidates(uri)) {
-                copySceneCandidate(candidate, tempFile, attempts)?.let { copiedBytes ->
+                copySceneCandidate(candidate, tempFile, attempts, failures)?.let { copiedBytes ->
                     if (copiedBytes > 0L) return CachedSceneFile(tempFile)
                 }
             }
             android.util.Log.w(TAG, "All scene read attempts produced 0 bytes for $uri: ${attempts.joinToString("; ")}")
-            error("读取到 0 字节；URI=$uri，提供方大小=${formatDiagnosticFileSize(expectedSize)}，已尝试 ${attempts.size} 条读取路径")
+            throw IllegalStateException(
+                "读取到 0 字节；URI=$uri，提供方大小=${formatDiagnosticFileSize(expectedSize)}，已尝试 ${attempts.size} 条读取路径",
+                failures.lastOrNull(),
+            )
         } catch (e: Throwable) {
             tempFile.delete()
             throw e
@@ -2637,20 +2944,30 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         return candidates.toList()
     }
 
-    private fun copySceneCandidate(uri: Uri, target: File, attempts: MutableList<String>): Long? {
-        copyFromInputStream(uri, target, attempts)?.let { copiedBytes ->
+    private fun copySceneCandidate(
+        uri: Uri,
+        target: File,
+        attempts: MutableList<String>,
+        failures: MutableList<Throwable>,
+    ): Long? {
+        copyFromInputStream(uri, target, attempts, failures)?.let { copiedBytes ->
             if (copiedBytes > 0L) return copiedBytes
         }
-        copyFromAssetFileDescriptor(uri, target, attempts)?.let { copiedBytes ->
+        copyFromAssetFileDescriptor(uri, target, attempts, failures)?.let { copiedBytes ->
             if (copiedBytes > 0L) return copiedBytes
         }
-        copyFromFileDescriptor(uri, target, attempts)?.let { copiedBytes ->
+        copyFromFileDescriptor(uri, target, attempts, failures)?.let { copiedBytes ->
             if (copiedBytes > 0L) return copiedBytes
         }
         return null
     }
 
-    private fun copyFromInputStream(uri: Uri, target: File, attempts: MutableList<String>): Long? {
+    private fun copyFromInputStream(
+        uri: Uri,
+        target: File,
+        attempts: MutableList<String>,
+        failures: MutableList<Throwable>,
+    ): Long? {
         return runCatching {
             contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(target, false).use { output ->
@@ -2664,13 +2981,19 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             },
             onFailure = { error ->
                 attempts += "input stream@$uri failed:${error.javaClass.simpleName}"
-                reportError("打开文件失败:找不到文件", error)
+                failures += error
+                Log.w(TAG, "openSceneFile input stream failed for $uri", error)
                 null
             },
         )
     }
 
-    private fun copyFromAssetFileDescriptor(uri: Uri, target: File, attempts: MutableList<String>): Long? {
+    private fun copyFromAssetFileDescriptor(
+        uri: Uri,
+        target: File,
+        attempts: MutableList<String>,
+        failures: MutableList<Throwable>,
+    ): Long? {
         return runCatching {
             contentResolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
                 descriptor.createInputStream().use { input ->
@@ -2686,13 +3009,19 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             },
             onFailure = { error ->
                 attempts += "asset fd@$uri failed:${error.javaClass.simpleName}"
-                reportError("打开文件失败:找不到文件", error)
+                failures += error
+                Log.w(TAG, "openSceneFile asset fd failed for $uri", error)
                 null
             },
         )
     }
 
-    private fun copyFromFileDescriptor(uri: Uri, target: File, attempts: MutableList<String>): Long? {
+    private fun copyFromFileDescriptor(
+        uri: Uri,
+        target: File,
+        attempts: MutableList<String>,
+        failures: MutableList<Throwable>,
+    ): Long? {
         return runCatching {
             contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
                 FileInputStream(descriptor.fileDescriptor).use { input ->
@@ -2708,7 +3037,8 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             },
             onFailure = { error ->
                 attempts += "file descriptor@$uri failed:${error.javaClass.simpleName}"
-                reportError("打开文件失败:找不到文件", error)
+                failures += error
+                Log.w(TAG, "openSceneFile file descriptor failed for $uri", error)
                 null
             },
         )

@@ -69,6 +69,9 @@ class SceneImageDecoder(
             4096,   // ultra-zoom / tablet
         )
 
+        const val ORIGINAL_LEVEL = 6
+        private const val SAFE_ORIGINAL_LONG_EDGE = 6144
+
         // Maximum inSampleSize. Beyond this the quality loss is unacceptable;
         // we'd rather OOM and retry at a higher level than return a 4×4 blob.
         private const val MAX_SAMPLE_SIZE = 32
@@ -255,9 +258,9 @@ class SceneImageDecoder(
 
         // 2. Decode
         val bitmap = if (image.imageBytes.isNotEmpty()) {
-            decodeFromBytes(image, level)
+            decodeFromBytes(image, level, targetSide)
         } else if (image.imageByteOffset >= 0 && image.imageByteLength > 0) {
-            decodeFromOffset(image, level)
+            decodeFromOffset(image, level, targetSide)
         } else {
             Log.w(TAG, "No data source for ${image.name}")
             return null
@@ -303,13 +306,13 @@ class SceneImageDecoder(
 
     // ── Internal decode paths ──────────────────────────────────────
 
-    private fun decodeFromBytes(image: SceneImage, level: Int): Bitmap? {
-        val targetSide = DECODE_LADDER[level]
+    private fun decodeFromBytes(image: SceneImage, level: Int, requestedSide: Int): Bitmap? {
+        val targetSide = targetSideForLevel(level, requestedSide)
         return decodeSampledBitmap(image.imageBytes, targetSide, targetSide)
     }
 
-    private fun decodeFromOffset(image: SceneImage, level: Int): Bitmap? {
-        val targetSide = DECODE_LADDER[level]
+    private fun decodeFromOffset(image: SceneImage, level: Int, requestedSide: Int): Bitmap? {
+        val targetSide = targetSideForLevel(level, requestedSide)
 
         // Preferred path: BitmapRegionDecoder — no temp file, direct stream decode
         val decoder = getOrCreateRegionDecoder(image)
@@ -452,6 +455,7 @@ class SceneImageDecoder(
     // ── Decode ladder logic ────────────────────────────────────────
 
     private fun pickDecodeLevel(targetSide: Int, maxLevel: Int): Int {
+        if (maxLevel >= ORIGINAL_LEVEL) return ORIGINAL_LEVEL
         // Pick the smallest ladder rung whose decoded size is >= targetSide
         // (after inSampleSize rounding). In practice, since inSampleSize
         // rounds down to power-of-2, a 2000px image decoded at level 1 (256)
@@ -462,6 +466,13 @@ class SceneImageDecoder(
         }
         return maxLevel.coerceAtMost(DECODE_LADDER.lastIndex)
     }
+
+    private fun targetSideForLevel(level: Int, requestedSide: Int): Int =
+        if (level == ORIGINAL_LEVEL) {
+            requestedSide.coerceAtMost(SAFE_ORIGINAL_LONG_EDGE)
+        } else {
+            DECODE_LADDER[level.coerceIn(DECODE_LADDER.indices)]
+        }
 
     // ── Disk cache key ─────────────────────────────────────────────
 

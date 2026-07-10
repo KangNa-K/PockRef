@@ -82,6 +82,7 @@ sealed interface PockRefAction {
  * visible by default.
  */
  data object ToggleLockButtonVisibility : PockRefAction
+ data object ToggleMarkupVisibility : PockRefAction
     data object BeginRenameScene : PockRefAction
     data class ConfirmRenameScene(val newName: String) : PockRefAction
     data object CancelRenameScene : PockRefAction
@@ -89,6 +90,8 @@ sealed interface PockRefAction {
     data object ExportSelected : PockRefAction
     /** User picked a format and a save URI — render + write the image. */
     data class ConfirmExport(val uri: Uri, val format: com.pockref.app.model.ExportFormat) : PockRefAction
+    /** User picked a save URI for a selected GIF — write the original animated bytes. */
+    data class ConfirmExportGif(val uri: Uri) : PockRefAction
     /**
      * User picked a format and a destination FOLDER (an OpenDocumentTree
      * tree URI). The VM iterates the currently selected images and writes
@@ -798,6 +801,20 @@ sealed interface PockRefAction {
      * the reducer no-ops.
      */
     data object RestoreMenuBarsOnFocus : PockRefAction
+
+    data class SetMarkupModeActive(val active: Boolean) : PockRefAction
+    data class BeginMarkupStroke(val point: Offset) : PockRefAction
+    data class UpdateMarkupStroke(val point: Offset) : PockRefAction
+    data object CommitMarkupStroke : PockRefAction
+    data object CancelMarkupStroke : PockRefAction
+    data object CancelMarkupSession : PockRefAction
+    data object RequestMarkupText : PockRefAction
+    data class EditMarkupText(val textId: String) : PockRefAction
+    data class MoveMarkupText(val textId: String, val delta: Offset) : PockRefAction
+    data class SetPendingMarkupText(val value: String) : PockRefAction
+    data class SetPendingMarkupTextFontSize(val size: Float) : PockRefAction
+    data object CommitMarkupText : PockRefAction
+    data object CancelMarkupText : PockRefAction
 
     /**
      * Expand / collapse the bottom-right action panel. True = the

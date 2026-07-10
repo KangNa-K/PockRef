@@ -4,6 +4,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.model.AngleSnapGuide
+import com.pockref.app.model.CanvasMarkupStroke
+import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.ColorAdjust
 import com.pockref.app.model.SelectionFlash
 import com.pockref.app.model.PockRefUiState
@@ -101,6 +103,13 @@ internal sealed interface SceneDiff {
         val newBackgroundColor: Color? = null,
     ) : SceneDiff
 
+    data class ReplaceMarkup(
+        val oldStrokes: List<CanvasMarkupStroke>,
+        val newStrokes: List<CanvasMarkupStroke>,
+        val oldTexts: List<CanvasMarkupText>,
+        val newTexts: List<CanvasMarkupText>,
+    ) : SceneDiff
+
     /**
      * Selection state changed (e.g. deselecting all images by
      * tapping blank canvas). Carries both old and new selection
@@ -126,6 +135,8 @@ internal sealed interface HistoryEntry {
         val sceneName: String,
         val backgroundColor: Color,
         val images: List<SceneImage>,
+        val markupStrokes: List<CanvasMarkupStroke>,
+        val markupTexts: List<CanvasMarkupText>,
     ) : HistoryEntry
 
     data class Diff(val diff: SceneDiff) : HistoryEntry
@@ -289,6 +300,8 @@ internal fun PockRefUiState.toHistoryEntry(): HistoryEntry.Snapshot =
         sceneName = sceneName,
         backgroundColor = backgroundColor,
         images = images,
+        markupStrokes = markupStrokes,
+        markupTexts = markupTexts,
     )
 
 /**
@@ -319,6 +332,24 @@ internal fun buildHistoryEntry(
     // don't need to replay dozens of diffs to recover the oldest state.
     val needsCheckpoint = (stackSize % SCENE_SNAPSHOT_INTERVAL) == 0
     if (needsCheckpoint) return oldState.toHistoryEntry()
+    val markupChanged = oldState.markupStrokes != newState.markupStrokes ||
+        oldState.markupTexts != newState.markupTexts
+    if (markupChanged) {
+        val onlyMarkupChanged = oldState.sceneName == newState.sceneName &&
+            oldState.backgroundColor == newState.backgroundColor &&
+            oldState.images == newState.images
+        if (onlyMarkupChanged) {
+            return HistoryEntry.Diff(
+                SceneDiff.ReplaceMarkup(
+                    oldStrokes = oldState.markupStrokes,
+                    newStrokes = newState.markupStrokes,
+                    oldTexts = oldState.markupTexts,
+                    newTexts = newState.markupTexts,
+                ),
+            )
+        }
+        return oldState.toHistoryEntry()
+    }
     val diff = computeSceneDiff(oldState, newState)
     return HistoryEntry.Diff(diff)
 }
@@ -514,6 +545,12 @@ internal fun invertDiff(diff: SceneDiff, appliedState: PockRefUiState): SceneDif
             newName = diff.oldName,
             oldBackgroundColor = diff.newBackgroundColor,
             newBackgroundColor = diff.oldBackgroundColor,
+        )
+        is SceneDiff.ReplaceMarkup -> SceneDiff.ReplaceMarkup(
+            oldStrokes = diff.newStrokes,
+            newStrokes = diff.oldStrokes,
+            oldTexts = diff.newTexts,
+            newTexts = diff.oldTexts,
         )
         is SceneDiff.ChangeSelection -> SceneDiff.ChangeSelection(
             oldSelectedImageId = diff.newSelectedImageId,
@@ -1804,6 +1841,16 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                         sceneName = entry.sceneName,
                         backgroundColor = entry.backgroundColor,
                         images = entry.images,
+                        markupStrokes = entry.markupStrokes,
+                        markupTexts = entry.markupTexts,
+                        markupModeActive = false,
+                        draftMarkupStroke = null,
+                        markupSessionBaseStrokes = null,
+                        markupSessionBaseTexts = null,
+                        pendingMarkupTextPosition = null,
+                        pendingMarkupTextValue = "",
+                        pendingMarkupTextFontSize = 80f,
+                        editingMarkupTextId = null,
                         transientDragImageIds = emptySet(),
                         transientDragDelta = Offset.Zero,
                     ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
@@ -1849,6 +1896,18 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                 is SceneDiff.SetMeta -> state.copy(
                     sceneName = diff.newName ?: state.sceneName,
                     backgroundColor = diff.newBackgroundColor ?: state.backgroundColor,
+                )
+                is SceneDiff.ReplaceMarkup -> state.copy(
+                    markupStrokes = diff.newStrokes,
+                    markupTexts = diff.newTexts,
+                    markupModeActive = false,
+                    draftMarkupStroke = null,
+                    markupSessionBaseStrokes = null,
+                    markupSessionBaseTexts = null,
+                    pendingMarkupTextPosition = null,
+                    pendingMarkupTextValue = "",
+                    pendingMarkupTextFontSize = 80f,
+                    editingMarkupTextId = null,
                 )
                 is SceneDiff.ChangeSelection -> state.copy(
                     selectedImageId = diff.newSelectedImageId,
