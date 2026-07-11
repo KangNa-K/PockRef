@@ -40,7 +40,7 @@ import kotlin.math.sin
 class PurSceneCodec {
     fun write(scene: PockRefScene, output: OutputStream) {
         output.write(MAGIC)
-        output.writeIntLe(scene.version)
+        output.writeIntLe(CUSTOM_SCENE_VERSION)
         output.writeStringUtf8(scene.name)
         output.writeLongLe(scene.backgroundColor.value.toLong())
         output.writeIntLe(scene.images.size)
@@ -75,6 +75,7 @@ class PurSceneCodec {
                 output.writeFloatLe(crop.right)
                 output.writeFloatLe(crop.bottom)
             }
+            output.writeBooleanByte(image.showsOriginalResolution)
         }
         output.writeMarkupBlock(scene)
     }
@@ -918,7 +919,11 @@ class PurSceneCodec {
                             bottom = data.readFloatLe(),
                         )
                     } else null
-                    base.copy(locked = locked, cropRect = cropRect)
+                    base.copy(
+                        locked = locked,
+                        cropRect = cropRect,
+                        showsOriginalResolution = if (version >= 3) data.readBooleanByte() else false,
+                    )
                 } else {
                     base
                 }
@@ -988,7 +993,11 @@ class PurSceneCodec {
                     } else {
                         null
                     }
-                    base.copy(locked = locked, cropRect = cropRect)
+                    base.copy(
+                        locked = locked,
+                        cropRect = cropRect,
+                        showsOriginalResolution = if (version >= 3) raf.readBooleanByte() else false,
+                    )
                 } else {
                     base
                 }
@@ -1759,6 +1768,7 @@ class PurSceneCodec {
 
     companion object {
         private const val TAG = "PurSceneCodec"
+        private const val CUSTOM_SCENE_VERSION = 3
         private const val HEADER_MIN_SIZE = 0x6C
         private const val EMBEDDED_IMAGE_FALLBACK_MAX_BYTES = 64L * 1024L * 1024L
         private const val DESKTOP_MARKUP_OVERLAY_MAX_SIDE = 4096f

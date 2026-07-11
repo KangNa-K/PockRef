@@ -38,6 +38,9 @@ data class SceneImage(
     // display is masked. The user can re-enter crop mode at
     // any time to adjust or remove the crop.
     val cropRect: CropRect? = null,
+    // When true, the canvas requests the original bitmap resolution
+    // instead of the normal visible-size decode level.
+    val showsOriginalResolution: Boolean = false,
 )
 
 data class Size2D(
@@ -1624,7 +1627,7 @@ data class BatchOptimizeState(
 }
 
 fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
-    version = 2,
+    version = 3,
     name = sceneName,
     backgroundColor = backgroundColor,
     images = images.sortedBy { it.zIndex },

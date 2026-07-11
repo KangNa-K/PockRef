@@ -11,12 +11,44 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class PurSceneCodecCustomFormatTest {
+
+    @Test
+    fun customFormat_roundTripsOriginalResolutionFlag() {
+        val codec = PurSceneCodec()
+        val scene = PockRefScene(
+            version = 3,
+            images = listOf(
+                SceneImage(
+                    id = "hd-image",
+                    name = "hd",
+                    mimeType = "image/png",
+                    imageBytes = byteArrayOf(1, 2, 3),
+                    intrinsicWidth = 10,
+                    intrinsicHeight = 10,
+                    center = Offset.Zero,
+                    displaySize = Size2D(10f, 10f),
+                    showsOriginalResolution = true,
+                ),
+            ),
+        )
+        val output = ByteArrayOutputStream()
+
+        codec.write(scene, output)
+
+        assertTrue(
+            codec.read(ByteArrayInputStream(output.toByteArray()))
+                .images
+                .single()
+                .showsOriginalResolution,
+        )
+    }
     @Test
     fun desktopCompatibleWriteDoesNotUsePrfaHeader() {
         val codec = PurSceneCodec()
@@ -69,6 +101,42 @@ class PurSceneCodecCustomFormatTest {
             imageBytes,
             codec.imageDecoder.readImageBytes(restoredImage.imageByteOffset, restoredImage.imageByteLength),
         )
+    }
+
+    @Test
+    fun customV2Format_defaultsOriginalResolutionToFalse() {
+        val bytes = ByteArrayOutputStream().apply {
+            write("PRFA".toByteArray())
+            writeIntLeForTest(2)
+            writeStringForTest("v2")
+            writeLongLeForTest(Color.White.value.toLong())
+            writeIntLeForTest(1)
+            writeStringForTest("image")
+            writeStringForTest("image")
+            writeStringForTest("image/png")
+            writeIntLeForTest(3)
+            write(byteArrayOf(1, 2, 3))
+            writeIntLeForTest(10)
+            writeIntLeForTest(10)
+            writeFloatLeForTest(0f)
+            writeFloatLeForTest(0f)
+            writeFloatLeForTest(10f)
+            writeFloatLeForTest(10f)
+            writeFloatLeForTest(0f)
+            writeFloatLeForTest(0f)
+            writeFloatLeForTest(0f)
+            writeFloatLeForTest(0f)
+            writeFloatLeForTest(1f)
+            write(0)
+            write(0)
+            writeIntLeForTest(0)
+            write(0)
+            write(0)
+        }.toByteArray()
+
+        val restored = PurSceneCodec().read(ByteArrayInputStream(bytes))
+
+        assertTrue(!restored.images.single().showsOriginalResolution)
     }
 
     @Test
@@ -157,5 +225,33 @@ class PurSceneCodecCustomFormatTest {
             return index
         }
         return -1
+    }
+
+    private fun ByteArrayOutputStream.writeStringForTest(value: String) {
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        writeIntLeForTest(bytes.size)
+        write(bytes)
+    }
+
+    private fun ByteArrayOutputStream.writeIntLeForTest(value: Int) {
+        write(
+            ByteBuffer.allocate(Int.SIZE_BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(value)
+                .array(),
+        )
+    }
+
+    private fun ByteArrayOutputStream.writeLongLeForTest(value: Long) {
+        write(
+            ByteBuffer.allocate(Long.SIZE_BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putLong(value)
+                .array(),
+        )
+    }
+
+    private fun ByteArrayOutputStream.writeFloatLeForTest(value: Float) {
+        writeIntLeForTest(value.toBits())
     }
 }
