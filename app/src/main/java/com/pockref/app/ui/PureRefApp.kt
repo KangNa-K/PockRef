@@ -7972,26 +7972,61 @@ private fun PockRefCanvas(
         }
     }
 
-    Canvas(
-        modifier = modifier
-            .background(state.backgroundColor)
-            .onSizeChanged { canvasSize ->
-                onAction(PockRefAction.UpdateCanvasViewport(canvasSize.width.toFloat(), canvasSize.height.toFloat()))
-                // Mirror the viewport into a local
-                // mutableStateOf so the drag-to-edge
-                // auto-scroll worker (a sibling
-                // [LaunchedEffect]) can read the latest
-                // size without depending on the
-                // Reducer round-trip — important when
-                // the screen rotates mid-gesture and the
-                // worker's cached viewport would
-                // otherwise be one frame stale.
-                autoScrollViewportSize.value = Size(
-                    canvasSize.width.toFloat(),
-                    canvasSize.height.toFloat(),
-                )
-            }
-            .pointerInput(Unit) {
+    var selectionHdRotationActive by remember { mutableStateOf(false) }
+    val selectedImagesForHd = remember(
+        state.images,
+        state.selectedImageId,
+        state.selectedImageIds,
+    ) {
+        val selectedIds = state.selectedImageIds.ifEmpty {
+            state.selectedImageId?.let(::setOf).orEmpty()
+        }
+        state.images.filter { it.id in selectedIds }
+    }
+    val selectionHdFrame = remember(
+        selectedImagesForHd,
+        state.canvasOffset,
+        state.canvasScale,
+        state.canvasViewportSize,
+    ) {
+        val viewport = state.canvasViewportSize
+        if (selectedImagesForHd.isEmpty() ||
+            viewport.width <= 0f ||
+            viewport.height <= 0f
+        ) {
+            null
+        } else {
+            projectSelectionFrameToScreen(
+                worldFrame = groupSelectionAabb(selectedImagesForHd).rect,
+                canvasOffset = state.canvasOffset,
+                canvasScale = state.canvasScale,
+                viewportSize = Size(viewport.width, viewport.height),
+            )
+        }
+    }
+
+    Box(modifier = modifier) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(state.backgroundColor)
+                .onSizeChanged { canvasSize ->
+                    onAction(PockRefAction.UpdateCanvasViewport(canvasSize.width.toFloat(), canvasSize.height.toFloat()))
+                    // Mirror the viewport into a local
+                    // mutableStateOf so the drag-to-edge
+                    // auto-scroll worker (a sibling
+                    // [LaunchedEffect]) can read the latest
+                    // size without depending on the
+                    // Reducer round-trip — important when
+                    // the screen rotates mid-gesture and the
+                    // worker's cached viewport would
+                    // otherwise be one frame stale.
+                    autoScrollViewportSize.value = Size(
+                        canvasSize.width.toFloat(),
+                        canvasSize.height.toFloat(),
+                    )
+                }
+                .pointerInput(Unit) {
                 awaitEachGesture {
                     // Use awaitPointerEvent (not awaitFirstDown) so
                     // we can read [PointerEvent.buttons] for the S
@@ -8503,6 +8538,7 @@ private fun PockRefCanvas(
                                     )
                                     currentOnAction(PockRefAction.BeginSceneGesture)
                                     rotationHandleDragActive = true
+                                    selectionHdRotationActive = true
                                 }
 
                                 // V_NOW (2026-06-11 "旋转图片
@@ -8884,6 +8920,7 @@ private fun PockRefCanvas(
                                 currentOnAction(PockRefAction.EndSceneGesture)
                                 rotationHandleDragActive = false
                                 rotationHandleDrag = null
+                                selectionHdRotationActive = false
                             }
                             if (activeDragImageId != null && dragStarted) {
                                 currentOnAction(PockRefAction.CommitImageDrag)
@@ -9494,6 +9531,7 @@ private fun PockRefCanvas(
                         currentOnAction(PockRefAction.EndSceneGesture)
                         rotationHandleDragActive = false
                         rotationHandleDrag = null
+                        selectionHdRotationActive = false
                     }
 
                     // V_NOW (2026-06-10 #3 corner-handle
@@ -10310,6 +10348,38 @@ private fun PockRefCanvas(
                 topLeft = Offset(rect.left, rect.top),
                 size = Size(rect.width(), rect.height()),
                 style = Stroke(width = 2f),
+            )
+        }
+        }
+
+        val containsGif = selectedImagesForHd.any { isGifMimeType(it.mimeType) }
+        if (selectionHdFrame != null &&
+            shouldShowOriginalResolutionControl(
+                rotationActive = selectionHdRotationActive,
+                containsAnimatedGif = containsGif,
+            )
+        ) {
+            val controlDensity = LocalDensity.current
+            val controlWidthPx = with(controlDensity) { 52.dp.toPx() }
+            val controlHeightPx = with(controlDensity) { 44.dp.toPx() }
+            val insetPx = with(controlDensity) { 8.dp.toPx() }
+            val controlCenter = originalResolutionControlPosition(
+                frame = selectionHdFrame,
+                controlWidthPx = controlWidthPx,
+                controlHeightPx = controlHeightPx,
+                insetPx = insetPx,
+            )
+            SelectionHdControl(
+                state = stateFor(selectedImagesForHd.map { it.showsOriginalResolution }),
+                onClick = {
+                    onAction(PockRefAction.ToggleOriginalDisplaySelected)
+                },
+                modifier = Modifier.offset {
+                    IntOffset(
+                        x = (controlCenter.x - controlWidthPx / 2f).roundToInt(),
+                        y = (controlCenter.y - controlHeightPx / 2f).roundToInt(),
+                    )
+                },
             )
         }
     }

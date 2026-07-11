@@ -2,6 +2,7 @@ package com.pockref.app.ui
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -89,6 +90,19 @@ class SelectionHdControlPolicyTest {
         assertEquals(
             Offset(166f, 22f),
             originalResolutionControlPosition(Rect(0f, 0f, 200f, 44f)),
+        )
+    }
+
+    @Test
+    fun projectSelectionFrameToScreen_appliesCanvasPanAndScaleAroundViewportCenter() {
+        assertEquals(
+            Rect(90f, 0f, 170f, 40f),
+            projectSelectionFrameToScreen(
+                worldFrame = Rect(-10f, -20f, 30f, 0f),
+                canvasOffset = Offset(10f, -10f),
+                canvasScale = 2f,
+                viewportSize = Size(200f, 100f),
+            ),
         )
     }
 }

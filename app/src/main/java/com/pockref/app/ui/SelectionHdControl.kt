@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -42,18 +43,41 @@ fun shouldShowOriginalResolutionControl(
     containsAnimatedGif: Boolean,
 ): Boolean = !rotationActive && !containsAnimatedGif
 
-fun originalResolutionControlPosition(frame: Rect): Offset {
-    val x = if (frame.width >= CONTROL_WIDTH_PX + CONTROL_INSET_PX * 2) {
-        frame.right - CONTROL_INSET_PX - CONTROL_WIDTH_PX / 2
+fun originalResolutionControlPosition(
+    frame: Rect,
+    controlWidthPx: Float = CONTROL_WIDTH_PX,
+    controlHeightPx: Float = CONTROL_HEIGHT_PX,
+    insetPx: Float = CONTROL_INSET_PX,
+): Offset {
+    val x = if (frame.width >= controlWidthPx + insetPx * 2) {
+        frame.right - insetPx - controlWidthPx / 2
     } else {
         frame.center.x
     }
-    val y = if (frame.height >= CONTROL_HEIGHT_PX + CONTROL_INSET_PX * 2) {
-        frame.bottom - CONTROL_INSET_PX - CONTROL_HEIGHT_PX / 2
+    val y = if (frame.height >= controlHeightPx + insetPx * 2) {
+        frame.bottom - insetPx - controlHeightPx / 2
     } else {
         frame.center.y
     }
     return Offset(x, y)
+}
+
+fun projectSelectionFrameToScreen(
+    worldFrame: Rect,
+    canvasOffset: Offset,
+    canvasScale: Float,
+    viewportSize: Size,
+): Rect {
+    val center = Offset(
+        x = viewportSize.width / 2f + canvasOffset.x,
+        y = viewportSize.height / 2f + canvasOffset.y,
+    )
+    return Rect(
+        left = center.x + worldFrame.left * canvasScale,
+        top = center.y + worldFrame.top * canvasScale,
+        right = center.x + worldFrame.right * canvasScale,
+        bottom = center.y + worldFrame.bottom * canvasScale,
+    )
 }
 
 @Composable
