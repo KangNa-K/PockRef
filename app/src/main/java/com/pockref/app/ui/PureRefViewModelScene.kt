@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.ImageOptimizer
 import com.pockref.app.data.decodeOriginalImage
+import com.pockref.app.data.sceneImageFromOriginalImport
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.CropAspect
@@ -254,38 +255,11 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     filtered.mapIndexedNotNull { index, uri ->
                         val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                             ?: return@mapIndexedNotNull null
-                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
-                        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@mapIndexedNotNull null
-
-                        val maxSide = 512
-                        val scale = if (maxOf(bounds.outWidth, bounds.outHeight) > maxSide) {
-                            maxSide.toFloat() / maxOf(bounds.outWidth, bounds.outHeight)
-                        } else 1f
-                        val targetW = (bounds.outWidth * scale).toInt().coerceAtLeast(1)
-                        val targetH = (bounds.outHeight * scale).toInt().coerceAtLeast(1)
-
-                        val sampleSize = calculateSampleSize(bounds.outWidth, bounds.outHeight, targetW, targetH)
-                        val decodeOpts = BitmapFactory.Options().apply {
-                            inSampleSize = sampleSize
-                            inPreferredConfig = Bitmap.Config.ARGB_8888
-                        }
-                        val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)
+                        val originalMime = mainVm.contentResolver.getType(uri) ?: "application/octet-stream"
+                        val importedImage = decodeOriginalImage(rawBytes, originalMime)
                             ?: return@mapIndexedNotNull null
-                        val scaled = if (decoded.width != targetW || decoded.height != targetH) {
-                            Bitmap.createScaledBitmap(decoded, targetW, targetH, true).also {
-                                if (it !== decoded) decoded.recycle()
-                            }
-                        } else decoded
-
-                        val pngStream = ByteArrayOutputStream()
-                        scaled.compress(Bitmap.CompressFormat.PNG, 100, pngStream)
-                        val pngBytes = pngStream.toByteArray()
-                        scaled.recycle()
-
-                        val displayScale = columnWidth / targetW.toFloat()
-                        val displayW = columnWidth
-                        val displayH = targetH * displayScale
+                        val displayH = importedImage.height.toFloat() * columnWidth /
+                            importedImage.width.coerceAtLeast(1)
 
                         val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
                         val totalIndex = existingCount + index
@@ -294,15 +268,12 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         val centerX = placementOrigin.x + col * (columnWidth + imageSpacing) + columnWidth / 2f
                         val centerY = placementOrigin.y + row * (displayH + imageSpacing) + displayH / 2f
 
-                        SceneImage(
+                        sceneImageFromOriginalImport(
                             name = mainVm.queryDisplayName(uri) ?: "image_${totalIndex + 1}",
-                            mimeType = "image/png",
-                            imageBytes = pngBytes,
-                            intrinsicWidth = targetW,
-                            intrinsicHeight = targetH,
+                            imported = importedImage,
                             center = Offset(centerX, centerY),
-                            displaySize = Size2D(displayW, displayH),
                             zIndex = totalIndex,
+                            displayWidth = columnWidth,
                         )
                     }
                 }
@@ -419,8 +390,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         val result = decodeOriginalImage(rawBytes, originalMime)
                             ?: return@mapIndexedNotNull null
                         val baseWidth = result.width.toFloat().coerceAtMost(720f)
-                        val scale = baseWidth / result.width.toFloat()
-                        val baseHeight = result.height * scale
+                        val baseHeight = result.height.toFloat() * baseWidth / result.width.coerceAtLeast(1)
                         // Grid layout: 4 columns max, placed below
                         // existing images.
                         val maxColumns = 4
@@ -428,15 +398,12 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         val row = index / maxColumns
                         val centerX = placementOrigin.x + col * (baseWidth + imageSpacing) + baseWidth / 2f
                         val centerY = placementOrigin.y + row * (baseHeight + imageSpacing) + baseHeight / 2f
-                        SceneImage(
+                        sceneImageFromOriginalImport(
                             name = mainVm.queryDisplayName(uri) ?: "image_${existingCount + index + 1}",
-                            mimeType = result.mimeType,
-                            imageBytes = result.bytes,
-                            intrinsicWidth = result.width,
-                            intrinsicHeight = result.height,
+                            imported = result,
                             center = Offset(centerX, centerY),
-                            displaySize = Size2D(baseWidth, baseHeight),
                             zIndex = existingCount + index,
+                            displayWidth = baseWidth,
                         )
                     }
                 }
@@ -551,6 +518,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 mainVm.setBusy(false)
                 return@launch
             }
+            mainVm.autoSaveManager.clearRecoveryBackups()
             mainVm.undoStack.clear()
             mainVm.redoStack.clear()
             mainVm.sceneGestureActive = false
@@ -612,6 +580,50 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.batchController.fitToScreen()
             mainVm.setBusy(false)
         }
+    }
+
+    fun restoreAutoSave(scene: PockRefScene) {
+        mainVm.undoStack.clear()
+        mainVm.redoStack.clear()
+        mainVm.markupHistory.clear()
+        mainVm.sceneGestureActive = false
+        mainVm.gestureUndoRecorded = false
+        mainVm.currentSceneUri = null
+        mainVm.isImportedPurFile = false
+        mainVm.lastSaveSnapshotHash = ""
+        mainVm._uiState.update {
+            it.copy(
+                sceneName = SceneNaming.sanitizeForStorage(scene.name.ifBlank { "Scene" }),
+                backgroundColor = scene.backgroundColor,
+                backgroundCustomColor = scene.backgroundColor,
+                images = scene.images,
+                markupStrokes = scene.markupStrokes,
+                markupTexts = scene.markupTexts,
+                sceneDefaultSpacing = scene.defaultSpacing,
+                sceneDefaultAlignment = scene.defaultAlignment,
+                markupVisible = true,
+                markupModeActive = false,
+                draftMarkupStroke = null,
+                markupSessionBaseStrokes = null,
+                markupSessionBaseTexts = null,
+                pendingMarkupTextPosition = null,
+                pendingMarkupTextValue = "",
+                pendingMarkupTextFontSize = 80f,
+                editingMarkupTextId = null,
+                selectedImageId = null,
+                selectedImageIds = emptySet(),
+                multiSelectMode = false,
+                canUndo = false,
+                canRedo = false,
+                canvasOffset = Offset.Zero,
+                canvasScale = 1f,
+                fittedImageId = null,
+                transientDragImageIds = emptySet(),
+                transientDragDelta = Offset.Zero,
+            )
+        }
+        mainVm.syncDirectSaveState()
+        mainVm.batchController.fitToScreen()
     }
 
     private fun openSceneFailureMessage(error: Throwable): String {
@@ -1785,7 +1797,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         mainVm.redoStack.clear()
         mainVm.currentSceneUri = null
         mainVm.codec.release()
-        mainVm.autoSaveManager.clearAutoSaveState()
+        mainVm.autoSaveManager.clearRecoveryBackups()
+        mainVm.recoverySessionManager.resetSession()
         // V_NOW (follow-up after "1 min never fires"
         // bug): the previous version of this function
         // also reset `mainVm.lastAutoSaveSnapshotHash =

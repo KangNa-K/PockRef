@@ -40,7 +40,7 @@ import kotlin.math.sin
 class PurSceneCodec {
     fun write(scene: PockRefScene, output: OutputStream) {
         output.write(MAGIC)
-        output.writeIntLe(scene.version)
+        output.writeIntLe(CUSTOM_SCENE_VERSION)
         output.writeStringUtf8(scene.name)
         output.writeLongLe(scene.backgroundColor.value.toLong())
         output.writeIntLe(scene.images.size)
@@ -75,8 +75,10 @@ class PurSceneCodec {
                 output.writeFloatLe(crop.right)
                 output.writeFloatLe(crop.bottom)
             }
+            output.writeBooleanByte(image.showsOriginalResolution)
         }
         output.writeMarkupBlock(scene)
+        output.writeSceneSettingsBlock(scene)
     }
 
     fun writeDesktopCompatible(scene: PockRefScene, output: OutputStream, workDir: File) {
@@ -93,6 +95,7 @@ class PurSceneCodec {
         val defaultAlignment: ImageAlignment = ImageAlignment.CENTER,
         val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
         val markupTexts: List<CanvasMarkupText> = emptyList(),
+        val originalResolutionImageIndexes: Set<Int> = emptySet(),
     )
 
     private data class DesktopMarkupOverlay(
@@ -141,7 +144,7 @@ class PurSceneCodec {
         }
 
         legacy.writeStringUtf16Be(scene.name)
-        legacy.writeLegacySceneMetadata(scene)
+        legacy.writeLegacySceneMetadata(scene, images)
         val fileLength = legacy.size()
 
         imageRecords.forEach { record ->
@@ -176,24 +179,36 @@ class PurSceneCodec {
         output.write(withRefs)
     }
 
-    private fun legacySceneMetadataPayload(scene: PockRefScene): ByteArray =
+    private fun legacySceneMetadataPayload(
+        scene: PockRefScene,
+        images: List<SceneImage> = scene.images.sortedBy { it.zIndex },
+    ): ByteArray =
         ByteArrayOutputStream().apply {
             writeDoubleBe(scene.defaultSpacing.width.toDouble())
             writeDoubleBe(scene.defaultSpacing.height.toDouble())
             writeIntBe(scene.defaultAlignment.ordinal)
             writeMarkupBlock(scene)
+            writeOriginalResolutionBlock(images)
         }.toByteArray()
 
-    private fun OutputStream.writeLegacySceneMetadata(scene: PockRefScene) {
-        val metadataPayload = legacySceneMetadataPayload(scene)
+    private fun OutputStream.writeLegacySceneMetadata(scene: PockRefScene, images: List<SceneImage>) {
+        val metadataPayload = legacySceneMetadataPayload(scene, images)
         writeIntBe(metadataPayload.size)
         write(metadataPayload)
     }
 
-    private fun RandomAccessFile.writeLegacySceneMetadata(scene: PockRefScene) {
-        val metadataPayload = legacySceneMetadataPayload(scene)
+    private fun RandomAccessFile.writeLegacySceneMetadata(scene: PockRefScene, images: List<SceneImage>) {
+        val metadataPayload = legacySceneMetadataPayload(scene, images)
         writeIntBe(metadataPayload.size)
         write(metadataPayload)
+    }
+
+    private fun OutputStream.writeOriginalResolutionBlock(images: List<SceneImage>) {
+        write(ORIGINAL_RESOLUTION_MAGIC)
+        writeIntBe(images.size)
+        images.forEach { image ->
+            write(if (image.showsOriginalResolution) 1 else 0)
+        }
     }
 
     private fun OutputStream.writeMarkupBlock(scene: PockRefScene) {
@@ -218,6 +233,13 @@ class PurSceneCodec {
             writeLongLe(text.color.value.toLong())
             writeFloatLe(text.fontSize)
         }
+    }
+
+    private fun OutputStream.writeSceneSettingsBlock(scene: PockRefScene) {
+        write(SCENE_SETTINGS_MAGIC)
+        writeFloatLe(scene.defaultSpacing.width)
+        writeFloatLe(scene.defaultSpacing.height)
+        writeIntLe(scene.defaultAlignment.ordinal)
     }
 
     private fun PockRefScene.withDesktopMarkupOverlay(): PockRefScene {
@@ -444,8 +466,8 @@ class PurSceneCodec {
                 }
 
                 raf.writeStringUtf16Be(scene.name)
-                if (includePockRefExtensions) {
-                    raf.writeLegacySceneMetadata(scene)
+                if (includePockRefExtensions || images.any { it.showsOriginalResolution }) {
+                    raf.writeLegacySceneMetadata(scene, images)
                 }
 
                 val fileLength = raf.filePointer
@@ -476,11 +498,12 @@ class PurSceneCodec {
             bytes.copyOfRange(0, PNG_SIGNATURE.size).contentEquals(PNG_SIGNATURE)
         val isJpeg = !isPng && bytes.size >= JPEG_SIGNATURE.size &&
             bytes.copyOfRange(0, JPEG_SIGNATURE.size).contentEquals(JPEG_SIGNATURE)
-        val isWebp = !isPng && !isJpeg && bytes.size >= 4 &&
+        val isGif = !isPng && !isJpeg && bytes.hasGifHeader()
+        val isWebp = !isPng && !isJpeg && !isGif && bytes.size >= 4 &&
             bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() &&
             bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte()
 
-        if (isPng || isJpeg || (allowWebp && isWebp)) {
+        if (isPng || isJpeg || isGif || (allowWebp && isWebp)) {
             output.write(bytes)
         } else {
             val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -697,6 +720,9 @@ class PurSceneCodec {
     private fun applyLegacySceneExtension(file: File, scene: PockRefScene): PockRefScene {
         val extension = readLegacySceneExtensionFromFile(file) ?: return scene
         return scene.copy(
+            images = scene.images.mapIndexed { index, image ->
+                image.copy(showsOriginalResolution = index in extension.originalResolutionImageIndexes)
+            },
             defaultSpacing = extension.defaultSpacing,
             defaultAlignment = extension.defaultAlignment,
             markupStrokes = extension.markupStrokes,
@@ -811,13 +837,40 @@ class PurSceneCodec {
         } else {
             emptyList<CanvasMarkupStroke>() to emptyList()
         }
+        val originalResolutionImageIndexes = readOriginalResolutionImageIndexes(
+            bytes = bytes,
+            payloadStart = payloadStart + SCENE_METADATA_PAYLOAD_SIZE,
+            payloadEnd = payloadEnd,
+        )
 
         return LegacySceneExtension(
             defaultSpacing = defaultSpacing,
             defaultAlignment = defaultAlignment,
             markupStrokes = markupStrokes,
             markupTexts = markupTexts,
+            originalResolutionImageIndexes = originalResolutionImageIndexes,
         ) to payloadEnd
+    }
+
+    private fun readOriginalResolutionImageIndexes(
+        bytes: ByteArray,
+        payloadStart: Int,
+        payloadEnd: Int,
+    ): Set<Int> {
+        val headerSize = ORIGINAL_RESOLUTION_MAGIC.size + Int.SIZE_BYTES
+        if (payloadEnd - payloadStart < headerSize) return emptySet()
+        for (offset in payloadStart..payloadEnd - headerSize) {
+            if (!bytes.matchesAt(ORIGINAL_RESOLUTION_MAGIC, offset)) continue
+            val imageCount = readIntBe(bytes, offset + ORIGINAL_RESOLUTION_MAGIC.size)
+            val flagsStart = offset + headerSize
+            if (imageCount < 0 || flagsStart + imageCount != payloadEnd) return emptySet()
+            return buildSet {
+                repeat(imageCount) { index ->
+                    if (bytes[flagsStart + index].toInt() != 0) add(index)
+                }
+            }
+        }
+        return emptySet()
     }
 
     private fun tryReadEmbeddedImagesFallback(file: File, fileLen: Long): PockRefScene? {
@@ -918,7 +971,11 @@ class PurSceneCodec {
                             bottom = data.readFloatLe(),
                         )
                     } else null
-                    base.copy(locked = locked, cropRect = cropRect)
+                    base.copy(
+                        locked = locked,
+                        cropRect = cropRect,
+                        showsOriginalResolution = if (version >= 3) data.readBooleanByte() else false,
+                    )
                 } else {
                     base
                 }
@@ -926,6 +983,7 @@ class PurSceneCodec {
             }
         }
         val (markupStrokes, markupTexts) = readMarkupTail(data)
+        val (defaultSpacing, defaultAlignment) = readSceneSettingsTail(data)
         return PockRefScene(
             version = version,
             name = name,
@@ -933,6 +991,8 @@ class PurSceneCodec {
             images = images,
             markupStrokes = markupStrokes,
             markupTexts = markupTexts,
+            defaultSpacing = defaultSpacing,
+            defaultAlignment = defaultAlignment,
         )
     }
 
@@ -988,7 +1048,11 @@ class PurSceneCodec {
                     } else {
                         null
                     }
-                    base.copy(locked = locked, cropRect = cropRect)
+                    base.copy(
+                        locked = locked,
+                        cropRect = cropRect,
+                        showsOriginalResolution = if (version >= 3) raf.readBooleanByte() else false,
+                    )
                 } else {
                     base
                 }
@@ -996,6 +1060,7 @@ class PurSceneCodec {
             }
         }
         val (markupStrokes, markupTexts) = readMarkupTail(raf, fileLen)
+        val (defaultSpacing, defaultAlignment) = readSceneSettingsTail(raf, fileLen)
         return PockRefScene(
             version = version,
             name = name,
@@ -1003,7 +1068,37 @@ class PurSceneCodec {
             images = images,
             markupStrokes = markupStrokes,
             markupTexts = markupTexts,
+            defaultSpacing = defaultSpacing,
+            defaultAlignment = defaultAlignment,
         )
+    }
+
+    private fun readSceneSettingsTail(data: DataInputStream): Pair<Size2D, ImageAlignment> {
+        if (data.available() < SCENE_SETTINGS_MAGIC.size + 12) {
+            return Size2D(8f, 8f) to ImageAlignment.CENTER
+        }
+        val marker = ByteArray(SCENE_SETTINGS_MAGIC.size)
+        data.readFully(marker)
+        if (!marker.contentEquals(SCENE_SETTINGS_MAGIC)) {
+            return Size2D(8f, 8f) to ImageAlignment.CENTER
+        }
+        val spacing = Size2D(data.readFloatLe(), data.readFloatLe())
+        val alignment = ImageAlignment.entries.getOrNull(data.readIntLe()) ?: ImageAlignment.CENTER
+        return spacing to alignment
+    }
+
+    private fun readSceneSettingsTail(raf: RandomAccessFile, fileLen: Long): Pair<Size2D, ImageAlignment> {
+        if (fileLen - raf.filePointer < SCENE_SETTINGS_MAGIC.size + 12) {
+            return Size2D(8f, 8f) to ImageAlignment.CENTER
+        }
+        val marker = ByteArray(SCENE_SETTINGS_MAGIC.size)
+        raf.readFully(marker)
+        if (!marker.contentEquals(SCENE_SETTINGS_MAGIC)) {
+            return Size2D(8f, 8f) to ImageAlignment.CENTER
+        }
+        val spacing = Size2D(raf.readFloatLe(), raf.readFloatLe())
+        val alignment = ImageAlignment.entries.getOrNull(raf.readIntLe()) ?: ImageAlignment.CENTER
+        return spacing to alignment
     }
 
     private fun readMarkupTail(data: DataInputStream): Pair<List<CanvasMarkupStroke>, List<CanvasMarkupText>> {
@@ -1113,17 +1208,14 @@ class PurSceneCodec {
             var cursor = 224
             repeat(imageCount) {
                 val start = cursor
-                val pngEnd = findPngEnd(bytes, cursor)
-                val jpegEnd = findJpegEnd(bytes, cursor)
-                val webpEnd = findWebpEnd(bytes, cursor)
+                val imageEndCandidates = listOfNotNull(
+                    findPngEnd(bytes, cursor),
+                    findJpegEnd(bytes, cursor),
+                    findWebpEnd(bytes, cursor),
+                    findGifEnd(bytes, cursor),
+                )
                 val end = when {
-                    pngEnd != null && jpegEnd != null && webpEnd != null -> minOf(pngEnd, jpegEnd, webpEnd)
-                    pngEnd != null && jpegEnd != null -> minOf(pngEnd, jpegEnd)
-                    pngEnd != null && webpEnd != null -> minOf(pngEnd, webpEnd)
-                    jpegEnd != null && webpEnd != null -> minOf(jpegEnd, webpEnd)
-                    pngEnd != null -> pngEnd
-                    jpegEnd != null -> jpegEnd
-                    webpEnd != null -> webpEnd
+                    imageEndCandidates.isNotEmpty() -> imageEndCandidates.min()
                     else -> error("Missing image data at offset $cursor")
                 }
                 val imageBytes = bytes.copyOfRange(start, end)
@@ -1243,7 +1335,8 @@ class PurSceneCodec {
             val size = probeRasterSize(blob.bytes)
             val isPng = blob.bytes.size >= PNG_SIGNATURE.size &&
                 blob.bytes.copyOfRange(0, PNG_SIGNATURE.size).contentEquals(PNG_SIGNATURE)
-            val isWebp = !isPng && blob.bytes.size >= WEBP_RIFF_SIGNATURE.size + 4 &&
+            val isGif = !isPng && blob.bytes.hasGifHeader()
+            val isWebp = !isPng && !isGif && blob.bytes.size >= WEBP_RIFF_SIGNATURE.size + 4 &&
                 blob.bytes.copyOfRange(0, WEBP_RIFF_SIGNATURE.size).contentEquals(WEBP_RIFF_SIGNATURE) &&
                 blob.bytes.copyOfRange(8, 12).contentEquals(WEBP_MARKER)
             val display = displayFromMatrix(transform.matrix, size.first, size.second)
@@ -1258,6 +1351,7 @@ class PurSceneCodec {
                 name = transform.name.ifBlank { transform.source.ifBlank { "image_$id" } },
                 mimeType = when {
                     isPng -> "image/png"
+                    isGif -> "image/gif"
                     isWebp -> "image/webp"
                     else -> "image/jpeg"
                 },
@@ -1292,7 +1386,9 @@ class PurSceneCodec {
             // the title reflects the file they opened.
             name = folderLocation.ifBlank { "" },
             backgroundColor = Color(0xFF111111),
-            images = images.sortedBy { it.zIndex },
+            images = images.mapIndexed { index, image ->
+                image.copy(showsOriginalResolution = index in extension.originalResolutionImageIndexes)
+            }.sortedBy { it.zIndex },
             markupStrokes = extension.markupStrokes,
             markupTexts = extension.markupTexts,
             defaultSpacing = extension.defaultSpacing,
@@ -1304,19 +1400,19 @@ class PurSceneCodec {
         val images = mutableListOf<SceneImage>()
         var cursor = 0
         while (cursor < bytes.size) {
-            val pngStart = bytes.indexOfSubArray(PNG_SIGNATURE, cursor)
-            val jpegStart = bytes.indexOfSubArray(JPEG_SIGNATURE, cursor)
-            val nextStart = when {
-                pngStart == null -> jpegStart
-                jpegStart == null -> pngStart
-                else -> minOf(pngStart, jpegStart)
-            } ?: break
+            val nextStart = listOfNotNull(
+                bytes.indexOfSubArray(PNG_SIGNATURE, cursor),
+                bytes.indexOfSubArray(JPEG_SIGNATURE, cursor),
+                bytes.indexOfSubArray(GIF87A_SIGNATURE, cursor),
+                bytes.indexOfSubArray(GIF89A_SIGNATURE, cursor),
+            ).minOrNull() ?: break
 
-            val isPng = pngStart == nextStart
-            val end = if (isPng) {
-                findPngEnd(bytes, nextStart)
-            } else {
-                findJpegEnd(bytes, nextStart)
+            val isPng = bytes.matchesAt(PNG_SIGNATURE, nextStart)
+            val isGif = bytes.hasGifHeader(nextStart)
+            val end = when {
+                isPng -> findPngEnd(bytes, nextStart)
+                isGif -> findGifEnd(bytes, nextStart)
+                else -> findJpegEnd(bytes, nextStart)
             } ?: break
 
             val imageBytes = bytes.copyOfRange(nextStart, end)
@@ -1327,7 +1423,11 @@ class PurSceneCodec {
             images += SceneImage(
                 id = index.toString(),
                 name = "image_$index",
-                mimeType = if (isPng) "image/png" else "image/jpeg",
+                mimeType = when {
+                    isPng -> "image/png"
+                    isGif -> "image/gif"
+                    else -> "image/jpeg"
+                },
                 imageBytes = imageBytes,
                 intrinsicWidth = size.first,
                 intrinsicHeight = size.second,
@@ -1440,13 +1540,67 @@ class PurSceneCodec {
         return endIndex
     }
 
+    private fun findGifEnd(bytes: ByteArray, fromIndex: Int): Int? {
+        if (!bytes.hasGifHeader(fromIndex)) return null
+        if (fromIndex + GIF_LOGICAL_SCREEN_DESCRIPTOR_END > bytes.size) return null
+
+        val packed = bytes[fromIndex + GIF_PACKED_FIELD_OFFSET].toInt() and 0xFF
+        var cursor = fromIndex + GIF_LOGICAL_SCREEN_DESCRIPTOR_END
+        if ((packed and GIF_GLOBAL_COLOR_TABLE_FLAG) != 0) {
+            cursor += 3 * (1 shl ((packed and GIF_COLOR_TABLE_SIZE_MASK) + 1))
+        }
+
+        while (cursor < bytes.size) {
+            when (bytes[cursor].toInt() and 0xFF) {
+                GIF_TRAILER -> return cursor + 1
+                GIF_EXTENSION_INTRODUCER -> {
+                    if (cursor + 2 > bytes.size) return null
+                    cursor += 2
+                    cursor = skipGifSubBlocks(bytes, cursor) ?: return null
+                }
+                GIF_IMAGE_SEPARATOR -> {
+                    if (cursor + GIF_IMAGE_DESCRIPTOR_SIZE > bytes.size) return null
+                    val imagePacked = bytes[cursor + GIF_IMAGE_PACKED_FIELD_OFFSET].toInt() and 0xFF
+                    cursor += GIF_IMAGE_DESCRIPTOR_SIZE
+                    if ((imagePacked and GIF_LOCAL_COLOR_TABLE_FLAG) != 0) {
+                        cursor += 3 * (1 shl ((imagePacked and GIF_COLOR_TABLE_SIZE_MASK) + 1))
+                    }
+                    if (cursor >= bytes.size) return null
+                    cursor += 1
+                    cursor = skipGifSubBlocks(bytes, cursor) ?: return null
+                }
+                else -> return null
+            }
+        }
+        return null
+    }
+
+    private fun skipGifSubBlocks(bytes: ByteArray, fromIndex: Int): Int? {
+        var cursor = fromIndex
+        while (cursor < bytes.size) {
+            val blockSize = bytes[cursor].toInt() and 0xFF
+            cursor += 1
+            if (blockSize == 0) return cursor
+            cursor += blockSize
+            if (cursor > bytes.size) return null
+        }
+        return null
+    }
+
     private fun probeRasterSize(bytes: ByteArray): Pair<Int, Int> {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
         if (options.outWidth > 0 && options.outHeight > 0) {
             return options.outWidth to options.outHeight
         }
-        return probePngSize(bytes) ?: probeJpegSize(bytes) ?: (1024 to 1024)
+        return probePngSize(bytes) ?: probeGifSize(bytes) ?: probeJpegSize(bytes) ?: (1024 to 1024)
+    }
+
+    private fun probeGifSize(bytes: ByteArray): Pair<Int, Int>? {
+        if (!bytes.hasGifHeader() || bytes.size < 10) return null
+        val width = readUnsignedShortLe(bytes, 6)
+        val height = readUnsignedShortLe(bytes, 8)
+        return if (width > 0 && height > 0) width to height else null
     }
 
     private fun probeJpegSize(bytes: ByteArray): Pair<Int, Int>? {
@@ -1759,6 +1913,7 @@ class PurSceneCodec {
 
     companion object {
         private const val TAG = "PurSceneCodec"
+        private const val CUSTOM_SCENE_VERSION = 3
         private const val HEADER_MIN_SIZE = 0x6C
         private const val EMBEDDED_IMAGE_FALLBACK_MAX_BYTES = 64L * 1024L * 1024L
         private const val DESKTOP_MARKUP_OVERLAY_MAX_SIDE = 4096f
@@ -1768,6 +1923,8 @@ class PurSceneCodec {
         private const val SCENE_METADATA_PAYLOAD_SIZE = 8 + 8 + 4
         private val MAGIC = byteArrayOf('P'.code.toByte(), 'R'.code.toByte(), 'F'.code.toByte(), 'A'.code.toByte())
         private val MARKUP_MAGIC = byteArrayOf('M'.code.toByte(), 'R'.code.toByte(), 'K'.code.toByte(), '1'.code.toByte())
+        private val SCENE_SETTINGS_MAGIC = byteArrayOf('S'.code.toByte(), 'E'.code.toByte(), 'T'.code.toByte(), '1'.code.toByte())
+        private val ORIGINAL_RESOLUTION_MAGIC = byteArrayOf('H'.code.toByte(), 'D'.code.toByte(), '0'.code.toByte(), '1'.code.toByte())
         private val LEGACY_IDENTITY_MATRIX = listOf(1.0, 0.0, 0.0, 1.0)
         // ASCII "PRCA" (PockRef ColorAdjust) in big-endian is
         // declared at file scope (above the class) so the top-level
@@ -1779,6 +1936,18 @@ class PurSceneCodec {
         private val PNG_FOOTER = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE.toByte(), 0x42, 0x60, 0x82.toByte())
         private val JPEG_SIGNATURE = byteArrayOf(0xFF.toByte(), 0xD8.toByte())
         private val JPEG_FOOTER = byteArrayOf(0xFF.toByte(), 0xD9.toByte())
+        private val GIF87A_SIGNATURE = byteArrayOf('G'.code.toByte(), 'I'.code.toByte(), 'F'.code.toByte(), '8'.code.toByte(), '7'.code.toByte(), 'a'.code.toByte())
+        private val GIF89A_SIGNATURE = byteArrayOf('G'.code.toByte(), 'I'.code.toByte(), 'F'.code.toByte(), '8'.code.toByte(), '9'.code.toByte(), 'a'.code.toByte())
+        private const val GIF_PACKED_FIELD_OFFSET = 10
+        private const val GIF_LOGICAL_SCREEN_DESCRIPTOR_END = 13
+        private const val GIF_GLOBAL_COLOR_TABLE_FLAG = 0x80
+        private const val GIF_LOCAL_COLOR_TABLE_FLAG = 0x80
+        private const val GIF_COLOR_TABLE_SIZE_MASK = 0x07
+        private const val GIF_EXTENSION_INTRODUCER = 0x21
+        private const val GIF_IMAGE_SEPARATOR = 0x2C
+        private const val GIF_TRAILER = 0x3B
+        private const val GIF_IMAGE_DESCRIPTOR_SIZE = 10
+        private const val GIF_IMAGE_PACKED_FIELD_OFFSET = 9
         private val WEBP_RIFF_SIGNATURE = byteArrayOf('R'.code.toByte(), 'I'.code.toByte(), 'F'.code.toByte(), 'F'.code.toByte())
         private val WEBP_MARKER = byteArrayOf('W'.code.toByte(), 'E'.code.toByte(), 'B'.code.toByte(), 'P'.code.toByte())
         private val JPEG_SIZE_MARKERS = setOf(
@@ -1849,11 +2018,23 @@ private fun ByteArray.indexOfSubArray(pattern: ByteArray, fromIndex: Int = 0): I
     return null
 }
 
+private fun ByteArray.matchesAt(pattern: ByteArray, offset: Int): Boolean =
+    offset >= 0 && offset + pattern.size <= size && pattern.indices.all { index ->
+        this[offset + index] == pattern[index]
+    }
+
+private fun ByteArray.hasGifHeader(offset: Int = 0): Boolean =
+    matchesAt(byteArrayOf('G'.code.toByte(), 'I'.code.toByte(), 'F'.code.toByte(), '8'.code.toByte(), '7'.code.toByte(), 'a'.code.toByte()), offset) ||
+        matchesAt(byteArrayOf('G'.code.toByte(), 'I'.code.toByte(), 'F'.code.toByte(), '8'.code.toByte(), '9'.code.toByte(), 'a'.code.toByte()), offset)
+
 private fun readIntBe(bytes: ByteArray, index: Int): Int =
     ByteBuffer.wrap(bytes, index, 4).order(ByteOrder.BIG_ENDIAN).int
 
 private fun readUnsignedShortBe(bytes: ByteArray, index: Int): Int =
     ByteBuffer.wrap(bytes, index, 2).order(ByteOrder.BIG_ENDIAN).short.toInt() and 0xFFFF
+
+private fun readUnsignedShortLe(bytes: ByteArray, index: Int): Int =
+    (bytes[index].toInt() and 0xFF) or ((bytes[index + 1].toInt() and 0xFF) shl 8)
 
 private fun readLongBe(bytes: ByteArray, index: Int): Long =
     ByteBuffer.wrap(bytes, index, 8).order(ByteOrder.BIG_ENDIAN).long

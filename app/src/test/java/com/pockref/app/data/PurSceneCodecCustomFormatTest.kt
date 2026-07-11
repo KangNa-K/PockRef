@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.CanvasMarkupText
+import com.pockref.app.model.ImageAlignment
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
@@ -15,8 +16,55 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.file.Files
+import java.util.Base64
 
 class PurSceneCodecCustomFormatTest {
+
+    @Test
+    fun customFormat_roundTripsOriginalResolutionPreference() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-hd-preference", ".pur")
+        file.deleteOnExit()
+        val scene = PockRefScene(
+            version = 3,
+            images = listOf(
+                SceneImage(
+                    id = "hd-image",
+                    name = "hd",
+                    mimeType = "image/png",
+                    imageBytes = byteArrayOf(1, 2, 3),
+                    intrinsicWidth = 10,
+                    intrinsicHeight = 10,
+                    center = Offset.Zero,
+                    displaySize = Size2D(10f, 10f),
+                    showsOriginalResolution = true,
+                ),
+            ),
+        )
+
+        file.outputStream().use { codec.write(scene, it) }
+
+        assertTrue(codec.readFromFile(file).images.single().showsOriginalResolution)
+    }
+
+    @Test
+    fun customFormat_restoresSceneDefaults() {
+        val codec = PurSceneCodec()
+        val file = Files.createTempFile("pockref-scene-defaults", ".pur").toFile()
+        val scene = PockRefScene(
+            version = 2,
+            defaultSpacing = Size2D(17f, 23f),
+            defaultAlignment = ImageAlignment.BOTTOM_RIGHT,
+        )
+
+        file.outputStream().use { codec.write(scene, it) }
+        val restored = codec.readFromFile(file)
+
+        assertEquals(scene.defaultSpacing, restored.defaultSpacing)
+        assertEquals(scene.defaultAlignment, restored.defaultAlignment)
+        file.delete()
+    }
     @Test
     fun desktopCompatibleWriteDoesNotUsePrfaHeader() {
         val codec = PurSceneCodec()
@@ -31,6 +79,156 @@ class PurSceneCodecCustomFormatTest {
         assertTrue(!written.copyOfRange(0, 4).contentEquals(prfa))
         assertEquals(8, ByteBuffer.wrap(written, 0, 4).order(ByteOrder.BIG_ENDIAN).int)
         assertArrayEquals("1.10".toByteArray(Charsets.UTF_16BE), written.copyOfRange(4, 12))
+    }
+
+    @Test
+    fun desktopCompatibleWriteRoundTripsOriginalResolutionPreference() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-desktop-hd-preference", ".pur")
+        file.deleteOnExit()
+        val scene = PockRefScene(
+            images = listOf(
+                SceneImage(
+                    id = "hd-image",
+                    name = "hd",
+                    mimeType = "image/png",
+                    imageBytes = Base64.getDecoder().decode(
+                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL+XQAAAABJRU5ErkJggg==",
+                    ),
+                    intrinsicWidth = 1,
+                    intrinsicHeight = 1,
+                    center = Offset.Zero,
+                    displaySize = Size2D(1f, 1f),
+                    showsOriginalResolution = true,
+                ),
+            ),
+        )
+
+        file.outputStream().use { output ->
+            codec.writeDesktopCompatible(scene, output, File("build/tmp"))
+        }
+
+        assertTrue(codec.readFromFile(file).images.single().showsOriginalResolution)
+    }
+
+    @Test
+    fun desktopCompatibleWriteKeepsOriginalResolutionPreferenceWithSortedImages() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-desktop-hd-sorted", ".pur")
+        file.deleteOnExit()
+        val png = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL+XQAAAABJRU5ErkJggg==",
+        )
+        val scene = PockRefScene(
+            images = listOf(
+                SceneImage(
+                    id = "back",
+                    name = "back",
+                    mimeType = "image/png",
+                    imageBytes = png,
+                    intrinsicWidth = 1,
+                    intrinsicHeight = 1,
+                    center = Offset.Zero,
+                    displaySize = Size2D(1f, 1f),
+                    zIndex = 5,
+                ),
+                SceneImage(
+                    id = "front",
+                    name = "front",
+                    mimeType = "image/png",
+                    imageBytes = png,
+                    intrinsicWidth = 1,
+                    intrinsicHeight = 1,
+                    center = Offset.Zero,
+                    displaySize = Size2D(1f, 1f),
+                    zIndex = 1,
+                    showsOriginalResolution = true,
+                ),
+            ),
+        )
+
+        file.outputStream().use { output ->
+            codec.writeDesktopCompatible(scene, output, File("build/tmp"))
+        }
+
+        val restored = codec.readFromFile(file).images.associateBy { it.name }
+        assertTrue(restored.getValue("front").showsOriginalResolution)
+        assertTrue(!restored.getValue("back").showsOriginalResolution)
+    }
+
+    @Test
+    fun desktopCompatibleWritePreservesGifBytesAndMimeType() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-desktop-gif", ".pur")
+        file.deleteOnExit()
+        val gif = Base64.getDecoder().decode(
+            "R0lGODlhAQABAIAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==",
+        )
+        val scene = PockRefScene(
+            images = listOf(
+                SceneImage(
+                    id = "gif",
+                    name = "animated.gif",
+                    mimeType = "image/gif",
+                    imageBytes = gif,
+                    intrinsicWidth = 1,
+                    intrinsicHeight = 1,
+                    center = Offset.Zero,
+                    displaySize = Size2D(1f, 1f),
+                ),
+            ),
+        )
+
+        file.outputStream().use { output ->
+            codec.writeDesktopCompatible(scene, output, File("build/tmp"))
+        }
+
+        val restored = codec.readFromFile(file).images.single()
+        assertEquals("image/gif", restored.mimeType)
+        assertArrayEquals(
+            gif,
+            codec.imageDecoder.readImageBytes(restored.imageByteOffset, restored.imageByteLength),
+        )
+    }
+
+    @Test
+    fun desktopCompatibleWritePreservesGifWhenExtensionContainsTrailerByte() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-desktop-gif-comment", ".pur")
+        file.deleteOnExit()
+        val gif = Base64.getDecoder().decode(
+            "R0lGODlhAQABAIAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==",
+        ).toMutableList().apply {
+            addAll(
+                19,
+                listOf(0x21, 0xFE, 0x01, 0x3B, 0x00).map { it.toByte() },
+            )
+        }.toByteArray()
+        val scene = PockRefScene(
+            images = listOf(
+                SceneImage(
+                    id = "gif",
+                    name = "animated.gif",
+                    mimeType = "image/gif",
+                    imageBytes = gif,
+                    intrinsicWidth = 1,
+                    intrinsicHeight = 1,
+                    center = Offset.Zero,
+                    displaySize = Size2D(1f, 1f),
+                ),
+            ),
+        )
+
+        file.outputStream().use { output ->
+            codec.writeDesktopCompatible(scene, output, File("build/tmp"))
+        }
+
+        val restored = codec.readFromFile(file).images.single()
+        assertEquals("image/gif", restored.mimeType)
+        assertArrayEquals(
+            gif,
+            codec.imageDecoder.readImageBytes(restored.imageByteOffset, restored.imageByteLength),
+        )
     }
 
     @Test

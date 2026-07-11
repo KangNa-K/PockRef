@@ -18,6 +18,7 @@ import com.pockref.app.data.AutoSaveManager
 import com.pockref.app.data.ImageOptimizer
 import com.pockref.app.data.PurFileParser
 import com.pockref.app.data.PurSceneCodec
+import com.pockref.app.data.RecoverySessionManager
 import com.pockref.app.data.SceneImageDecoder
 import com.pockref.app.model.BackgroundPreset
 import com.pockref.app.model.CanvasMarkupStroke
@@ -27,6 +28,7 @@ import com.pockref.app.model.PockRefUiState
 import com.pockref.app.model.RecentSceneEntry
 import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.SceneImage
+import com.pockref.app.model.hasSceneContent
 import com.pockref.app.model.toScene
 import java.io.File
 import java.io.FileInputStream
@@ -59,13 +61,12 @@ import kotlinx.coroutines.withContext
  * (sub-1px rendering kicks in around 0.005, so 0.02
  * stays well above GPU-flicker territory).
  *
- * MAX_CANVAS_SCALE = 10f: matches the previous ceiling.
- * 10× is large enough to inspect a single 4K reference
- * pixel-by-pixel; raising it would mostly invite
- * accidental 100× zooms via aggressive pinch gain.
+ * MAX_CANVAS_SCALE = 40f: keeps the zoom bounded, but gives
+ * enough headroom for HD/original-resolution inspection after
+ * the previous 10× ceiling became visibly too tight.
  */
 internal const val MIN_CANVAS_SCALE: Float = 0.02f
-internal const val MAX_CANVAS_SCALE: Float = 10f
+internal const val MAX_CANVAS_SCALE: Float = 40f
 
 /**
  * A user-facing error to surface through the Snackbar channel.
@@ -84,6 +85,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     private val prefs = application.getSharedPreferences("pockref_ui", Context.MODE_PRIVATE)
     internal val appPrefs = AppPreferences(application)
     internal val autoSaveManager = AutoSaveManager(application, codec)
+    internal val recoverySessionManager = RecoverySessionManager(application)
     internal val imageOptimizer = ImageOptimizer(application)
 
     internal val undoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
@@ -103,6 +105,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     // (or the gesture produced no change yet)".
     internal var gestureUndoBefore: PockRefUiState? = null
     private var autoSaveJob: Job? = null
+    private var recoveryAttempted = false
     internal var currentSceneUri: Uri? = null
     internal var isImportedPurFile: Boolean = false
     internal var lastSaveSnapshotHash: String = ""
@@ -364,13 +367,13 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                     "enabled=${autoSaveManager.autoSaveEnabled}, " +
                     "intervalMs=${autoSaveManager.intervalMs}, " +
                     "lastTs=${autoSaveManager.lastSaveTimestamp}")
-                if (state.images.isEmpty()) continue
+                if (!state.hasSceneContent) continue
                 val scene = state.toScene()
                 if (autoSaveManager.shouldAutoSave(System.currentTimeMillis())) {
                     Log.d("AutoSave", "shouldAutoSave=true, calling autoSave()")
-                    val saved = autoSaveManager.autoSave(scene, currentSceneUri, contentResolver)
-                    Log.d("AutoSave", "autoSave() returned saved=$saved, uri=$currentSceneUri")
-                    if (saved) {
+                    val result = autoSaveManager.autoSave(scene, currentSceneUri, contentResolver)
+                    Log.d("AutoSave", "autoSave() returned result=$result, uri=$currentSceneUri")
+                    if (result.originalSaved) {
                         // V_NOW: sync [lastSaveSnapshotHash] so
                         // [hasUnsavedChanges] returns false
                         // after a successful auto-save. Without
@@ -389,9 +392,9 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                         // wrote the durable copy
                         // ([KEY_LAST_SAVE_TS]) — this just
                         // surfaces it to the UI mirror.
-                        _uiState.update {
-                            it.copy(lastAutoSaveAt = System.currentTimeMillis())
-                        }
+                    }
+                    if (result.backupSaved) {
+                        _uiState.update { it.copy(lastAutoSaveAt = System.currentTimeMillis()) }
                     }
                 }
                 // V_NOW (follow-up after "1 min never
@@ -441,6 +444,23 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 // and hashes it fresh.
             }
         }
+    }
+
+    fun restorePreviousSessionIfAvailable() {
+        if (recoveryAttempted) return
+        recoveryAttempted = true
+        viewModelScope.launch {
+            val restored = withContext(Dispatchers.IO) {
+                autoSaveManager.loadLatestValidBackup()
+            } ?: return@launch
+            sceneController.restoreAutoSave(restored.scene)
+            reportError("已恢复上次异常退出前的内容")
+        }
+    }
+
+    fun endRecoverySession() {
+        autoSaveManager.clearRecoveryBackups()
+        recoverySessionManager.endSession()
     }
 
     internal fun computeQuickHash(scene: PockRefScene): String {
@@ -846,6 +866,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.DeleteSelected -> transformController.deleteSelected()
             PockRefAction.DuplicateSelected -> transformController.duplicateSelected()
             PockRefAction.ToggleLockSelected -> transformController.toggleLockSelected()
+            PockRefAction.ToggleOriginalDisplaySelected -> transformController.toggleOriginalDisplaySelected()
             // V_NOW (2026-06-08 "global image lock" feature):
             // flip the [PockRefUiState.globalImageLock] flag
             // in-place AND mirror to prefs so a process kill /

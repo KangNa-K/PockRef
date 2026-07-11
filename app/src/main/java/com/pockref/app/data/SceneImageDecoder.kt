@@ -30,9 +30,9 @@ import java.util.concurrent.atomic.AtomicInteger
  *    for something that's drawn once and rarely needs pixel access. HARDWARE
  *    bitmaps live in GPU memory and are nearly free to draw. Full-res stays
  *    ARGB_8888 for color-adjust / export paths.
- * 3. **Disk cache for decoded thumbnails** — SqliteBLOB under app cacheDir.
- *    A 435MB .pur with 500 images × 256px thumbnails ≈ 30MB on disk.
- *    Second open of the same file skips all decode work for thumbnails.
+ * 3. **Disk cache for bounded decode levels** — WebP files under app cacheDir.
+ *    The 128px through 4096px ladder levels survive a scene reopen; the
+ *    unbounded original level deliberately remains memory-only.
  * 4. **Mipmap-style decode ladder** — instead of two fixed decode levels
  *    (THUMBNAIL=256, FULL≤2048), decode at the size the viewport actually
  *    needs. Zoomed-out views get 128px; zoomed-in views get up to 4096px.
@@ -70,7 +70,6 @@ class SceneImageDecoder(
         )
 
         const val ORIGINAL_LEVEL = 6
-        private const val SAFE_ORIGINAL_LONG_EDGE = 6144
 
         // Maximum inSampleSize. Beyond this the quality loss is unacceptable;
         // we'd rather OOM and retry at a higher level than return a 4×4 blob.
@@ -107,6 +106,10 @@ class SceneImageDecoder(
     // (if the file changes, the fingerprint changes).
     @Volatile
     private var sourceFingerprint: String = ""
+    @Volatile
+    private var tileSourceKey: String? = null
+    @Volatile
+    private var tileSourceBytes: ByteArray? = null
 
     /**
      * Call after successfully parsing a .pur file. Keeps the RAF open
@@ -128,6 +131,8 @@ class SceneImageDecoder(
         sourceRaf = null
         sourceFile = null
         sourceFingerprint = ""
+        tileSourceKey = null
+        tileSourceBytes = null
         regionDecoders.clear()
     }
 
@@ -237,7 +242,7 @@ class SceneImageDecoder(
         val targetSide = maxOf(displayWidth, displayHeight, 1)
         val level = pickDecodeLevel(targetSide, maxLevel)
 
-        // 1. Check disk cache (thumbnail levels only) — V_NOW: guarded
+        // 1. Check disk cache (bounded ladder levels only) — V_NOW: guarded
         // by `cacheDir != null` so the by-lazy `diskCache` initializer
         // doesn't throw when a SceneImageDecoder was constructed without
         // a cache dir (e.g. the fallback `SceneImageDecoder(null)` in
@@ -249,7 +254,7 @@ class SceneImageDecoder(
         // with no UI indication. Skipping the disk cache for these
         // decodes means we lose cross-session thumbnail reuse, but the
         // in-memory decode itself still works.
-        if (level <= 1 && cacheDir != null) { // 128 or 256 — thumbnail territory
+        if (ImageDiskCachePolicy.shouldCache(level) && cacheDir != null) {
             val diskKey = diskCacheKey(image, level)
             diskCache.get(diskKey)?.let { cached ->
                 return DecodeResult(cached, level, fromDiskCache = true)
@@ -271,8 +276,8 @@ class SceneImageDecoder(
             return null
         }
 
-        // 3. Write to disk cache (thumbnail levels only) — same guard
-        if (level <= 1 && cacheDir != null) {
+        // 3. Write to disk cache (bounded ladder levels only) — same guard
+        if (ImageDiskCachePolicy.shouldCache(level) && cacheDir != null) {
             val diskKey = diskCacheKey(image, level)
             diskCache.put(diskKey, bitmap)
         }
@@ -302,6 +307,70 @@ class SceneImageDecoder(
             }
         }
         return decode(image, 256, 256, maxLevel = 1)
+    }
+
+    /**
+     * Decodes one bounded full-resolution source region for the HD tile layer.
+     * The returned bitmap never exceeds [ImageTilePlanner.TILE_EDGE_PX] on
+     * either axis, so it is safe for Compose's canvas even when the source
+     * image is far larger than the device's single-bitmap limit.
+     */
+    internal fun decodeTile(
+        image: SceneImage,
+        request: ImageTileRequest,
+    ): Bitmap? {
+        if (request.sourceWidth !in 1..ImageTilePlanner.TILE_EDGE_PX ||
+            request.sourceHeight !in 1..ImageTilePlanner.TILE_EDGE_PX
+        ) {
+            return null
+        }
+        val bytes = tileSourceBytesFor(image) ?: return null
+
+        val decoder = try {
+            @Suppress("DEPRECATION")
+            BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false)
+        } catch (e: Exception) {
+            Log.w(TAG, "Tile decoder creation failed for ${image.name}", e)
+            return null
+        }
+
+        return try {
+            val sourceRight = request.sourceLeft + request.sourceWidth
+            val sourceBottom = request.sourceTop + request.sourceHeight
+            if (request.sourceLeft < 0 || request.sourceTop < 0 ||
+                sourceRight > decoder.width || sourceBottom > decoder.height
+            ) {
+                null
+            } else {
+                decoder.decodeRegion(
+                    Rect(request.sourceLeft, request.sourceTop, sourceRight, sourceBottom),
+                    BitmapFactory.Options().apply {
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                        inMutable = false
+                    },
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Tile decode failed for ${image.name}", e)
+            null
+        } finally {
+            decoder.recycle()
+        }
+    }
+
+    private fun tileSourceBytesFor(image: SceneImage): ByteArray? {
+        if (image.imageBytes.isNotEmpty()) return image.imageBytes
+        if (image.imageByteOffset < 0 || image.imageByteLength <= 0) return null
+
+        val key = "${sourceFingerprint}_${image.id}_${image.imageByteOffset}_${image.imageByteLength}"
+        tileSourceBytes?.takeIf { tileSourceKey == key }?.let { return it }
+        return synchronized(this) {
+            tileSourceBytes?.takeIf { tileSourceKey == key }
+                ?: readImageBytes(image.imageByteOffset, image.imageByteLength)?.also { bytes ->
+                    tileSourceKey = key
+                    tileSourceBytes = bytes
+                }
+        }
     }
 
     // ── Internal decode paths ──────────────────────────────────────
@@ -469,7 +538,7 @@ class SceneImageDecoder(
 
     private fun targetSideForLevel(level: Int, requestedSide: Int): Int =
         if (level == ORIGINAL_LEVEL) {
-            requestedSide.coerceAtMost(SAFE_ORIGINAL_LONG_EDGE)
+            requestedSide
         } else {
             DECODE_LADDER[level.coerceIn(DECODE_LADDER.indices)]
         }
@@ -594,10 +663,10 @@ class SceneImageDecoder(
     }
 }
 
-// ── Disk thumbnail cache ───────────────────────────────────────────
+// ── Disk LOD cache ─────────────────────────────────────────────────
 
 /**
- * Simple file-based LRU cache for decoded thumbnails.
+ * Simple file-based LRU cache for bounded decoded image levels.
  *
  * Layout: cacheDir/<hex-hash-of-key>.webp
  *

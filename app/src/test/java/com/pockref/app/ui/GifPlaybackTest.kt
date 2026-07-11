@@ -1,5 +1,9 @@
 package com.pockref.app.ui
 
+import androidx.compose.ui.geometry.Offset
+import com.pockref.app.model.CropRect
+import com.pockref.app.model.SceneImage
+import com.pockref.app.model.Size2D
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -34,4 +38,44 @@ class GifPlaybackTest {
     fun parseGifFrameTimeline_rejectsNonGifBytes() {
         assertNull(parseGifFrameTimeline(byteArrayOf(0x00, 0x01, 0x02)))
     }
+
+    @Test
+    fun selectedGifPlaybackImageIdFor_requiresOneUncroppedGifSelection() {
+        val gif = testImage(id = "gif", mimeType = "image/gif")
+        val png = testImage(id = "png", mimeType = "image/png")
+        val croppedGif = gif.copy(id = "cropped", cropRect = CropRect())
+
+        assertEquals(
+            "gif",
+            selectedGifPlaybackImageIdFor(
+                images = listOf(gif, png),
+                selectedImageIds = setOf("gif"),
+                selectedImageId = "gif",
+            ),
+        )
+        assertNull(
+            selectedGifPlaybackImageIdFor(
+                images = listOf(gif, png),
+                selectedImageIds = setOf("gif", "png"),
+                selectedImageId = "gif",
+            ),
+        )
+        assertNull(
+            selectedGifPlaybackImageIdFor(
+                images = listOf(croppedGif),
+                selectedImageIds = setOf("cropped"),
+                selectedImageId = "cropped",
+            ),
+        )
+    }
+
+    private fun testImage(id: String, mimeType: String) = SceneImage(
+        id = id,
+        name = "$id.img",
+        mimeType = mimeType,
+        intrinsicWidth = 1,
+        intrinsicHeight = 1,
+        center = Offset.Zero,
+        displaySize = Size2D(1f, 1f),
+    )
 }

@@ -1,5 +1,6 @@
 package com.pockref.app.data
 
+import androidx.compose.ui.geometry.Offset
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -46,5 +47,30 @@ class OriginalImageImportTest {
         )
 
         assertNull(decoded)
+    }
+
+    @Test
+    fun sceneImageFromOriginalImport_keepsOriginalPixelsForDragAndDrop() {
+        val sourceBytes = byteArrayOf(9, 7, 5, 3)
+        val imported = OriginalImageImport(
+            bytes = sourceBytes,
+            width = 6000,
+            height = 4000,
+            mimeType = "image/jpeg",
+        )
+
+        val image = sceneImageFromOriginalImport(
+            name = "reference.jpg",
+            imported = imported,
+            center = Offset(100f, 200f),
+            displayWidth = 480f,
+            zIndex = 3,
+        )
+
+        assertSame(sourceBytes, image.imageBytes)
+        assertEquals(6000, image.intrinsicWidth)
+        assertEquals(4000, image.intrinsicHeight)
+        assertEquals(480f, image.displaySize.width, 0f)
+        assertEquals(320f, image.displaySize.height, 0f)
     }
 }

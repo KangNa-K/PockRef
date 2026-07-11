@@ -3,6 +3,7 @@
 package com.pockref.app.ui
 
 import android.graphics.Movie
+import com.pockref.app.model.SceneImage
 
 internal data class GifPlaybackSource(
     val movie: Movie,
@@ -98,6 +99,23 @@ internal fun parseGifFrameTimeline(bytes: ByteArray): GifFrameTimeline? {
 
 internal fun isGifMimeType(mimeType: String): Boolean =
     mimeType.equals("image/gif", ignoreCase = true)
+
+internal fun selectedGifPlaybackImageIdFor(
+    images: List<SceneImage>,
+    selectedImageIds: Set<String>,
+    selectedImageId: String?,
+): String? {
+    val selectedId = when {
+        selectedImageIds.size == 1 -> selectedImageIds.first()
+        selectedImageIds.isEmpty() -> selectedImageId
+        else -> null
+    } ?: return null
+    return images.firstOrNull { image ->
+        image.id == selectedId &&
+            isGifMimeType(image.mimeType) &&
+            image.cropRect == null
+    }?.id
+}
 
 private const val DEFAULT_GIF_FRAME_DELAY_MS = 100
 private const val MIN_GIF_FRAME_DELAY_MS = 20

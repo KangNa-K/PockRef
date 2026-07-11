@@ -1,6 +1,9 @@
 package com.pockref.app.data
 
 import android.graphics.BitmapFactory
+import androidx.compose.ui.geometry.Offset
+import com.pockref.app.model.SceneImage
+import com.pockref.app.model.Size2D
 
 internal data class ImageBounds(
     val width: Int,
@@ -14,6 +17,27 @@ internal data class OriginalImageImport(
     val height: Int,
     val mimeType: String,
 )
+
+internal fun sceneImageFromOriginalImport(
+    name: String,
+    imported: OriginalImageImport,
+    center: Offset,
+    displayWidth: Float,
+    zIndex: Int,
+): SceneImage {
+    val safeDisplayWidth = displayWidth.coerceAtLeast(1f)
+    val displayHeight = imported.height.toFloat() * safeDisplayWidth / imported.width.coerceAtLeast(1)
+    return SceneImage(
+        name = name,
+        mimeType = imported.mimeType,
+        imageBytes = imported.bytes,
+        intrinsicWidth = imported.width,
+        intrinsicHeight = imported.height,
+        center = center,
+        displaySize = Size2D(safeDisplayWidth, displayHeight),
+        zIndex = zIndex,
+    )
+}
 
 internal fun decodeOriginalImage(
     imageBytes: ByteArray,

@@ -3,14 +3,15 @@ package com.pockref.app.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
+import android.system.Os
 import android.util.Log
 import com.pockref.app.model.PockRefScene
-import com.pockref.app.model.SceneImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
+import java.io.OutputStream
+import java.security.DigestOutputStream
 import java.security.MessageDigest
 
 class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
@@ -119,24 +120,28 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
         scene: PockRefScene,
         currentSceneUri: Uri?,
         contentResolver: android.content.ContentResolver,
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): AutoSaveResult = withContext(Dispatchers.IO) {
         try {
             val sceneHash = computeSceneHash(scene)
             val lastHash = prefs.getString(KEY_LAST_CONTENT_HASH, null)
             Log.d(TAG, "autoSave: sceneHash=$sceneHash, lastHash=$lastHash, uri=$currentSceneUri")
             if (lastHash == sceneHash) {
                 Log.d(TAG, "autoSave: hash unchanged, skipping")
-                return@withContext false
+                return@withContext AutoSaveResult()
             }
 
             val backupFile = writeBackup(scene)
             Log.d(TAG, "autoSave: backup written to ${backupFile.absolutePath}")
 
+            var originalSaved = false
             if (currentSceneUri != null) {
                 try {
-                    contentResolver.openOutputStream(currentSceneUri, "wt")?.use { output ->
+                    val output = contentResolver.openOutputStream(currentSceneUri, "wt")
+                        ?: error("Unable to open output stream for $currentSceneUri")
+                    output.use {
                         writeDesktopCompatible(scene, output)
                     }
+                    originalSaved = true
                     Log.d(TAG, "autoSave: wrote to original URI $currentSceneUri")
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
@@ -154,12 +159,12 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
 
             cleanupOldBackups()
 
-            true
+            AutoSaveResult(backupSaved = true, originalSaved = originalSaved)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Auto-save failed", e)
-            false
+            AutoSaveResult()
         }
     }
 
@@ -167,14 +172,16 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
         val sanitizedName = scene.name.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
         val backupFileName = "${sanitizedName}.auto_backup.pur"
         val backupFile = File(autoSaveDir, backupFileName)
+        val tempFile = File(autoSaveDir, "$backupFileName.tmp")
 
-        FileOutputStream(backupFile).use { output ->
-            // V_NOW (2026-06-11): use the custom format (write)
-            // instead of legacy format (writeLegacyStreaming) so
-            // that cropRect and locked are persisted. See
-            // PureRefViewModelScene.writeSceneToFile for the same
-            // change and rationale.
-            codec.write(scene, output)
+        try {
+            FileOutputStream(tempFile).use { output ->
+                codec.write(scene, output)
+                output.fd.sync()
+            }
+            Os.rename(tempFile.absolutePath, backupFile.absolutePath)
+        } finally {
+            tempFile.delete()
         }
 
         return backupFile
@@ -195,26 +202,7 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
         }
     }
 
-    private fun computeSceneHash(scene: PockRefScene): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteBuffer.allocate(4)
-        md.update(scene.name.toByteArray(Charsets.UTF_8))
-        md.update(scene.backgroundColor.value.toString().toByteArray(Charsets.UTF_8))
-        scene.images.forEach { image ->
-            md.update(image.id.toByteArray(Charsets.UTF_8))
-            buffer.clear(); buffer.putInt(image.center.x.toBits()); md.update(buffer.array().copyOf())
-            buffer.clear(); buffer.putInt(image.center.y.toBits()); md.update(buffer.array().copyOf())
-            buffer.clear(); buffer.putInt(image.scale.toBits()); md.update(buffer.array().copyOf())
-            buffer.clear(); buffer.putInt(image.rotationDegrees.toBits()); md.update(buffer.array().copyOf())
-            md.update(image.flipX.toString().toByteArray())
-            md.update(image.flipY.toString().toByteArray())
-            md.update(image.zIndex.toString().toByteArray())
-            buffer.clear(); buffer.putInt(image.colorAdjust.brightness.toBits()); md.update(buffer.array().copyOf())
-            buffer.clear(); buffer.putInt(image.colorAdjust.contrast.toBits()); md.update(buffer.array().copyOf())
-            buffer.clear(); buffer.putInt(image.colorAdjust.saturation.toBits()); md.update(buffer.array().copyOf())
-        }
-        return md.digest().take(8).joinToString("") { "%02x".format(it) }
-    }
+    private fun computeSceneHash(scene: PockRefScene): String = AutoSaveHash.compute(codec, scene)
 
     fun clearAutoSaveState() {
         prefs.edit()
@@ -238,11 +226,30 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
             ?: emptyList()
     }
 
+    internal fun loadLatestValidBackup(): RestoredBackup? = loadLatestValidBackup(
+        candidates = listBackups(),
+        reader = codec::readFromFile,
+    )
+
+    fun clearRecoveryBackups() {
+        autoSaveDir.listFiles()?.forEach { file ->
+            if (file.name.endsWith(".auto_backup.pur") || file.name.endsWith(".auto_backup.pur.tmp")) {
+                file.delete()
+            }
+        }
+        clearAutoSaveState()
+    }
+
     data class BackupEntry(
         val file: File,
         val name: String,
         val timestamp: Long,
         val size: Long,
+    )
+
+    data class AutoSaveResult(
+        val backupSaved: Boolean = false,
+        val originalSaved: Boolean = false,
     )
 
     companion object {
@@ -252,35 +259,37 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
         const val DEFAULT_INTERVAL_MS = 5L * 60 * 1000
 
         /**
-         * V_NOW: discrete stops (in MINUTES) the user
-         * can pick for the auto-save interval. 13
-         * values, irregular spacing at the low end
-         * (1 + 5 — the 1-minute stop exists for users
-         * who want belt-and-suspenders paranoid
-         * backup, the 5-minute stop matches the
-         * project's historical default; everything
-         * else is 5-minute increments up to the 60-min
-         * cap).
-         *
-         * Order matters. Both the settings sheet's
-         * [androidx.compose.material3.Slider] (which
-         * uses an `index → value` indirection:
-         * `valueRange = 0f..(size-1).toFloat()` +
-         * `steps = size-2`) and the reducer
-         * ([PockRefViewModel.setAutoSaveIntervalMs]
-         * which snaps to the nearest stop) read this
-         * array — keep it as the single source of truth
-         * so a future "add 90 min / 120 min stops" edit
-         * is one line.
-         *
-         * Not `const val` because [IntArray] is a
-         * reference type (Kotlin only allows `const val`
-         * for primitives + [String]). The `val` is
-         * enough — the array is allocated once at class
-         * load and never mutated.
+         * Discrete interval choices in minutes. The settings slider and
+         * reducer both use this table as their single source of truth.
          */
         val INTERVAL_STOPS_MINUTES: IntArray = intArrayOf(
             1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60,
         )
+    }
+}
+
+internal data class RestoredBackup(
+    val entry: AutoSaveManager.BackupEntry,
+    val scene: PockRefScene,
+)
+
+internal fun loadLatestValidBackup(
+    candidates: List<AutoSaveManager.BackupEntry>,
+    reader: (File) -> PockRefScene,
+): RestoredBackup? = candidates.firstNotNullOfOrNull { entry ->
+    runCatching { RestoredBackup(entry, reader(entry.file)) }.getOrNull()
+}
+
+internal object AutoSaveHash {
+    fun compute(codec: PurSceneCodec, scene: PockRefScene): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val sink = object : OutputStream() {
+            override fun write(value: Int) = Unit
+            override fun write(bytes: ByteArray, offset: Int, length: Int) = Unit
+        }
+        DigestOutputStream(sink, md).use { output ->
+            codec.write(scene, output)
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 }

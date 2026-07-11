@@ -1788,6 +1788,20 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         }
     }
 
+    internal fun toggleOriginalDisplaySelected() {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        val selected = mainVm._uiState.value.images.filter { it.id in selectedIds }
+        if (selected.isEmpty()) return
+        val shouldEnable = !selected.all { it.showsOriginalResolution }
+        mainVm.mutateScene {
+            copy(images = images.map { image ->
+                if (image.id !in selectedIds) image
+                else image.copy(showsOriginalResolution = shouldEnable)
+            })
+        }
+    }
+
     internal fun updateColorAdjust(brightness: Float, contrast: Float, saturation: Float) {
         val selectedIds = currentSelectedIds()
         if (selectedIds.isEmpty()) return

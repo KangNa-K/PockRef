@@ -15,6 +15,8 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pockref.app.data.AppPreferences
 import com.pockref.app.data.CrashHandler
+import com.pockref.app.data.RecoverySessionManager
+import com.pockref.app.data.shouldRestoreBackup
 import com.pockref.app.model.SelectionMode
 import com.pockref.app.spen.SpenButtonDetector
 import com.pockref.app.ui.PockRefAction
@@ -25,6 +27,7 @@ import com.pockref.app.ui.theme.PockRefTheme
 class MainActivity : ComponentActivity() {
 
     private val viewModel: PockRefViewModel by viewModels()
+    private lateinit var recoverySessionManager: RecoverySessionManager
 
     /**
      * S Pen side-button state machine. Maps rising / falling
@@ -220,6 +223,8 @@ class MainActivity : ComponentActivity() {
         // Compose initialization onward. Idempotent — a
         // second install is a no-op.
         CrashHandler.install(application)
+        recoverySessionManager = RecoverySessionManager(application)
+        val previousSessionActive = recoverySessionManager.beginSession()
         enableEdgeToEdge()
 
         spenDetector = SpenButtonDetector(
@@ -256,7 +261,10 @@ class MainActivity : ComponentActivity() {
         }
 
         window.decorView.setOnDragListener(dragListener)
-        handleOpenIntent(intent)
+        val hasExternalOpenRequest = handleOpenIntent(intent)
+        if (shouldRestoreBackup(previousSessionActive, hasExternalOpenRequest, savedInstanceState != null)) {
+            viewModel.restorePreviousSessionIfAvailable()
+        }
     }
 
     override fun onPause() {
@@ -280,6 +288,13 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleOpenIntent(intent)
+    }
+
+    override fun onDestroy() {
+        if (isFinishing && !isChangingConfigurations && ::recoverySessionManager.isInitialized) {
+            viewModel.endRecoverySession()
+        }
+        super.onDestroy()
     }
 
     /**
@@ -347,8 +362,8 @@ class MainActivity : ComponentActivity() {
      * If the activity was started (or resumed) with a VIEW/SEND intent carrying
      * a `.pur` file, dispatch it to the ViewModel as [PockRefAction.OpenRecentScene].
      */
-    private fun handleOpenIntent(intent: Intent?) {
-        val action = intent?.action ?: return
+    private fun handleOpenIntent(intent: Intent?): Boolean {
+        val action = intent?.action ?: return false
         val uri: Uri? = when (action) {
             Intent.ACTION_VIEW -> intent.data
             Intent.ACTION_SEND -> {
@@ -362,7 +377,9 @@ class MainActivity : ComponentActivity() {
                 uri.lastPathSegment?.endsWith(".pur", ignoreCase = true) == true)
         ) {
             viewModel.onAction(PockRefAction.OpenRecentScene(uri.toString()))
+            return true
         }
+        return false
     }
 
     private val dragListener = View.OnDragListener { _, event ->

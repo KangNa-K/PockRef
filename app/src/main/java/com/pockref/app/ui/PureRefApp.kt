@@ -321,6 +321,8 @@ import androidx.compose.material.icons.rounded.Settings
 import com.pockref.app.model.AlignMode
 import com.pockref.app.R
 import com.pockref.app.data.ImageDecodePolicy
+import com.pockref.app.data.ImageTilePlanner
+import com.pockref.app.data.ImageTilePolicy
 import com.pockref.app.data.ThemeMode
 import com.pockref.app.model.BackgroundPreset
 import com.pockref.app.model.CanvasMarkupStroke
@@ -481,7 +483,7 @@ private const val DOUBLE_TAP_MAX_DIST_DP = 32f
 
 /** Min/max zoom range for the minimap slider (continuous, stepless). */
 private const val ZOOM_MIN = 0.25f
-private const val ZOOM_MAX = 4.0f
+private const val ZOOM_MAX = MAX_CANVAS_SCALE
 private const val DOUBLE_TAP_MAX_INTERVAL_MS = 400L
 // V_NOW: delay before showing the SelectionBottomSheet
 // in single-select mode. Shorter than the full double-tap
@@ -521,6 +523,11 @@ private const val SHEET_SHOW_DEBOUNCE_MS = 800L
 // decode-priority filter so fast pans don't reveal blank edges or
 // thrash the decode queue.
 private const val VIEWPORT_BUFFER_PX = 200f
+
+// A 1024px ARGB tile is about 4 MiB. Keeping at most 32 bounds the
+// full-resolution overlay at roughly 128 MiB while the 4096px base LOD
+// remains the fallback for uncached regions.
+private const val MAX_TILE_CACHE_ENTRIES = 32
 
 // Pixel count above which we treat an image as "large" and downsample it
 // to a viewport-aware target. ~4 megapixels.
@@ -835,6 +842,9 @@ fun PockRefApp(
     // decode pipeline (LaunchedEffects) flow through to
     // the overlay's read on the next recomposition.
     val canvasBitmapCache = remember { mutableStateMapOf<String, Pair<Int, ImageBitmap>>() }
+    val canvasTileCache = remember {
+        mutableStateMapOf<com.pockref.app.data.ImageTileKey, ImageBitmap>()
+    }
     val gifPlaybackSources = remember { mutableStateMapOf<String, GifPlaybackSource>() }
     val gifPlaybackStates = remember { mutableStateMapOf<String, GifPlaybackState>() }
     val gifImagesForPlayback = remember(state.images) {
@@ -847,16 +857,11 @@ fun PockRefApp(
         state.selectedImageIds,
         state.selectedImageId,
     ) {
-        val selectedId = when {
-            state.selectedImageIds.size == 1 -> state.selectedImageIds.first()
-            state.selectedImageIds.isEmpty() -> state.selectedImageId
-            else -> null
-        }
-        state.images.firstOrNull { image ->
-            image.id == selectedId &&
-                isGifMimeType(image.mimeType) &&
-                image.cropRect == null
-        }?.id
+        selectedGifPlaybackImageIdFor(
+            images = state.images,
+            selectedImageIds = state.selectedImageIds,
+            selectedImageId = state.selectedImageId,
+        )
     }
 
     LaunchedEffect(
@@ -1464,6 +1469,7 @@ fun PockRefApp(
                      .fillMaxSize(),
                  hoverProgress = hoverProgress,
                  canvasBitmapCache = canvasBitmapCache,
+                 canvasTileCache = canvasTileCache,
              )
 
             // V_NOW (2026-06-19): lock-button visibility
@@ -2185,6 +2191,7 @@ fun PockRefApp(
     // so the magnifier image sits ABOVE the chrome).
     hoverProgress: Float = 0f,
     canvasBitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    canvasTileCache: androidx.compose.runtime.snapshots.SnapshotStateMap<com.pockref.app.data.ImageTileKey, ImageBitmap>,
     gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
     gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
     selectedGifPlaybackImageId: String?,
@@ -2236,6 +2243,7 @@ fun PockRefApp(
             imageDecoder = imageDecoder,
             hoverProgress = hoverProgress,
             bitmapCache = canvasBitmapCache,
+            tileCache = canvasTileCache,
             gifPlaybackSources = gifPlaybackSources,
             gifPlaybackStates = gifPlaybackStates,
             selectedGifPlaybackImageId = selectedGifPlaybackImageId,
@@ -7525,6 +7533,7 @@ private fun PockRefCanvas(
     // in [PockRefApp] for the cache-eviction effect that
     // used to live here.
     bitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    tileCache: androidx.compose.runtime.snapshots.SnapshotStateMap<com.pockref.app.data.ImageTileKey, ImageBitmap>,
     gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
     gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
     selectedGifPlaybackImageId: String?,
@@ -7644,6 +7653,13 @@ private fun PockRefCanvas(
         val decoder = imageDecoder ?: com.pockref.app.data.SceneImageDecoder(null)
         com.pockref.app.data.ImageDecodePipeline(decoder)
     }
+    val tilePipeline = remember(imageDecoder) {
+        imageDecoder?.let { decoder ->
+            com.pockref.app.data.ImageTilePipeline<android.graphics.Bitmap>(
+                decodeTile = decoder::decodeTile,
+            )
+        }
+    }
 
     DisposableEffect(pipeline) {
         pipeline.onBitmapReady = { imageId, level, bitmap ->
@@ -7674,6 +7690,32 @@ private fun PockRefCanvas(
     val currentState by rememberUpdatedState(state)
     val currentOnAction by rememberUpdatedState(onAction)
     val currentLoaderRef by rememberUpdatedState(imageLazyLoader)
+    val focusedHighResImageId = remember(
+        state.fittedImageId,
+        state.selectedImageIds,
+        state.selectedImageId,
+    ) {
+        val fittedId = state.fittedImageId
+        if (fittedId != null &&
+            (state.selectedImageIds == setOf(fittedId) || state.selectedImageId == fittedId)
+        ) {
+            fittedId
+        } else {
+            null
+        }
+    }
+    val tileImageId = remember(
+        state.images,
+        state.selectedImageIds,
+        state.selectedImageId,
+    ) {
+        ImageTilePolicy.hdSingleSelectedImageId(
+            images = state.images,
+            selectedImageIds = state.selectedImageIds,
+            selectedImageId = state.selectedImageId,
+        )
+    }
+    var tileCacheImageId by remember { mutableStateOf<String?>(null) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
     var lastTapPos by remember { mutableStateOf(Offset.Zero) }
     // V_NOW: track the image ID of the last tap so that
@@ -7731,6 +7773,9 @@ private fun PockRefCanvas(
         bitmapCache.keys.filterNot { it in currentIds }.forEach { key ->
             bitmapCache.remove(key)
         }
+        tileCache.keys.filterNot { it.imageId in currentIds }.forEach { key ->
+            tileCache.remove(key)
+        }
         onDispose {}
     }
 
@@ -7753,21 +7798,6 @@ private fun PockRefCanvas(
             addAll(state.selectedImageIds)
             addAll(state.boxSelectPreviewIds)
             addAll(state.transientDragImageIds)
-        }
-    }
-
-    val focusedHighResImageId = remember(
-        state.fittedImageId,
-        state.selectedImageIds,
-        state.selectedImageId,
-    ) {
-        val fittedId = state.fittedImageId
-        if (fittedId != null &&
-            (state.selectedImageIds == setOf(fittedId) || state.selectedImageId == fittedId)
-        ) {
-            fittedId
-        } else {
-            null
         }
     }
 
@@ -7829,6 +7859,54 @@ private fun PockRefCanvas(
                 viewportHeight = s.canvasViewportSize.height,
                 isFocusedImage = image.id == focusedHighResImageId,
             )
+        }
+    }
+
+    LaunchedEffect(
+        state.canvasOffset,
+        state.canvasScale,
+        state.canvasViewportSize,
+        state.images,
+        tileImageId,
+        tilePipeline,
+    ) {
+        if (tileCacheImageId != tileImageId) {
+            tileCache.clear()
+            tileCacheImageId = tileImageId
+        }
+
+        val activeImage = tileImageId?.let { id -> currentState.images.firstOrNull { it.id == id } }
+        if (tilePipeline == null || activeImage == null ||
+            !ImageTilePolicy.shouldRequestTiles(
+                image = activeImage,
+                canvasScale = currentState.canvasScale,
+                isSingleImageSelected = true,
+            )
+        ) {
+            tileCache.clear()
+            return@LaunchedEffect
+        }
+
+        val s = currentState
+        val viewport = worldViewportRect(
+            canvasOffset = s.canvasOffset,
+            canvasScale = s.canvasScale,
+            viewportWidth = s.canvasViewportSize.width,
+            viewportHeight = s.canvasViewportSize.height,
+            bufferPx = 0f,
+        )
+        val requests = ImageTilePlanner.visibleTiles(activeImage, viewport)
+        val missing = requests.filterNot { it.key in tileCache }
+        tilePipeline.decode(activeImage, missing) { decoded ->
+            tileCache[decoded.request.key] = decoded.bitmap.asImageBitmap()
+        }
+
+        if (tileCache.size > MAX_TILE_CACHE_ENTRIES) {
+            val visibleKeys = requests.mapTo(mutableSetOf()) { it.key }
+            tileCache.keys
+                .filter { it !in visibleKeys }
+                .take(tileCache.size - MAX_TILE_CACHE_ENTRIES)
+                .forEach { tileCache.remove(it) }
         }
     }
 
@@ -7972,8 +8050,48 @@ private fun PockRefCanvas(
         }
     }
 
-    Canvas(
-        modifier = modifier
+    val selectedImageForHd = remember(
+        state.images,
+        state.selectedImageIds,
+        state.selectedImageId,
+    ) {
+        val selectedId = ImageTilePolicy.singleSelectedImageId(
+            selectedImageIds = state.selectedImageIds,
+            selectedImageId = state.selectedImageId,
+        )
+        selectedId
+            ?.let { id -> state.images.firstOrNull { it.id == id } }
+            ?.takeUnless { image -> isGifMimeType(image.mimeType) }
+    }
+    val selectionHdFrame = remember(
+        selectedImageForHd,
+        state.canvasOffset,
+        state.canvasScale,
+        state.canvasViewportSize,
+    ) {
+        val image = selectedImageForHd
+        val viewport = state.canvasViewportSize
+        if (image == null || viewport.width <= 0f || viewport.height <= 0f) {
+            null
+        } else {
+            val worldFrame = groupSelectionAabb(listOf(image)).rect
+            val canvasCenter = Offset(
+                x = viewport.width / 2f + state.canvasOffset.x,
+                y = viewport.height / 2f + state.canvasOffset.y,
+            )
+            Rect(
+                left = canvasCenter.x + worldFrame.left * state.canvasScale,
+                top = canvasCenter.y + worldFrame.top * state.canvasScale,
+                right = canvasCenter.x + worldFrame.right * state.canvasScale,
+                bottom = canvasCenter.y + worldFrame.bottom * state.canvasScale,
+            )
+        }
+    }
+
+    Box(modifier = modifier) {
+        Canvas(
+            modifier = Modifier
+            .fillMaxSize()
             .background(state.backgroundColor)
             .onSizeChanged { canvasSize ->
                 onAction(PockRefAction.UpdateCanvasViewport(canvasSize.width.toFloat(), canvasSize.height.toFloat()))
@@ -10099,10 +10217,12 @@ private fun PockRefCanvas(
                 null
             }
             val cached = bitmapCache[image.id]?.second
-            if (cached != null || gifSource != null) {
+            val tiles = tileCache.filterKeys { it.imageId == image.id }
+            if (cached != null || gifSource != null || tiles.isNotEmpty()) {
                 drawSceneImage(
                     image = image,
                     bitmap = cached,
+                    tiles = tiles,
                     gifPlaybackSource = gifSource,
                     gifPlaybackState = gifState,
                     isSelected = image.id in state.selectedImageIds,
@@ -10310,6 +10430,34 @@ private fun PockRefCanvas(
                 topLeft = Offset(rect.left, rect.top),
                 size = Size(rect.width(), rect.height()),
                 style = Stroke(width = 2f),
+            )
+        }
+        }
+
+        if (selectedImageForHd != null && selectionHdFrame != null) {
+            val controlDensity = LocalDensity.current
+            val controlWidthPx = with(controlDensity) { 52.dp.toPx() }
+            val controlHeightPx = with(controlDensity) { 44.dp.toPx() }
+            val insetPx = with(controlDensity) { 8.dp.toPx() }
+            val controlCenter = originalResolutionControlPosition(
+                frame = selectionHdFrame,
+                controlWidthPx = controlWidthPx,
+                controlHeightPx = controlHeightPx,
+                insetPx = insetPx,
+            )
+            SelectionHdControl(
+                state = originalResolutionStateFor(
+                    listOf(selectedImageForHd.showsOriginalResolution),
+                ),
+                onClick = {
+                    onAction(PockRefAction.ToggleOriginalDisplaySelected)
+                },
+                modifier = Modifier.offset {
+                    IntOffset(
+                        x = (controlCenter.x - controlWidthPx / 2f).roundToInt(),
+                        y = (controlCenter.y - controlHeightPx / 2f).roundToInt(),
+                    )
+                },
             )
         }
     }
@@ -10925,6 +11073,7 @@ private fun DrawScope.drawLockedIndicator(
 private fun DrawScope.drawSceneImage(
     image: SceneImage,
     bitmap: ImageBitmap?,
+    tiles: Map<com.pockref.app.data.ImageTileKey, ImageBitmap>,
     gifPlaybackSource: GifPlaybackSource? = null,
     gifPlaybackState: GifPlaybackState? = null,
     isSelected: Boolean,
@@ -11019,6 +11168,14 @@ private fun DrawScope.drawSceneImage(
                         image = bitmap,
                         dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
                         colorFilter = buildColorFilter(image.colorAdjust),
+                    )
+                }
+                if (tiles.isNotEmpty()) {
+                    drawImageTiles(
+                        image = image,
+                        tiles = tiles,
+                        width = width,
+                        height = height,
                     )
                 }
                 if (isBoxSelectPreview && !isSelected) {
@@ -11121,6 +11278,59 @@ private fun DrawScope.drawSceneImage(
                 viewportHeight = size.height,
             ),
             canvasScale = canvasScale,
+        )
+    }
+}
+
+private fun DrawScope.drawImageTiles(
+    image: SceneImage,
+    tiles: Map<com.pockref.app.data.ImageTileKey, ImageBitmap>,
+    width: Float,
+    height: Float,
+) {
+    val crop = image.cropRect ?: CropRect()
+    val imageWidth = image.intrinsicWidth.toFloat()
+    val imageHeight = image.intrinsicHeight.toFloat()
+    if (imageWidth <= 0f || imageHeight <= 0f ||
+        crop.cropWidth <= 0f || crop.cropHeight <= 0f
+    ) {
+        return
+    }
+
+    val cropLeft = crop.left * imageWidth
+    val cropTop = crop.top * imageHeight
+    val cropRight = crop.right * imageWidth
+    val cropBottom = crop.bottom * imageHeight
+    val cropWidth = cropRight - cropLeft
+    val cropHeight = cropBottom - cropTop
+
+    tiles.forEach { (key, tile) ->
+        val tileLeft = key.column * ImageTilePlanner.TILE_EDGE_PX.toFloat()
+        val tileTop = key.row * ImageTilePlanner.TILE_EDGE_PX.toFloat()
+        val tileRight = tileLeft + tile.width
+        val tileBottom = tileTop + tile.height
+        val sourceLeft = maxOf(tileLeft, cropLeft)
+        val sourceTop = maxOf(tileTop, cropTop)
+        val sourceRight = minOf(tileRight, cropRight)
+        val sourceBottom = minOf(tileBottom, cropBottom)
+        if (sourceRight <= sourceLeft || sourceBottom <= sourceTop) return@forEach
+
+        val srcOffsetX = (sourceLeft - tileLeft).toInt().coerceIn(0, tile.width - 1)
+        val srcOffsetY = (sourceTop - tileTop).toInt().coerceIn(0, tile.height - 1)
+        val srcWidth = (sourceRight - sourceLeft).toInt().coerceIn(1, tile.width - srcOffsetX)
+        val srcHeight = (sourceBottom - sourceTop).toInt().coerceIn(1, tile.height - srcOffsetY)
+        val dstLeft = ((sourceLeft - cropLeft) / cropWidth * width).toInt()
+        val dstTop = ((sourceTop - cropTop) / cropHeight * height).toInt()
+        val dstWidth = ((sourceRight - sourceLeft) / cropWidth * width).toInt().coerceAtLeast(1)
+        val dstHeight = ((sourceBottom - sourceTop) / cropHeight * height).toInt().coerceAtLeast(1)
+
+        drawImage(
+            image = tile,
+            srcOffset = androidx.compose.ui.unit.IntOffset(srcOffsetX, srcOffsetY),
+            srcSize = androidx.compose.ui.unit.IntSize(srcWidth, srcHeight),
+            dstOffset = androidx.compose.ui.unit.IntOffset(dstLeft, dstTop),
+            dstSize = androidx.compose.ui.unit.IntSize(dstWidth, dstHeight),
+            colorFilter = buildColorFilter(image.colorAdjust),
         )
     }
 }

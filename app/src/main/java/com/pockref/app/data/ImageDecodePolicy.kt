@@ -10,6 +10,8 @@ data class ImageDecodeRequest(
 )
 
 object ImageDecodePolicy {
+    private const val DISPLAY_HEADROOM = 1.25f
+
     fun requestFor(
         image: SceneImage,
         canvasScale: Float,
@@ -21,21 +23,21 @@ object ImageDecodePolicy {
             return ImageDecodeRequest(
                 displayWidth = image.intrinsicWidth.coerceAtLeast(1),
                 displayHeight = image.intrinsicHeight.coerceAtLeast(1),
-                maxLevel = SceneImageDecoder.ORIGINAL_LEVEL,
+                maxLevel = SceneImageDecoder.DECODE_LADDER.lastIndex,
             )
         }
 
-        val screenWidth = image.displaySize.width * image.scale * canvasScale
-        val screenHeight = image.displaySize.height * image.scale * canvasScale
+        val screenWidth = image.displaySize.width * image.scale * canvasScale * DISPLAY_HEADROOM
+        val screenHeight = image.displaySize.height * image.scale * canvasScale * DISPLAY_HEADROOM
         return ImageDecodeRequest(
             displayWidth = screenWidth
                 .coerceAtMost(viewportWidth.coerceAtLeast(1f))
                 .roundToInt()
-                .coerceAtLeast(1),
+                .coerceIn(1, image.intrinsicWidth.coerceAtLeast(1)),
             displayHeight = screenHeight
                 .coerceAtMost(viewportHeight.coerceAtLeast(1f))
                 .roundToInt()
-                .coerceAtLeast(1),
+                .coerceIn(1, image.intrinsicHeight.coerceAtLeast(1)),
             maxLevel = SceneImageDecoder.DECODE_LADDER.lastIndex,
         )
     }

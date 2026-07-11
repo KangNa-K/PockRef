@@ -34,6 +34,7 @@ sealed interface PockRefAction {
     data object DeleteSelected : PockRefAction
     data object DuplicateSelected : PockRefAction
     data object ToggleLockSelected : PockRefAction
+    data object ToggleOriginalDisplaySelected : PockRefAction
     // V_NOW (2026-06-08 "global image lock" feature):
     // Flip the app-wide [PockRefUiState.globalImageLock]
     // flag, persisted via AppPreferences so a fresh

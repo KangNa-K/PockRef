@@ -823,6 +823,8 @@ class PurFileParser {
 
                 val (width, height) = probeImageSize(probeData)
                 val mimeType = when {
+                    probeData.size >= 6 &&
+                        (String(probeData, 0, 6) == "GIF87a" || String(probeData, 0, 6) == "GIF89a") -> "image/gif"
                     probeData.size >= 2 && probeData[0] == 0xFF.toByte() && probeData[1] == 0xD8.toByte() -> "image/jpeg"
                     probeData.size >= 4 && probeData[0] == 0x89.toByte() && String(probeData, 1, 3) == "PNG" -> "image/png"
                     probeData.size >= 12 && probeData.copyOfRange(0, 4).contentEquals(
@@ -1036,7 +1038,16 @@ class PurFileParser {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
         if (bounds.outWidth > 0 && bounds.outHeight > 0) return bounds.outWidth to bounds.outHeight
-        return probePngSize(data) ?: probeJpegSize(data) ?: (0 to 0)
+        return probePngSize(data) ?: probeGifSize(data) ?: probeJpegSize(data) ?: (0 to 0)
+    }
+
+    private fun probeGifSize(data: ByteArray): Pair<Int, Int>? {
+        if (data.size < 10) return null
+        val isGif = String(data, 0, 6) == "GIF87a" || String(data, 0, 6) == "GIF89a"
+        if (!isGif) return null
+        val width = (data[6].toInt() and 0xFF) or ((data[7].toInt() and 0xFF) shl 8)
+        val height = (data[8].toInt() and 0xFF) or ((data[9].toInt() and 0xFF) shl 8)
+        return if (width > 0 && height > 0) width to height else null
     }
 
     private fun probePngSize(data: ByteArray): Pair<Int, Int>? {

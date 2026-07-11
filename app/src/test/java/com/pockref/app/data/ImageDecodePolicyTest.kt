@@ -9,7 +9,7 @@ import org.junit.Test
 class ImageDecodePolicyTest {
 
     @Test
-    fun normalCanvasDecode_capsLargeImageToViewportPixels() {
+    fun normalCanvasDecode_matchesVisibleSizeWithHeadroom() {
         val image = testImage(
             displayWidth = 5000f,
             displayHeight = 3000f,
@@ -20,19 +20,19 @@ class ImageDecodePolicyTest {
 
         val request = ImageDecodePolicy.requestFor(
             image = image,
-            canvasScale = 1f,
-            viewportWidth = 1600f,
-            viewportHeight = 900f,
+            canvasScale = 0.2f,
+            viewportWidth = 2800f,
+            viewportHeight = 1752f,
             isFocusedImage = false,
         )
 
-        assertEquals(1600, request.displayWidth)
-        assertEquals(900, request.displayHeight)
+        assertEquals(1250, request.displayWidth)
+        assertEquals(750, request.displayHeight)
         assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
     }
 
     @Test
-    fun normalCanvasDecode_includesPerImageScale() {
+    fun normalCanvasDecode_usesImageAndCanvasScale() {
         val image = testImage(
             displayWidth = 500f,
             displayHeight = 300f,
@@ -43,37 +43,61 @@ class ImageDecodePolicyTest {
 
         val request = ImageDecodePolicy.requestFor(
             image = image,
-            canvasScale = 1f,
-            viewportWidth = 4000f,
-            viewportHeight = 3000f,
+            canvasScale = 2f,
+            viewportWidth = 2800f,
+            viewportHeight = 1752f,
             isFocusedImage = false,
         )
 
-        assertEquals(1500, request.displayWidth)
-        assertEquals(900, request.displayHeight)
+        assertEquals(2800, request.displayWidth)
+        assertEquals(1752, request.displayHeight)
+        assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
     }
 
     @Test
-    fun focusedImage_requestsOriginalQuality() {
+    fun normalCanvasDecode_neverRequestsMoreThanSourcePixels() {
         val image = testImage(
             displayWidth = 900f,
             displayHeight = 600f,
             imageScale = 1f,
-            intrinsicWidth = 3000,
-            intrinsicHeight = 2000,
+            intrinsicWidth = 900,
+            intrinsicHeight = 600,
         )
 
         val request = ImageDecodePolicy.requestFor(
             image = image,
-            canvasScale = 1f,
-            viewportWidth = 1800f,
-            viewportHeight = 1200f,
+            canvasScale = 4f,
+            viewportWidth = 2800f,
+            viewportHeight = 1752f,
+            isFocusedImage = false,
+        )
+
+        assertEquals(900, request.displayWidth)
+        assertEquals(600, request.displayHeight)
+        assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
+    }
+
+    @Test
+    fun focusedImage_usesTheLargestBoundedBaseLevel() {
+        val image = testImage(
+            displayWidth = 900f,
+            displayHeight = 600f,
+            imageScale = 1f,
+            intrinsicWidth = 10881,
+            intrinsicHeight = 14073,
+        )
+
+        val request = ImageDecodePolicy.requestFor(
+            image = image,
+            canvasScale = 0.1f,
+            viewportWidth = 2800f,
+            viewportHeight = 1752f,
             isFocusedImage = true,
         )
 
-        assertEquals(3000, request.displayWidth)
-        assertEquals(2000, request.displayHeight)
-        assertEquals(SceneImageDecoder.ORIGINAL_LEVEL, request.maxLevel)
+        assertEquals(10881, request.displayWidth)
+        assertEquals(14073, request.displayHeight)
+        assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
     }
 
     private fun testImage(
