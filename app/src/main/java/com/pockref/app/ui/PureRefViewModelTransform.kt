@@ -438,7 +438,8 @@ private fun buildImageUpdate(oldImg: SceneImage, newImg: SceneImage): SceneDiff.
         oldImg.mimeType != newImg.mimeType ||
         oldImg.locked != newImg.locked ||
         oldImg.zIndex != newImg.zIndex ||
-        oldImg.cropRect != newImg.cropRect
+        oldImg.cropRect != newImg.cropRect ||
+        oldImg.showsOriginalResolution != newImg.showsOriginalResolution
     ) {
         return null
     }
@@ -1784,6 +1785,20 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
             copy(images = images.map { image ->
                 if (image.id !in selectedIds) image
                 else image.copy(locked = !image.locked)
+            })
+        }
+    }
+
+    internal fun toggleOriginalDisplaySelected() {
+        val selectedIds = currentSelectedIds()
+        if (selectedIds.isEmpty()) return
+        val selected = mainVm._uiState.value.images.filter { it.id in selectedIds }
+        if (selected.isEmpty()) return
+        val shouldEnable = !selected.all { it.showsOriginalResolution }
+        mainVm.mutateScene {
+            copy(images = images.map { image ->
+                if (image.id !in selectedIds) image
+                else image.copy(showsOriginalResolution = shouldEnable)
             })
         }
     }

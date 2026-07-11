@@ -846,6 +846,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.DeleteSelected -> transformController.deleteSelected()
             PockRefAction.DuplicateSelected -> transformController.duplicateSelected()
             PockRefAction.ToggleLockSelected -> transformController.toggleLockSelected()
+            PockRefAction.ToggleOriginalDisplaySelected -> transformController.toggleOriginalDisplaySelected()
             // V_NOW (2026-06-08 "global image lock" feature):
             // flip the [PockRefUiState.globalImageLock] flag
             // in-place AND mirror to prefs so a process kill /
