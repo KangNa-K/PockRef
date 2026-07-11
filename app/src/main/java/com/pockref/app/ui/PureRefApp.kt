@@ -9117,6 +9117,7 @@ private fun PockRefCanvas(
                                         } else if (rotationDelta >= ROTATE_THRESHOLD) {
                                             transformMode = ImageTransformMode.ROTATE
                                             modeCommitTimeMs = nowMs
+                                            selectionHdRotationActive = true
                                         }
                                     } else {
                                         // No-selection path: SCALE /
@@ -9500,6 +9501,7 @@ private fun PockRefCanvas(
                         transformMode = ImageTransformMode.NONE
                         initialZoom = 1f
                         initialRotation = 0f
+                        selectionHdRotationActive = false
                     }
 
                     // V_NOW (2026-06-10 #3 corner-handle
