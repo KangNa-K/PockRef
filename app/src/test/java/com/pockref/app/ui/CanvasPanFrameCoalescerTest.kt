@@ -38,12 +38,20 @@ class CanvasPanFrameCoalescerTest {
     }
 
     @Test
-    fun enqueuePreservesFractionalOffsets() {
+    fun multipleSamplesInOneFrame_preserveTheFullFingerTravelDistance() {
         val coalescer = CanvasPanFrameCoalescer()
 
         coalescer.enqueue(Offset(1.25f, 0.5f))
         coalescer.enqueue(Offset(2.75f, -1.5f))
 
         assertEquals(Offset(4f, -1f), coalescer.flush())
+    }
+
+    @Test
+    fun largeFrameBatch_isSplitWithoutDroppingAnyPanDistance() {
+        assertEquals(
+            listOf(Offset(200f, -200f), Offset(100f, -50f)),
+            splitCanvasPanDelta(Offset(300f, -250f)),
+        )
     }
 }

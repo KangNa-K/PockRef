@@ -67,6 +67,7 @@ import kotlinx.coroutines.withContext
  */
 internal const val MIN_CANVAS_SCALE: Float = 0.02f
 internal const val MAX_CANVAS_SCALE: Float = 40f
+internal const val MAX_CANVAS_PAN_STEP_PX: Float = 200f
 
 /**
  * A user-facing error to surface through the Snackbar channel.
@@ -189,19 +190,19 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             // for the UI; the pref is the durable copy.
             lastAutoSaveAt = autoSaveManager.lastSaveTimestamp
                 .takeIf { it > 0L },
-            // The disabled-gestures set is the ONLY persistence for
-            // gesture toggles (no per-key Boolean like the other
-            // settings). A gesture is "enabled" by default, so
-            // the in-memory map is built from the *complement* of
-            // the disabled set: id → true for every id that is
-            // NOT in [disabledGestureIds]. A missing key in the
-            // resulting map still reads as enabled via
-            // [com.pockref.app.ui.isGestureEnabled]'s `?: true`
-            // fallback, so the absence of an entry = "default
-            // on", which is what we want.
+            // Default-on gesture toggles hydrate from the disabled
+            // set. Single-finger canvas pan is default-off, so it
+            // hydrates from its dedicated Boolean preference.
             gestureToggles = buildMap {
                 com.pockref.app.ui.GestureId.ALL.forEach { id ->
-                    put(id, id !in appPrefs.disabledGestureIds)
+                    put(
+                        id,
+                        if (id == com.pockref.app.ui.GestureId.SINGLE_FINGER_PAN) {
+                            appPrefs.singleFingerCanvasPanEnabled
+                        } else {
+                            id !in appPrefs.disabledGestureIds
+                        },
+                    )
                 }
             },
             // V_NOW: hydrate minimap state from the same pref
@@ -790,9 +791,8 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
  // still allows canvas pan — the existing behavior.
  if (!_uiState.value.lockCanvasFrozen) {
  _uiState.update {
- val maxStep =200f
- val dx = action.delta.x.coerceIn(-maxStep, maxStep)
- val dy = action.delta.y.coerceIn(-maxStep, maxStep)
+ val dx = action.delta.x.coerceIn(-MAX_CANVAS_PAN_STEP_PX, MAX_CANVAS_PAN_STEP_PX)
+ val dy = action.delta.y.coerceIn(-MAX_CANVAS_PAN_STEP_PX, MAX_CANVAS_PAN_STEP_PX)
  it.copy(canvasOffset = it.canvasOffset + Offset(dx, dy), fittedImageId = null)
  }
  }
@@ -1697,13 +1697,17 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
      */
     internal fun setGestureEnabled(id: String, enabled: Boolean) {
         if (_uiState.value.gestureToggles[id] == enabled) return
-        // Persist as the DISABLED set: a missing entry = enabled
-        // (the default), so we only store ids the user has
-        // turned off. This keeps the prefs file small and means
-        // "delete the prefs entry" = "reset to default = on".
-        val currentDisabled = appPrefs.disabledGestureIds
-        val newDisabled = if (enabled) currentDisabled - id else currentDisabled + id
-        appPrefs.disabledGestureIds = newDisabled
+        if (id == GestureId.SINGLE_FINGER_PAN) {
+            appPrefs.singleFingerCanvasPanEnabled = enabled
+        } else {
+            // Persist as the DISABLED set: a missing entry = enabled
+            // (the default), so we only store ids the user has
+            // turned off. This keeps the prefs file small and means
+            // "delete the prefs entry" = "reset to default = on".
+            val currentDisabled = appPrefs.disabledGestureIds
+            val newDisabled = if (enabled) currentDisabled - id else currentDisabled + id
+            appPrefs.disabledGestureIds = newDisabled
+        }
         _uiState.update { current ->
             current.copy(gestureToggles = current.gestureToggles + (id to enabled))
         }

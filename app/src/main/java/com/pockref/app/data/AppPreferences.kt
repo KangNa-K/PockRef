@@ -73,12 +73,12 @@ class AppPreferences(context: Context) {
 
     /**
      * Set of [com.pockref.app.ui.GestureId] strings the user has
-     * explicitly disabled. Stored as a StringSet so adding a
-     * new gesture in the future is a one-line change (just
-     * add a const to [com.pockref.app.ui.GestureId]) — no
-     * SharedPreferences migration needed. Default empty →
-     * every gesture is enabled unless the user has toggled it
-     * off in the settings panel. Read by
+     * explicitly disabled. Stored as a StringSet so default-on
+     * gestures need no per-key Boolean or SharedPreferences
+     * migration. Default empty → every default-on gesture is
+     * enabled unless the user has toggled it off in the settings
+     * panel. The default-off single-finger canvas pan mode has
+     * its own Boolean below. Read by
      * [com.pockref.app.ui.PockRefViewModel] when hydrating
      * [com.pockref.app.model.PockRefUiState.gestureToggles] and
      * re-written by the [com.pockref.app.ui.PockRefAction.SetGestureEnabled]
@@ -88,6 +88,12 @@ class AppPreferences(context: Context) {
         get() = prefs.getStringSet(KEY_DISABLED_GESTURE_IDS, emptySet()) ?: emptySet()
         set(value) {
             prefs.edit().putStringSet(KEY_DISABLED_GESTURE_IDS, value).apply()
+        }
+
+    var singleFingerCanvasPanEnabled: Boolean
+        get() = prefs.getBoolean(KEY_SINGLE_FINGER_CANVAS_PAN_ENABLED, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_SINGLE_FINGER_CANVAS_PAN_ENABLED, value).apply()
         }
 
     /**
@@ -450,6 +456,7 @@ class AppPreferences(context: Context) {
         private const val KEY_EDGE_SNAP_ENABLED = "edge_snap_enabled"
         private const val KEY_ROTATION_SNAP_ENABLED = "rotation_snap_enabled"
         private const val KEY_DISABLED_GESTURE_IDS = "disabled_gesture_ids"
+        private const val KEY_SINGLE_FINGER_CANVAS_PAN_ENABLED = "single_finger_canvas_pan_enabled"
         // V_NOW: KEY_SPEN_BUTTON_ENABLED is intentionally NOT
         // referenced from any new code path. The previous
         // `spenButtonEnabled` getter was removed because the

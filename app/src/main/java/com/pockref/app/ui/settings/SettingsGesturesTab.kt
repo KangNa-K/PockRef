@@ -43,6 +43,7 @@ private val gestureGroupSpecs: List<GestureGroupSpec> = listOf(
  title = "编辑",
  ids = listOf(
  GestureId.MOVE_IMAGE,
+ GestureId.SINGLE_FINGER_PAN,
  GestureId.TWO_FINGER_TAP,
  GestureId.THREE_FINGER_TAP,
  GestureId.DOUBLE_TAP_EMPTY,
@@ -107,6 +108,7 @@ internal fun SettingsGesturesTab(
  */
 private fun gestureSubtitle(id: String, isOn: Boolean): String = when (id) {
  GestureId.MOVE_IMAGE -> if (isOn) "单指拖动选中的图片" else "已关闭"
+ GestureId.SINGLE_FINGER_PAN -> if (isOn) "单指拖动空白处移动画布" else "双指拖动移动画布"
  GestureId.PINCH_ZOOM -> if (isOn) "双指捏合调整缩放" else "已关闭"
  GestureId.PINCH_ROTATE -> if (isOn) "双指旋转(吸附0/90/180/270°)" else "已关闭"
  GestureId.TWO_FINGER_TAP -> if (isOn) "撤销" else "已关闭"

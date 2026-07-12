@@ -300,7 +300,10 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -7689,6 +7692,57 @@ private fun PockRefCanvas(
 
     val currentState by rememberUpdatedState(state)
     val currentOnAction by rememberUpdatedState(onAction)
+    val panCoalescer = remember { CanvasPanFrameCoalescer() }
+    val panFrameRequests = remember { Channel<Unit>(Channel.CONFLATED) }
+    var canvasPanPresentationOffset by remember { mutableStateOf<Offset?>(null) }
+    var canvasPanLastCommittedOffset by remember { mutableStateOf<Offset?>(null) }
+    fun flushQueuedCanvasPan() {
+        splitCanvasPanDelta(panCoalescer.flush()).forEach { step ->
+            currentOnAction(PockRefAction.PanCanvas(step))
+        }
+    }
+    fun addCanvasPanPreview(delta: Offset) {
+        canvasPanPresentationOffset =
+            (canvasPanPresentationOffset ?: currentState.canvasOffset) + delta
+    }
+    fun commitCanvasPanPreview() {
+        val presentationOffset = canvasPanPresentationOffset ?: return
+        val delta = canvasPanCommitDelta(
+            presentationOffset = presentationOffset,
+            lastCommittedOffset = canvasPanLastCommittedOffset,
+            stateOffset = currentState.canvasOffset,
+        )
+        splitCanvasPanDelta(delta).forEach { step ->
+            currentOnAction(PockRefAction.PanCanvas(step))
+        }
+        canvasPanLastCommittedOffset = presentationOffset
+    }
+    fun enqueueCanvasPan(delta: Offset) {
+        panCoalescer.enqueue(delta)
+        panFrameRequests.trySend(Unit)
+    }
+    LaunchedEffect(
+        state.canvasOffset,
+        canvasPanPresentationOffset,
+        canvasPanLastCommittedOffset,
+    ) {
+        val presentationOffset = canvasPanPresentationOffset
+        if (
+            presentationOffset != null &&
+            canvasPanLastCommittedOffset != null &&
+            (presentationOffset - state.canvasOffset).getDistance() <= 0.5f
+        ) {
+            canvasPanPresentationOffset = null
+            canvasPanLastCommittedOffset = null
+        }
+    }
+    LaunchedEffect(panFrameRequests) {
+        for (ignored in panFrameRequests) {
+            withFrameNanos {
+                flushQueuedCanvasPan()
+            }
+        }
+    }
     val currentLoaderRef by rememberUpdatedState(imageLazyLoader)
     val focusedHighResImageId = remember(
         state.fittedImageId,
@@ -7713,6 +7767,16 @@ private fun PockRefCanvas(
             images = state.images,
             selectedImageIds = state.selectedImageIds,
             selectedImageId = state.selectedImageId,
+        )
+    }
+    val currentFocusedHighResImageId by rememberUpdatedState(focusedHighResImageId)
+    val currentTileImageId by rememberUpdatedState(tileImageId)
+    val currentTilePipeline by rememberUpdatedState(tilePipeline)
+    val panViewportUpdates = remember {
+        MutableSharedFlow<Unit>(
+            replay = 0,
+            extraBufferCapacity = 1,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
         )
     }
     var tileCacheImageId by remember { mutableStateOf<String?>(null) }
@@ -7829,14 +7893,7 @@ private fun PockRefCanvas(
         }
     }
 
-    // Viewport-changed effect: decode newly-visible images + upgrade zoom levels
-    LaunchedEffect(
-        state.canvasOffset,
-        state.canvasScale,
-        state.canvasViewportSize,
-        state.images,
-        focusedHighResImageId,
-    ) {
+    suspend fun requestViewportDecode() {
         val s = currentState
         val viewport = worldViewportRect(
             canvasOffset = s.canvasOffset,
@@ -7844,7 +7901,7 @@ private fun PockRefCanvas(
             viewportWidth = s.canvasViewportSize.width,
             viewportHeight = s.canvasViewportSize.height,
         )
-        if (viewport.width <= 0f || viewport.height <= 0f) return@LaunchedEffect
+        if (viewport.width <= 0f || viewport.height <= 0f) return
         val cachedLevels = bitmapCache.mapValues { it.value.first }
         pipeline.onViewportChanged(
             images = s.images,
@@ -7857,26 +7914,22 @@ private fun PockRefCanvas(
                 canvasScale = s.canvasScale,
                 viewportWidth = s.canvasViewportSize.width,
                 viewportHeight = s.canvasViewportSize.height,
-                isFocusedImage = image.id == focusedHighResImageId,
+                isFocusedImage = image.id == currentFocusedHighResImageId,
             )
         }
     }
 
-    LaunchedEffect(
-        state.canvasOffset,
-        state.canvasScale,
-        state.canvasViewportSize,
-        state.images,
-        tileImageId,
-        tilePipeline,
-    ) {
-        if (tileCacheImageId != tileImageId) {
+    suspend fun requestVisibleTiles() {
+        if (tileCacheImageId != currentTileImageId) {
             tileCache.clear()
-            tileCacheImageId = tileImageId
+            tileCacheImageId = currentTileImageId
         }
 
-        val activeImage = tileImageId?.let { id -> currentState.images.firstOrNull { it.id == id } }
-        if (tilePipeline == null || activeImage == null ||
+        val activeImage = currentTileImageId?.let { id ->
+            currentState.images.firstOrNull { it.id == id }
+        }
+        val tilePipelineSnapshot = currentTilePipeline
+        if (tilePipelineSnapshot == null || activeImage == null ||
             !ImageTilePolicy.shouldRequestTiles(
                 image = activeImage,
                 canvasScale = currentState.canvasScale,
@@ -7884,7 +7937,7 @@ private fun PockRefCanvas(
             )
         ) {
             tileCache.clear()
-            return@LaunchedEffect
+            return
         }
 
         val s = currentState
@@ -7897,7 +7950,7 @@ private fun PockRefCanvas(
         )
         val requests = ImageTilePlanner.visibleTiles(activeImage, viewport)
         val missing = requests.filterNot { it.key in tileCache }
-        tilePipeline.decode(activeImage, missing) { decoded ->
+        tilePipelineSnapshot.decode(activeImage, missing) { decoded ->
             tileCache[decoded.request.key] = decoded.bitmap.asImageBitmap()
         }
 
@@ -7908,6 +7961,31 @@ private fun PockRefCanvas(
                 .take(tileCache.size - MAX_TILE_CACHE_ENTRIES)
                 .forEach { tileCache.remove(it) }
         }
+    }
+
+    LaunchedEffect(
+        state.canvasScale,
+        state.canvasViewportSize,
+        state.images,
+        focusedHighResImageId,
+        tileImageId,
+        tilePipeline,
+    ) {
+        requestViewportDecode()
+        requestVisibleTiles()
+    }
+
+    LaunchedEffect(state.canvasOffset) {
+        panViewportUpdates.tryEmit(Unit)
+    }
+
+    LaunchedEffect(panViewportUpdates) {
+        panViewportUpdates
+            .debounceCanvasPanViewportUpdates()
+            .collectLatest {
+                requestViewportDecode()
+                requestVisibleTiles()
+            }
     }
 
     // Auto-clear the post-commit snap highlight after its fade window.
@@ -8208,9 +8286,13 @@ private fun PockRefCanvas(
                                 pointerCount = activeChanges.size,
                                 previousCentroid = previousPanCentroid,
                                 centroid = centroid,
+                                singleFingerPanEnabled = isGestureEnabled(
+                                    currentState.gestureToggles,
+                                    GestureId.SINGLE_FINGER_PAN,
+                                ),
                             )
                             if (panDelta != Offset.Zero) {
-                                currentOnAction(PockRefAction.PanCanvas(panDelta))
+                                enqueueCanvasPan(panDelta)
                             }
                             if (
                                 distanceDelta != 1f &&
@@ -8233,6 +8315,7 @@ private fun PockRefCanvas(
                                 changes.forEach { it.consume() }
                                 if (changes.none { it.pressed }) break
                             }
+                            flushQueuedCanvasPan()
                             return@awaitEachGesture
                         }
                         currentOnAction(PockRefAction.BeginMarkupStroke(screenToMarkupWorld(downPos, s)))
@@ -8280,6 +8363,7 @@ private fun PockRefCanvas(
                                 else PockRefAction.CommitMarkupStroke,
                             )
                         }
+                        flushQueuedCanvasPan()
                         return@awaitEachGesture
                     }
                     if (s.markupVisible) {
@@ -8945,6 +9029,9 @@ private fun PockRefCanvas(
                     var initialZoom = 1f
                     var initialRotation = 0f
                     var transformStarted = false
+                    var lockedCanvasNavigationStarted = false
+                    var lockedCanvasInitialDistance = 0f
+                    var lockedCanvasPinchZoomActive = false
                     var dragStarted = false
                     var totalDrag = Offset.Zero
                     // Drag-to-edge auto-scroll handoff. The
@@ -8997,6 +9084,50 @@ private fun PockRefCanvas(
                             }
                         }
 
+                        if (
+                            shouldSkipFrozenCanvasPointerWork(
+                                canvasFrozen = currentState.lockCanvasFrozen,
+                                hasPressedPointers = changes.any { it.pressed },
+                            )
+                        ) {
+                            changes.forEach { it.consume() }
+                            continue
+                        }
+
+                        val singleFingerPanEnabled = isGestureEnabled(
+                            currentState.gestureToggles,
+                            GestureId.SINGLE_FINGER_PAN,
+                        )
+                        if (
+                            pointerCount == 1 &&
+                            shouldUseLocalSoftLockedSingleFingerPan(
+                                globalImageLock = currentState.globalImageLock,
+                                canvasFrozen = currentState.lockCanvasFrozen,
+                                singleFingerPanEnabled = singleFingerPanEnabled,
+                            )
+                        ) {
+                            val change = changes.firstOrNull { it.id == down.id } ?: changes.firstOrNull()
+                            if (change?.pressed == true) {
+                                val panDelta = change.position - change.previousPosition
+                                if (panDelta != Offset.Zero) {
+                                    addCanvasPanPreview(panDelta)
+                                    totalDrag += panDelta
+                                    lastPointerPosState.value = change.position
+                                    autoScrollEligibleState.value = false
+                                    changes.forEach { it.consume() }
+                                    continue
+                                }
+                            }
+                        }
+
+                        if (
+                            pointerCount >= 2 &&
+                            !lockedCanvasNavigationStarted &&
+                            canvasPanPresentationOffset != null
+                        ) {
+                            commitCanvasPanPreview()
+                        }
+
                         if (pointerCount >= 2) {
                             if (rotationHandleDragActive) {
                                 currentOnAction(PockRefAction.EndSceneGesture)
@@ -9012,6 +9143,84 @@ private fun PockRefCanvas(
                             tapTargetImageId = null
                             lassoActive = false
 
+                            if (
+                                pointerCount == 2 &&
+                                shouldUseSoftLockedTwoFingerCanvasNavigation(
+                                    globalImageLock = currentState.globalImageLock,
+                                    canvasFrozen = currentState.lockCanvasFrozen,
+                                )
+                            ) {
+                                val p0 = changes[0].position
+                                val p1 = changes[1].position
+                                val centroid = (p0 + p1) / 2f
+                                val distance = (p0 - p1).getDistance()
+
+                                if (!lockedCanvasNavigationStarted) {
+                                    previousDistance = distance
+                                    previousPanCentroid = centroid
+                                    lockedCanvasInitialDistance = distance
+                                    lockedCanvasNavigationStarted = true
+                                    changes.forEach { it.consume() }
+                                    continue
+                                }
+
+                                val panDelta = canvasPanDeltaForPointerCount(
+                                    pointerCount = pointerCount,
+                                    previousCentroid = previousPanCentroid,
+                                    centroid = centroid,
+                                    singleFingerPanEnabled = isGestureEnabled(
+                                        currentState.gestureToggles,
+                                        GestureId.SINGLE_FINGER_PAN,
+                                    ),
+                                )
+                                if (
+                                    !lockedCanvasPinchZoomActive &&
+                                    hasCrossedCanvasPinchZoomThreshold(
+                                        initialDistance = lockedCanvasInitialDistance,
+                                        currentDistance = distance,
+                                    )
+                                ) {
+                                    commitCanvasPanPreview()
+                                    canvasPanPresentationOffset = null
+                                    canvasPanLastCommittedOffset = null
+                                    lockedCanvasPinchZoomActive = true
+                                }
+                                if (panDelta != Offset.Zero) {
+                                    if (
+                                        shouldUseLocalTwoFingerCanvasPan(
+                                            canvasFrozen = currentState.lockCanvasFrozen,
+                                            transformCommitted = lockedCanvasPinchZoomActive,
+                                        )
+                                    ) {
+                                        addCanvasPanPreview(panDelta)
+                                    } else {
+                                        enqueueCanvasPan(panDelta)
+                                    }
+                                }
+                                val distanceDelta = if (previousDistance > 0f) {
+                                    distance / previousDistance
+                                } else {
+                                    1f
+                                }
+                                if (
+                                    lockedCanvasPinchZoomActive &&
+                                    distanceDelta != 1f &&
+                                    isGestureEnabled(
+                                        currentState.gestureToggles,
+                                        GestureId.PINCH_ZOOM,
+                                    )
+                                ) {
+                                    currentOnAction(PockRefAction.ZoomCanvas(distanceDelta, centroid))
+                                }
+
+                                previousDistance = distance
+                                previousPanCentroid = centroid
+                                changes.forEach { it.consume() }
+                                continue
+                            }
+                            lockedCanvasNavigationStarted = false
+                            lockedCanvasPinchZoomActive = false
+
                             // V_NOW (user spec "双指缩放选中图片"):
                             // Hit-test ONLY at the start of the
                             // two-finger gesture (before
@@ -9024,7 +9233,13 @@ private fun PockRefCanvas(
                             // mid-stroke, switching from "zoom
                             // canvas" to "zoom image" without the
                             // user's intent.
-                            if (changes.size >= 2 && !transformStarted) {
+                            if (
+                                changes.size >= 2 &&
+                                !transformStarted &&
+                                shouldSelectImageForTwoFingerCanvasGesture(
+                                    globalImageLock = currentState.globalImageLock,
+                                )
+                            ) {
                                 val viewportSize = Size(
                                     size.width.toFloat(),
                                     size.height.toFloat(),
@@ -9161,14 +9376,14 @@ private fun PockRefCanvas(
                                 pointerCount = pointerCount,
                                 previousCentroid = previousPanCentroid,
                                 centroid = centroid,
+                                singleFingerPanEnabled = isGestureEnabled(
+                                    currentState.gestureToggles,
+                                    GestureId.SINGLE_FINGER_PAN,
+                                ),
                             )
                             val normalizedAngleDelta = if (angleDelta > PI.toFloat()) angleDelta - 2f * PI.toFloat()
                                 else if (angleDelta < -PI.toFloat()) angleDelta + 2f * PI.toFloat()
                                 else angleDelta
-
-                            if (panDelta != Offset.Zero) {
-                                currentOnAction(PockRefAction.PanCanvas(panDelta))
-                            }
 
                             initialZoom *= distanceDelta
                             initialRotation += normalizedAngleDelta
@@ -9213,6 +9428,31 @@ private fun PockRefCanvas(
                                 }
                             }
 
+                            val canvasOffsetForTransform = renderCanvasOffsetForLocalPan(
+                                stateOffset = currentState.canvasOffset,
+                                presentationOffset = canvasPanPresentationOffset,
+                            )
+                            if (
+                                transformMode != ImageTransformMode.NONE &&
+                                canvasPanPresentationOffset != null
+                            ) {
+                                commitCanvasPanPreview()
+                                canvasPanPresentationOffset = null
+                                canvasPanLastCommittedOffset = null
+                            }
+                            if (panDelta != Offset.Zero) {
+                                if (
+                                    shouldUseLocalTwoFingerCanvasPan(
+                                        canvasFrozen = currentState.lockCanvasFrozen,
+                                        transformCommitted = transformMode != ImageTransformMode.NONE,
+                                    )
+                                ) {
+                                    addCanvasPanPreview(panDelta)
+                                } else {
+                                    enqueueCanvasPan(panDelta)
+                                }
+                            }
+
                             // V_NOW (user spec "双指缩放选中图片"):
                             // spec rule 4 — the two-finger CENTROID
                             // is the scale anchor (in scene / world
@@ -9234,8 +9474,8 @@ private fun PockRefCanvas(
                                 }
                                 val centerOffset = Offset(vpSize.width / 2f, vpSize.height / 2f)
                                 Offset(
-                                    x = (centroid.x - centerOffset.x - cs.canvasOffset.x) / cs.canvasScale,
-                                    y = (centroid.y - centerOffset.y - cs.canvasOffset.y) / cs.canvasScale,
+                                    x = (centroid.x - centerOffset.x - canvasOffsetForTransform.x) / cs.canvasScale,
+                                    y = (centroid.y - centerOffset.y - canvasOffsetForTransform.y) / cs.canvasScale,
                                 )
                             } else null
 
@@ -9552,6 +9792,19 @@ private fun PockRefCanvas(
                                         minOf(ls.y, change.position.y),
                                     )
                                 } ?: change.position
+                            } else {
+                                val panDelta = canvasPanDeltaForPointerCount(
+                                    pointerCount = 1,
+                                    previousCentroid = change.previousPosition,
+                                    centroid = change.position,
+                                    singleFingerPanEnabled = isGestureEnabled(
+                                        currentState.gestureToggles,
+                                        GestureId.SINGLE_FINGER_PAN,
+                                    ),
+                                )
+                                if (panDelta != Offset.Zero) {
+                                    enqueueCanvasPan(panDelta)
+                                }
                             }
                             // Drag-to-edge auto-scroll handoff.
                             // Update the shared state with the
@@ -9574,6 +9827,8 @@ private fun PockRefCanvas(
                     // corner, released, and then tapped again
                     // with the same position).
                     autoScrollEligibleState.value = false
+                    commitCanvasPanPreview()
+                    flushQueuedCanvasPan()
 
                     if (transformStarted) {
                         currentOnAction(PockRefAction.EndSceneGesture)
@@ -9666,7 +9921,8 @@ private fun PockRefCanvas(
                     }
 
                     val upTime = System.currentTimeMillis()
-                    val isTap = !dragStarted && !transformStarted && (upTime - downTime) < 300L && totalDrag.getDistance() < tapMaxDragPx
+                    val isTap = !gestureMoved && !dragStarted && !transformStarted &&
+                        (upTime - downTime) < 300L && totalDrag.getDistance() < tapMaxDragPx
 
                     // V_NOW (2026-06-19 user spec "开启全局锁定
                     // 和冻结模式后,点一下应用界面,右上角锁定
@@ -10190,6 +10446,10 @@ private fun PockRefCanvas(
             },
     ) {
         val centerOffset = Offset(size.width / 2f, size.height / 2f)
+        val renderCanvasOffset = renderCanvasOffsetForLocalPan(
+            stateOffset = state.canvasOffset,
+            presentationOffset = canvasPanPresentationOffset,
+        )
 
         // Viewport cull: compute the world-space visible rect once per draw
         // pass, then skip images whose AABB does not intersect it. The
@@ -10199,7 +10459,7 @@ private fun PockRefCanvas(
         // even if they would otherwise be culled — otherwise the selection
         // chrome and the box-select feedback could pop out at the edges.
         val viewRect = worldViewportRect(
-            canvasOffset = state.canvasOffset,
+            canvasOffset = renderCanvasOffset,
             canvasScale = state.canvasScale,
             viewportWidth = size.width.toFloat(),
             viewportHeight = size.height.toFloat(),
@@ -10229,7 +10489,7 @@ private fun PockRefCanvas(
                     isBoxSelectPreview = image.id in state.boxSelectPreviewIds,
                     centerOffset = centerOffset,
                     canvasScale = state.canvasScale,
-                    canvasOffset = state.canvasOffset,
+                    canvasOffset = renderCanvasOffset,
                     transientDragIds = state.transientDragImageIds,
                     transientDragDelta = state.transientDragDelta,
                     // V_NOW (4-corner scale handles):
@@ -10257,7 +10517,7 @@ private fun PockRefCanvas(
                     image = image,
                     centerOffset = centerOffset,
                     canvasScale = state.canvasScale,
-                    canvasOffset = state.canvasOffset,
+                    canvasOffset = renderCanvasOffset,
                 )
             }
             // V_NOW: locked-image red border, drawn
@@ -10288,7 +10548,7 @@ private fun PockRefCanvas(
                     image = image,
                     centerOffset = centerOffset,
                     canvasScale = state.canvasScale,
-                    canvasOffset = state.canvasOffset,
+                    canvasOffset = renderCanvasOffset,
                 )
             }
         }
@@ -10307,7 +10567,7 @@ private fun PockRefCanvas(
                 drawGroupSelectionChrome(
                     selectedImages = groupImages,
                     canvasScale = state.canvasScale,
-                    canvasOffset = state.canvasOffset,
+                    canvasOffset = renderCanvasOffset,
                     centerOffset = centerOffset,
                 )
             }
@@ -10334,7 +10594,7 @@ private fun PockRefCanvas(
                 isCornerSnap = guide.isCornerSnap,
                 centerOffset = centerOffset,
                 canvasScale = state.canvasScale,
-                canvasOffset = state.canvasOffset,
+                canvasOffset = renderCanvasOffset,
             )
         }
 
@@ -10352,7 +10612,7 @@ private fun PockRefCanvas(
                     alpha = alpha,
                     centerOffset = centerOffset,
                     canvasScale = state.canvasScale,
-                    canvasOffset = state.canvasOffset,
+                    canvasOffset = renderCanvasOffset,
                     allImages = state.images,
                 )
             }
@@ -10373,7 +10633,7 @@ private fun PockRefCanvas(
                         snappedDegrees = guide.snappedDegrees,
                         centerOffset = centerOffset,
                         canvasScale = state.canvasScale,
-                        canvasOffset = state.canvasOffset,
+                        canvasOffset = renderCanvasOffset,
                         imageCenter = target.center,
                     )
                 }
@@ -10386,7 +10646,7 @@ private fun PockRefCanvas(
                     stroke = stroke,
                     centerOffset = centerOffset,
                     canvasScale = state.canvasScale,
-                    canvasOffset = state.canvasOffset,
+                    canvasOffset = renderCanvasOffset,
                 )
             }
             state.draftMarkupStroke?.let { stroke ->
@@ -10394,7 +10654,7 @@ private fun PockRefCanvas(
                     stroke = stroke,
                     centerOffset = centerOffset,
                     canvasScale = state.canvasScale,
-                    canvasOffset = state.canvasOffset,
+                    canvasOffset = renderCanvasOffset,
                 )
             }
             state.markupTexts.forEach { text ->
@@ -10402,7 +10662,7 @@ private fun PockRefCanvas(
                     item = text,
                     centerOffset = centerOffset,
                     canvasScale = state.canvasScale,
-                    canvasOffset = state.canvasOffset,
+                    canvasOffset = renderCanvasOffset,
                     isEditing = state.editingMarkupTextId == text.id,
                 )
             }
@@ -11749,8 +12009,54 @@ internal fun canvasPanDeltaForPointerCount(
     pointerCount: Int,
     previousCentroid: Offset,
     centroid: Offset,
+    singleFingerPanEnabled: Boolean,
 ): Offset {
-    return if (pointerCount == 2) centroid - previousCentroid else Offset.Zero
+    val allowedPointerCount = if (singleFingerPanEnabled) 1 else 2
+    return if (pointerCount == allowedPointerCount) centroid - previousCentroid else Offset.Zero
+}
+
+internal fun shouldSkipFrozenCanvasPointerWork(
+    canvasFrozen: Boolean,
+    hasPressedPointers: Boolean,
+): Boolean = canvasFrozen && hasPressedPointers
+
+internal fun shouldSelectImageForTwoFingerCanvasGesture(
+    globalImageLock: Boolean,
+): Boolean = !globalImageLock
+
+internal fun shouldUseSoftLockedTwoFingerCanvasNavigation(
+    globalImageLock: Boolean,
+    canvasFrozen: Boolean,
+): Boolean = globalImageLock && !canvasFrozen
+
+internal fun shouldUseLocalSoftLockedSingleFingerPan(
+    globalImageLock: Boolean,
+    canvasFrozen: Boolean,
+    singleFingerPanEnabled: Boolean,
+): Boolean = globalImageLock && !canvasFrozen && singleFingerPanEnabled
+
+internal fun shouldUseLocalTwoFingerCanvasPan(
+    canvasFrozen: Boolean,
+    transformCommitted: Boolean,
+): Boolean = !canvasFrozen && !transformCommitted
+
+internal fun renderCanvasOffsetForLocalPan(
+    stateOffset: Offset,
+    presentationOffset: Offset?,
+): Offset = presentationOffset ?: stateOffset
+
+internal fun canvasPanCommitDelta(
+    presentationOffset: Offset,
+    lastCommittedOffset: Offset?,
+    stateOffset: Offset,
+): Offset = presentationOffset - (lastCommittedOffset ?: stateOffset)
+
+internal fun hasCrossedCanvasPinchZoomThreshold(
+    initialDistance: Float,
+    currentDistance: Float,
+): Boolean {
+    if (initialDistance <= 0f) return false
+    return abs(currentDistance / initialDistance - 1f) * 100f >= SCALE_THRESHOLD_PERCENT
 }
 
 private fun hitTestImagesAt(

@@ -16,7 +16,10 @@ class AppPreferencesInstrumentedTest {
 
     @After
     fun cleanup() {
-        AppPreferences(context).defaultBackgroundPreset = BackgroundPreset.DefaultPreset
+        AppPreferences(context).apply {
+            defaultBackgroundPreset = BackgroundPreset.DefaultPreset
+            singleFingerCanvasPanEnabled = false
+        }
     }
 
     @Test
@@ -46,5 +49,12 @@ class AppPreferencesInstrumentedTest {
         AppPreferences(context).defaultBackgroundPreset = BackgroundPreset.DefaultPreset
         val fresh = AppPreferences(context)
         assertEquals(BackgroundPreset.DefaultPreset, fresh.defaultBackgroundPreset)
+    }
+
+    @Test
+    fun singleFingerCanvasPanPersistsAcrossInstances() {
+        AppPreferences(context).singleFingerCanvasPanEnabled = true
+
+        assertEquals(true, AppPreferences(context).singleFingerCanvasPanEnabled)
     }
 }

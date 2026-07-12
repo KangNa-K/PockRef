@@ -1118,13 +1118,14 @@ sealed interface PockRefAction {
  */
 object GestureId {
     const val MOVE_IMAGE = "moveImage"
+    const val SINGLE_FINGER_PAN = "singleFingerPan"
     const val PINCH_ZOOM = "pinchZoom"
     const val PINCH_ROTATE = "pinchRotate"
     const val TWO_FINGER_TAP = "twoFingerTap"
     const val THREE_FINGER_TAP = "threeFingerTap"
     const val DOUBLE_TAP_EMPTY = "doubleTapEmpty"
     val ALL: List<String> = listOf(
-        MOVE_IMAGE, PINCH_ZOOM, PINCH_ROTATE,
+        MOVE_IMAGE, SINGLE_FINGER_PAN, PINCH_ZOOM, PINCH_ROTATE,
         TWO_FINGER_TAP, THREE_FINGER_TAP,
         DOUBLE_TAP_EMPTY,
     )
@@ -1132,6 +1133,7 @@ object GestureId {
     /** Human-readable label for the settings panel. */
     fun label(id: String): String = when (id) {
         MOVE_IMAGE -> "单指拖动"
+        SINGLE_FINGER_PAN -> "单指移动画布"
         PINCH_ZOOM -> "双指捏合缩放"
         PINCH_ROTATE -> "双指旋转"
         TWO_FINGER_TAP -> "双指点击(撤销)"
