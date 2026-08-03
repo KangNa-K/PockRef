@@ -28,19 +28,15 @@
     <uses-permission android:name="android.permission.CAMERA" />
 
     <!--
-        V_NOW: SYSTEM_ALERT_WINDOW removed. The previous S Pen
-        button detection used a TYPE_APPLICATION_OVERLAY window
-        to read event.buttonState for stylus button presses,
-        but the overlay approach didn't fire on SM-X810 (Samsung
-        fork strips the button bit before it reaches the
-        overlay's generic-motion listener). The replacement —
-        dispatchTouchEvent + dispatchGenericMotionEvent in
-        MainActivity reading MotionEvent.buttonState directly —
-        sits on the framework's standard input dispatch path
-        which Samsung's fork does NOT strip, and works on
-        SM-X810 without any permission. See
-        MainActivity.handleMotionEvent and the S Pen section
-        in AGENTS.md.
+        A user-enabled interactive reference window. This is not used for S Pen
+        input; it only allows the app to show the canvas above another app when
+        the user explicitly enables the system "display over other apps" switch.
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!--
+        S Pen input remains on MainActivity's standard framework dispatch path.
+        It does not depend on the overlay permission.
     -->
 
     <!--
@@ -114,6 +110,11 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <service
+            android:name=".FloatingWindowService"
+            android:exported="false"
+            android:stopWithTask="false" />
 
         <activity
             android:name=".MainActivity"

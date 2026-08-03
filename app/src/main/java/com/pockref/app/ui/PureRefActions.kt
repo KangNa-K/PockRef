@@ -622,7 +622,9 @@ sealed interface PockRefAction {
     // "Permission Denial ... requires MANAGE_DOCUMENTS, or
     // grantUriPermission()". Two-step UX (tree picker + name
     // dialog) sidesteps the bug because OpenDocumentTree's
-    // takePersistableUriPermission succeeds on Downloads trees.
+    // takePersistableUriPermission succeeds on the selected tree. When
+    // the user has enabled a persisted default tree, the UI creates the
+    // document there directly and skips the picker.
     data object RequestSaveScene : PockRefAction
     data class ConfirmSaveSceneName(val name: String) : PockRefAction
     data object DismissSaveSceneNameDialog : PockRefAction
@@ -979,11 +981,28 @@ sealed interface PockRefAction {
      */
     data class SetAutoSaveEnabled(val enabled: Boolean) : PockRefAction
 
+    /**
+     * Enable or disable using the selected default save directory. When
+     * disabled, the system file manager chooses the initial location.
+     */
+    data class SetDefaultSavePathEnabled(val enabled: Boolean) : PockRefAction
+
+    /**
+     * Set or clear the user's preferred save directory. The UI obtains the
+     * tree URI from `OpenDocumentTree` and supplies the folder name for the
+     * settings summary. Passing null clears the selected folder.
+     */
+    data class SetDefaultSaveDirectory(
+        val treeUri: Uri?,
+        val displayName: String?,
+    ) : PockRefAction
+
     // ── 速写练习 (V_NOW 2026-06-08) ─────────────────────────────────
-    // The six practice variants below are dispatched by the
+    // The eight practice actions below are dispatched by the
     // pre-flight config sheet (Start), the practice screen
     // ticker (Tick), and the practice screen chrome (Pause /
-    // Resume / SkipRest / Exit). All six route through
+    // Resume / SkipRest / PreviousPracticeImage /
+    // NextPracticeImage / Exit). All eight route through
     // [com.pockref.app.ui.PockRefViewModelPractice], which wraps
     // the pure [com.pockref.app.ui.PracticeReducer] and applies
     // the result to [com.pockref.app.model.PockRefUiState.practiceState].
@@ -1044,6 +1063,18 @@ sealed interface PockRefAction {
      *  REST, so a misclick dispatch would only happen via a
      *  debug hook). */
     data object SkipRest : PockRefAction
+
+    /** User explicitly moved to the previous image in the practice queue.
+     * No-op at the first image. The target image starts a fresh
+     * COUNTDOWN using the configured practice duration.
+     */
+    data object PreviousPracticeImage : PockRefAction
+
+    /** User explicitly moved to the next image in the practice queue.
+     * No-op at the last image. The target image starts a fresh
+     * COUNTDOWN using the configured practice duration.
+     */
+    data object NextPracticeImage : PockRefAction
 
     /** Tear down the session. Sets
      *  [com.pockref.app.model.PockRefUiState.practiceState]

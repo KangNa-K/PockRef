@@ -19,6 +19,8 @@ class AppPreferencesInstrumentedTest {
         AppPreferences(context).apply {
             defaultBackgroundPreset = BackgroundPreset.DefaultPreset
             singleFingerCanvasPanEnabled = false
+            defaultSavePathEnabled = false
+            defaultSaveDirectoryUri = null
         }
     }
 
@@ -56,5 +58,26 @@ class AppPreferencesInstrumentedTest {
         AppPreferences(context).singleFingerCanvasPanEnabled = true
 
         assertEquals(true, AppPreferences(context).singleFingerCanvasPanEnabled)
+    }
+
+    @Test
+    fun defaultSavePathSwitchPersistsAcrossInstances() {
+        AppPreferences(context).defaultSavePathEnabled = true
+
+        assertEquals(true, AppPreferences(context).defaultSavePathEnabled)
+    }
+
+    @Test
+    fun defaultSaveDirectoryPersistsAcrossInstances() {
+        val prefs1 = AppPreferences(context)
+        prefs1.defaultSaveDirectoryUri = "content://example/tree/primary%3APictures"
+        prefs1.defaultSaveDirectoryName = "Pictures"
+
+        val prefs2 = AppPreferences(context)
+        assertEquals(
+            "content://example/tree/primary%3APictures",
+            prefs2.defaultSaveDirectoryUri,
+        )
+        assertEquals("Pictures", prefs2.defaultSaveDirectoryName)
     }
 }

@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ChevronLeft
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -33,6 +35,7 @@ import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -327,6 +330,11 @@ private fun PracticeRunningView(
                     .padding(top = 16.dp, end = 16.dp),
             )
 
+            PracticePageNavigation(
+                state = state,
+                onAction = onAction,
+            )
+
             // Bottom-center action button: M3 FilledTonalButton
             // (the M3 "secondary action" button role). Uses
             // secondaryContainer / onSecondaryContainer
@@ -374,6 +382,48 @@ private fun PracticeRunningView(
                 }
             }
         }
+    }
+}
+
+/**
+ * M3 filled-tonal icon buttons for moving through the practice queue.
+ * The controls stay at the vertical center of the image so they are
+ * easy to reach without competing with the countdown badge or the
+ * bottom pause / skip action. Disabled states communicate the first
+ * and last page boundaries through the standard M3 treatment.
+ */
+@Composable
+private fun BoxScope.PracticePageNavigation(
+    state: PracticeState,
+    onAction: (PockRefAction) -> Unit,
+) {
+    FilledTonalIconButton(
+        onClick = { onAction(PockRefAction.PreviousPracticeImage) },
+        enabled = state.currentIndex > 0,
+        modifier = Modifier
+            .align(Alignment.CenterStart)
+            .padding(start = 16.dp)
+            .size(48.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.ChevronLeft,
+            contentDescription = "上一页",
+            modifier = Modifier.size(24.dp),
+        )
+    }
+    FilledTonalIconButton(
+        onClick = { onAction(PockRefAction.NextPracticeImage) },
+        enabled = state.currentIndex < state.imageIds.lastIndex,
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .padding(end = 16.dp)
+            .size(48.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.ChevronRight,
+            contentDescription = "下一页",
+            modifier = Modifier.size(24.dp),
+        )
     }
 }
 

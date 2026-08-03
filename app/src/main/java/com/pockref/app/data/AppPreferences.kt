@@ -197,6 +197,58 @@ class AppPreferences(context: Context) {
         }
 
     /**
+     * Whether save and export pickers should start in the folder selected
+     * below. Default false means DocumentsUI chooses its own location.
+     */
+    var defaultSavePathEnabled: Boolean
+        get() {
+            // The previous build shipped this key defaulted to true for a
+            // Downloads-only switch. Migrate that obsolete setting once so
+            // the new opt-in custom-directory behavior starts disabled.
+            if (!prefs.getBoolean(KEY_DEFAULT_SAVE_PATH_MIGRATION_DONE, false)) {
+                prefs.edit()
+                    .remove(KEY_DEFAULT_SAVE_PATH_ENABLED)
+                    .putBoolean(KEY_DEFAULT_SAVE_PATH_MIGRATION_DONE, true)
+                    .apply()
+            }
+            return prefs.getBoolean(KEY_DEFAULT_SAVE_PATH_ENABLED, false)
+        }
+        set(value) {
+            prefs.edit().putBoolean(KEY_DEFAULT_SAVE_PATH_ENABLED, value).apply()
+        }
+
+    /**
+     * Persisted Storage Access Framework tree URI used as the default
+     * destination for user-initiated saves and exports. A null value means
+     * no custom folder has been chosen, so callers let DocumentsUI choose
+     * the initial location.
+     */
+    var defaultSaveDirectoryUri: String?
+        get() = prefs.getString(KEY_DEFAULT_SAVE_DIRECTORY_URI, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value.isNullOrBlank()) {
+                    remove(KEY_DEFAULT_SAVE_DIRECTORY_URI)
+                } else {
+                    putString(KEY_DEFAULT_SAVE_DIRECTORY_URI, value)
+                }
+            }.apply()
+        }
+
+    /** Display name cached from the selected tree for the settings summary. */
+    var defaultSaveDirectoryName: String?
+        get() = prefs.getString(KEY_DEFAULT_SAVE_DIRECTORY_NAME, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value.isNullOrBlank()) {
+                    remove(KEY_DEFAULT_SAVE_DIRECTORY_NAME)
+                } else {
+                    putString(KEY_DEFAULT_SAVE_DIRECTORY_NAME, value)
+                }
+            }.apply()
+        }
+
+    /**
      * V_NOW: minimap custom position (x, y) in raw screen pixels.
      * Persisted so a fresh launch (or process restart) restores
      * the minimap to wherever the user last dragged it. Pairs
@@ -470,6 +522,10 @@ class AppPreferences(context: Context) {
         private const val KEY_SPEN_MODE = "spen_mode"
         private const val KEY_AUTO_SAVE_INTERVAL_MS = "auto_save_interval_ms"
         private const val KEY_AUTO_SAVE_ENABLED = "auto_save_enabled"
+        private const val KEY_DEFAULT_SAVE_PATH_ENABLED = "default_save_path_enabled"
+        private const val KEY_DEFAULT_SAVE_PATH_MIGRATION_DONE = "default_save_path_migration_done"
+        private const val KEY_DEFAULT_SAVE_DIRECTORY_URI = "default_save_directory_uri"
+        private const val KEY_DEFAULT_SAVE_DIRECTORY_NAME = "default_save_directory_name"
         // V_NOW: minimap position / dock / collapsed state.
         // Position uses NaN as the "no value yet" sentinel
         // (since 0/0 is a valid docked coordinate), and the

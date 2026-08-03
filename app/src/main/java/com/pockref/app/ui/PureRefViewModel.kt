@@ -70,6 +70,27 @@ internal const val MAX_CANVAS_SCALE: Float = 40f
 internal const val MAX_CANVAS_PAN_STEP_PX: Float = 200f
 
 /**
+ * Some DocumentsProvider implementations wrap a missing document in an
+ * [IllegalArgumentException] rather than returning a [java.io.FileNotFoundException].
+ * A stale recent-file entry should be removed in either case.
+ */
+internal fun isMissingDocumentFailure(error: Throwable): Boolean {
+    var current: Throwable? = error
+    while (current != null) {
+        if (current is java.io.FileNotFoundException) return true
+        val message = current.message.orEmpty()
+        if (
+            message.contains("Missing file", ignoreCase = true) ||
+            message.contains("FileNotFoundException", ignoreCase = true)
+        ) {
+            return true
+        }
+        current = current.cause
+    }
+    return false
+}
+
+/**
  * A user-facing error to surface through the Snackbar channel.
  * @param message short, already-localized text shown in the UI
  * @param throwable the original cause (for Logcat / future report); never displayed
@@ -152,6 +173,13 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             // frame" race that a `mutableStateOf` local
             // + set-on-action pattern would have.
             autoSaveEnabled = appPrefs.autoSaveEnabled,
+            // Save picker behavior is opt-in. When false, DocumentsUI
+            // chooses its own last/default location.
+            defaultSavePathEnabled = appPrefs.defaultSavePathEnabled,
+            // Persisted custom save directory. It is only used when the
+            // switch above is enabled.
+            defaultSaveDirectoryUri = appPrefs.defaultSaveDirectoryUri,
+            defaultSaveDirectoryName = appPrefs.defaultSaveDirectoryName,
             // V_NOW (2026-06-08 "global image lock" feature):
             // mirror the persisted app-wide lock toggle into
             // [uiState] at startup so the top-right lock
@@ -340,9 +368,10 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     internal val sceneController: PockRefViewModelScene
     // V_NOW (2026-06-08 速写练习): wraps the pure
     // [PracticeReducer] and applies its output to
-    // [PockRefUiState.practiceState]. The six
+    // [PockRefUiState.practiceState]. The eight
     // [PockRefAction.StartPractice] / [PracticeTick] /
     // PausePractice / ResumePractice / SkipRest /
+    // PreviousPracticeImage / NextPracticeImage /
     // ExitPractice actions route through this controller.
     // Follows the same constructor pattern as the other
     // four controllers (passes `this`, reads
@@ -1220,6 +1249,11 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.SetSpenMode -> setSpenMode(action.mode)
             is PockRefAction.SetAutoSaveIntervalMs -> setAutoSaveIntervalMs(action.intervalMs)
             is PockRefAction.SetAutoSaveEnabled -> setAutoSaveEnabled(action.enabled)
+            is PockRefAction.SetDefaultSavePathEnabled -> setDefaultSavePathEnabled(action.enabled)
+            is PockRefAction.SetDefaultSaveDirectory -> setDefaultSaveDirectory(
+                action.treeUri,
+                action.displayName,
+            )
             // V_NOW (2026-06-08 速写练习): the six practice
             // variants. All delegate to [practiceController]
             // which wraps [PracticeReducer] — the reducer is
@@ -1234,6 +1268,8 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.PausePractice -> practiceController.pause()
             PockRefAction.ResumePractice -> practiceController.resume()
             PockRefAction.SkipRest -> practiceController.skipRest()
+            PockRefAction.PreviousPracticeImage -> practiceController.previousImage()
+            PockRefAction.NextPracticeImage -> practiceController.nextImage()
             PockRefAction.ExitPractice -> practiceController.exit()
             // V_NOW (2026-06-08 速写练习 commit 2): the
             // pre-flight config sheet toggle. The
@@ -1810,6 +1846,51 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         // interval slider. Restarting fixes both: the next
         // `delay()` reads the new pref immediately.
         startAutoSaveLoop()
+    }
+
+    /**
+     * Mirror the save-path switch into preferences and uiState. The selected
+     * directory is retained while disabled so turning the switch back on does
+     * not make the user choose the same folder again.
+     */
+    internal fun setDefaultSavePathEnabled(enabled: Boolean) {
+        if (_uiState.value.defaultSavePathEnabled == enabled) return
+        appPrefs.defaultSavePathEnabled = enabled
+        _uiState.update { it.copy(defaultSavePathEnabled = enabled) }
+    }
+
+    /**
+     * Persist the user's preferred SAF tree and mirror it into uiState.
+     * Releasing the old persistable grant avoids accumulating stale folder
+     * permissions when the user changes or resets the setting.
+     */
+    internal fun setDefaultSaveDirectory(treeUri: Uri?, displayName: String?) {
+        val newUri = treeUri?.toString()?.takeIf { it.isNotBlank() }
+        val oldUri = appPrefs.defaultSaveDirectoryUri
+        val normalizedName = displayName?.trim()?.takeIf { it.isNotEmpty() }
+        if (
+            oldUri == newUri &&
+            _uiState.value.defaultSaveDirectoryName == normalizedName
+        ) {
+            return
+        }
+        if (oldUri != null && oldUri != newUri) {
+            runCatching {
+                contentResolver.releasePersistableUriPermission(
+                    Uri.parse(oldUri),
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+        }
+        appPrefs.defaultSaveDirectoryUri = newUri
+        appPrefs.defaultSaveDirectoryName = normalizedName
+        _uiState.update {
+            it.copy(
+                defaultSaveDirectoryUri = newUri,
+                defaultSaveDirectoryName = normalizedName,
+            )
+        }
     }
 
     /**
@@ -2751,14 +2832,14 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
      *   - [UnsupportedOperationException]: the
      *     provider for this URI doesn't implement
      *     delete (some read-only cloud providers)
-     *   - [IllegalArgumentException]: the URI is
-     *     not a document URI
+     *   - [IllegalArgumentException]: malformed URI, or a missing
+     *     document wrapped by some OEM providers. The latter is identified
+     *     by [isMissingDocumentFailure] and treated as already deleted.
      *
-     * [SecurityException] and [FileNotFoundException]
-     * are treated as "deleted" (entry removed from
-     * list). The remaining exceptions map to "failed"
-     * and are returned to the caller for state-update
-     * branching + snackbar message.
+     * [SecurityException], direct file-not-found failures, and documented
+     * missing-document wrappers are treated as "deleted" (entry removed from
+     * list). The remaining exceptions map to "failed" and are returned to
+     * the caller for state-update branching + snackbar message.
      */
     private fun deleteFilesInBatch(
         uris: Set<String>,
@@ -2787,34 +2868,25 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     "PockRefRecent",
                     "bulkDelete: lost URI permission, removing entry: $uriString",
                 )
-            } catch (e: java.io.FileNotFoundException) {
-                // V_NOW (2026-06-12 "本地已删除文件无法清除" fix):
-                // file already gone from disk
-                // (deleted out-of-band by the user
-                // via a file manager, moved, etc.).
-                // From the recent-scenes list's
-                // perspective the entry SHOULD be
-                // removed — the file no longer
-                // exists, so keeping the entry is
-                // just a ghost. Treat as "deleted"
-                // so the caller removes it from
-                // the list.
-                deleted.add(uriString)
-                android.util.Log.i(
-                    "PockRefRecent",
-                    "bulkDelete: file already gone, removing entry: $uriString",
-                )
             } catch (e: Throwable) {
-                // UnsupportedOperationException,
-                // IllegalArgumentException, etc.
-                // These map to "failed" — the
-                // provider doesn't support delete
-                // or the URI is invalid.
-                failed.add(uriString)
-                android.util.Log.w(
-                    "PockRefRecent",
-                    "bulkDelete: ${e.javaClass.simpleName} for $uriString: ${e.message}",
-                )
+                if (isMissingDocumentFailure(e)) {
+                    // Some OEM providers report an already-moved/deleted file as
+                    // IllegalArgumentException("... Missing file ...") instead of
+                    // FileNotFoundException. The recent entry is still a ghost.
+                    deleted.add(uriString)
+                    android.util.Log.i(
+                        "PockRefRecent",
+                        "bulkDelete: file already gone, removing entry: $uriString",
+                    )
+                } else {
+                    // UnsupportedOperationException, invalid URIs, and other
+                    // provider failures leave the entry intact so it can be retried.
+                    failed.add(uriString)
+                    android.util.Log.w(
+                        "PockRefRecent",
+                        "bulkDelete: ${e.javaClass.simpleName} for $uriString: ${e.message}",
+                    )
+                }
             }
         }
         return deleted to failed
@@ -2871,14 +2943,18 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     internal fun queryDisplayNameSync(uri: Uri): String? {
-        return contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    cursor.getString(0)
-                } else {
-                    null
+        return runCatching {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        cursor.getString(0)
+                    } else {
+                        null
+                    }
                 }
-            }
+        }.onFailure { error ->
+            Log.w(TAG, "queryDisplayName failed for $uri", error)
+        }.getOrNull()
     }
 
     internal fun queryFileSizeSync(uri: Uri): Long {

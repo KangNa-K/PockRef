@@ -3,6 +3,7 @@ package com.pockref.app
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.DragEvent
 import android.view.MotionEvent
@@ -67,6 +68,7 @@ class MainActivity : ComponentActivity() {
      * resumes mid-press.
      */
     private var lastStylusButtonBits: Int = 0
+    private var awaitingOverlayPermission: Boolean = false
 
     /**
      * S Pen side-button touch hook. The system dispatches
@@ -251,6 +253,7 @@ class MainActivity : ComponentActivity() {
                     imageLazyLoader = viewModel.imageLazyLoader,
                     imageDecoder = viewModel.imageDecoder,
                     errorsFlow = viewModel.errors,
+                    onEnterFloatingWindow = ::enterFloatingWindow,
                     // V_NOW (2026-06-16): bridge the
                     // [LogExportFab] click to
                     // [PockRefViewModel.startLogExport].
@@ -264,6 +267,37 @@ class MainActivity : ComponentActivity() {
         val hasExternalOpenRequest = handleOpenIntent(intent)
         if (shouldRestoreBackup(previousSessionActive, hasExternalOpenRequest, savedInstanceState != null)) {
             viewModel.restorePreviousSessionIfAvailable()
+        }
+    }
+
+    /**
+     * Start the interactive system overlay rather than Android PiP. PiP routes
+     * touch input through the system media-controls layer on Samsung devices;
+     * the overlay remains focusable and therefore keeps the existing canvas
+     * gestures, controls, and text input interactive.
+     */
+    private fun enterFloatingWindow() {
+        if (!Settings.canDrawOverlays(this)) {
+            awaitingOverlayPermission = true
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+            return
+        }
+        FloatingWindowService.launch(this, viewModel)
+        moveTaskToBack(true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (!awaitingOverlayPermission) return
+        awaitingOverlayPermission = false
+        if (Settings.canDrawOverlays(this)) {
+            FloatingWindowService.launch(this, viewModel)
+            moveTaskToBack(true)
         }
     }
 

@@ -347,6 +347,89 @@ class PracticeStateMachineTest {
         assertSame(running, after)
     }
 
+    // ── Manual page navigation ────────────────────────────────────
+
+    @Test
+    fun previousImage_movesBackAndResetsCountdown() {
+        val resting = PracticeState(
+            status = PracticeStatus.RUNNING,
+            imageIds = imageIds,
+            currentIndex = 2,
+            phase = PracticePhase.REST,
+            remainingMs = 4_000L,
+            config = config,
+        )
+        val after = PracticeReducer.reduce(resting, PracticeEvent.PreviousImage)
+
+        assertEquals(PracticeStatus.RUNNING, after.status)
+        assertEquals(1, after.currentIndex)
+        assertEquals(PracticePhase.COUNTDOWN, after.phase)
+        assertEquals(60_000L, after.remainingMs)
+    }
+
+    @Test
+    fun nextImage_movesForwardAndResetsCountdown() {
+        val running = PracticeState(
+            status = PracticeStatus.RUNNING,
+            imageIds = imageIds,
+            currentIndex = 1,
+            phase = PracticePhase.COUNTDOWN,
+            remainingMs = 12_000L,
+            config = config,
+        )
+        val after = PracticeReducer.reduce(running, PracticeEvent.NextImage)
+
+        assertEquals(2, after.currentIndex)
+        assertEquals(PracticePhase.COUNTDOWN, after.phase)
+        assertEquals(60_000L, after.remainingMs)
+    }
+
+    @Test
+    fun previousImage_atFirstPage_isNoOp() {
+        val first = PracticeState(
+            status = PracticeStatus.RUNNING,
+            imageIds = imageIds,
+            currentIndex = 0,
+            phase = PracticePhase.COUNTDOWN,
+            remainingMs = 12_000L,
+            config = config,
+        )
+
+        assertSame(first, PracticeReducer.reduce(first, PracticeEvent.PreviousImage))
+    }
+
+    @Test
+    fun nextImage_atLastPage_isNoOp() {
+        val last = PracticeState(
+            status = PracticeStatus.RUNNING,
+            imageIds = imageIds,
+            currentIndex = imageIds.lastIndex,
+            phase = PracticePhase.COUNTDOWN,
+            remainingMs = 12_000L,
+            config = config,
+        )
+
+        assertSame(last, PracticeReducer.reduce(last, PracticeEvent.NextImage))
+    }
+
+    @Test
+    fun navigation_fromPaused_preservesPausedStatus() {
+        val paused = PracticeState(
+            status = PracticeStatus.PAUSED,
+            imageIds = imageIds,
+            currentIndex = 1,
+            phase = PracticePhase.REST,
+            remainingMs = 4_000L,
+            config = config,
+        )
+        val after = PracticeReducer.reduce(paused, PracticeEvent.NextImage)
+
+        assertEquals(PracticeStatus.PAUSED, after.status)
+        assertEquals(2, after.currentIndex)
+        assertEquals(PracticePhase.COUNTDOWN, after.phase)
+        assertEquals(60_000L, after.remainingMs)
+    }
+
     // ── SkipRest ──────────────────────────────────────────────────
 
     @Test

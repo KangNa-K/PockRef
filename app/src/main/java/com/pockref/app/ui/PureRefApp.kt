@@ -2,6 +2,8 @@
 
 package com.pockref.app.ui
 
+import android.app.Activity
+import android.content.ContentResolver
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.ColorMatrixColorFilter
@@ -17,7 +19,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.contract.ActivityResultContracts.CreateDocument
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments
 import androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia
@@ -123,6 +125,7 @@ import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.RestartAlt
@@ -539,6 +542,79 @@ private const val LARGE_IMAGE_PIXELS = 4_000_000
 // Upper bound for the downsampled width of a large image.
 private const val LARGE_IMAGE_MAX_DECODE_PX = 2048
 
+// CreateDocument's stock contract accepts only a file name, so it cannot
+// honor the user's persisted folder. This small contract adds the SAF
+// initial URI while preserving the same URI result shape.
+private data class CreateDocumentInput(
+    val mimeType: String,
+    val fileName: String,
+    val initialUri: Uri?,
+)
+
+private class CreateDocumentWithInitialUri : ActivityResultContract<CreateDocumentInput, Uri?>() {
+    override fun createIntent(context: android.content.Context, input: CreateDocumentInput): Intent {
+        return Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType(input.mimeType)
+            .putExtra(Intent.EXTRA_TITLE, input.fileName)
+            .apply {
+                input.initialUri?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+            }
+    }
+
+    override fun parseResult(resultCode: Int, intent: Intent?): Uri? {
+        return if (resultCode == Activity.RESULT_OK) intent?.data else null
+    }
+}
+
+private fun treeDisplayName(contentResolver: ContentResolver, treeUri: Uri): String? {
+    val documentUri = runCatching {
+        val documentId = DocumentsContract.getTreeDocumentId(treeUri)
+        DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+    }.getOrNull()
+    val queriedName = documentUri?.let { uri ->
+        runCatching {
+            contentResolver.query(
+                uri,
+                arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull()
+    }
+    if (!queriedName.isNullOrBlank()) return queriedName
+    return runCatching {
+        val documentId = DocumentsContract.getTreeDocumentId(treeUri)
+        Uri.decode(documentId.substringAfter(':', documentId).substringAfterLast('/'))
+            .takeIf { it.isNotBlank() }
+    }.getOrNull()
+}
+
+private fun createDocumentInTree(
+    contentResolver: ContentResolver,
+    treeUri: Uri,
+    mimeType: String,
+    fileName: String,
+): Uri? {
+    return try {
+        val treeDocumentId = DocumentsContract.getTreeDocumentId(treeUri)
+        val parentDocumentUri =
+            DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocumentId)
+        DocumentsContract.createDocument(
+            contentResolver,
+            parentDocumentUri,
+            mimeType,
+            fileName,
+        )
+    } catch (error: Throwable) {
+        Log.e("PockRefSave", "createDocument failed for $treeUri", error)
+        null
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun PockRefApp(
@@ -560,6 +636,8 @@ fun PockRefApp(
         onError: (reason: String) -> Unit,
     ) -> Unit = { _, _, _ -> },
     exportInProgressFlow: StateFlow<Boolean> = MutableStateFlow(false),
+    onEnterFloatingWindow: () -> Unit = {},
+    showFloatingWindowButton: Boolean = true,
 ) {
     val importLauncher = rememberLauncherForActivityResult(OpenMultipleDocuments()) { uris ->
         onAction(PockRefAction.ImportImages(uris))
@@ -991,20 +1069,18 @@ fun PockRefApp(
     // Fix: switch the Save flow to the two-step [OpenDocumentTree] +
     // [DocumentsContract.createDocument] pattern already used by
     // [exportBatchPngLauncher] / [exportBatchJpgLauncher]. The
-    // user picks a folder first (defaulted to Downloads so they
-    // don't have to navigate), then types a filename in
+    // user picks a folder first (opened at the previously selected folder
+    // when the switch is enabled), then types a filename in
     // [SaveSceneNameDialog], then we takePersistable on the tree
     // and createDocument on it. OpenDocumentTree on a tree URI
     // does grant persistable (it's the whole point of the tree
     // contract), so the resulting document URI inherits a
     // working write grant.
-    val saveSceneTreeInitialUri = remember {
-        // content://com.android.externalstorage.documents/root/primary%3ADownload
-        Uri.parse(
-            "content://com.android.externalstorage.documents/root/primary%3A" +
-                Environment.DIRECTORY_DOWNLOADS,
-        )
-    }
+    val selectedSaveTreeUri = state.defaultSaveDirectoryUri
+        ?.takeIf { it.isNotBlank() }
+        ?.let(Uri::parse)
+    val preferredSaveTreeUri = selectedSaveTreeUri
+        .takeIf { state.defaultSavePathEnabled }
     val saveSceneTreeLauncher = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
     ) { treeUri ->
@@ -1046,20 +1122,12 @@ fun PockRefApp(
         // failure with no scene on disk. Convert tree → document
         // the same way [exportBatchToTree] does
         // (PureRefViewModelScene.kt exportBatchToTree()).
-        val documentUri = try {
-            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
-            val parentDocUri =
-                DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
-            DocumentsContract.createDocument(
-                context.contentResolver,
-                parentDocUri,
-                com.pockref.app.MainActivity.PUR_SCENE_MIME,
-                filename,
-            )
-        } catch (e: Throwable) {
-            android.util.Log.e("PockRefSave", "createDocument failed", e)
-            null
-        }
+        val documentUri = createDocumentInTree(
+            contentResolver = context.contentResolver,
+            treeUri = treeUri,
+            mimeType = com.pockref.app.MainActivity.PUR_SCENE_MIME,
+            fileName = filename,
+        )
         if (documentUri != null) {
             onAction(PockRefAction.SaveScene(documentUri))
         }
@@ -1070,18 +1138,46 @@ fun PockRefApp(
         // dialog confirm re-arms it.
         onAction(PockRefAction.ConsumePendingSaveSceneLaunch)
     }
+    // Settings uses the same tree contract as scene save. The selected URI
+    // is persisted by the ViewModel after this callback returns.
+    val saveDirectoryPickerLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        if (treeUri == null) return@rememberLauncherForActivityResult
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                treeUri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        } catch (e: SecurityException) {
+            android.util.Log.w(
+                "PockRefSave",
+                "save directory persistable permission failed: ${e.message}",
+            )
+        }
+        val displayName = treeDisplayName(context.contentResolver, treeUri)
+            ?: "已选择文件夹"
+        onAction(
+            PockRefAction.SetDefaultSaveDirectory(
+                treeUri = treeUri,
+                displayName = displayName,
+            ),
+        )
+    }
+
     // Export launchers are declared inside [if
     // (state.showExportDialog)] (where they're used) so the
     // closure capture of function-scope locals is trivial. Two
     // separate launchers because the document picker is bound
     // to a MIME type.
-    val exportPngLauncher = rememberLauncherForActivityResult(CreateDocument("image/png")) { uri ->
+    val exportPngLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
         uri?.let { onAction(PockRefAction.ConfirmExport(it, com.pockref.app.model.ExportFormat.PNG)) }
     }
-    val exportJpgLauncher = rememberLauncherForActivityResult(CreateDocument("image/jpeg")) { uri ->
+    val exportJpgLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
         uri?.let { onAction(PockRefAction.ConfirmExport(it, com.pockref.app.model.ExportFormat.JPEG)) }
     }
-    val exportGifLauncher = rememberLauncherForActivityResult(CreateDocument("image/gif")) { uri ->
+    val exportGifLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
         uri?.let { onAction(PockRefAction.ConfirmExportGif(it)) }
     }
     // Canvas export: export the entire canvas as a single PNG.
@@ -1095,7 +1191,7 @@ fun PockRefApp(
     // background colour or leave it transparent. The dialog
     // dismisses itself in the same reducer via
     // [PockRefUiState.showExportCanvasDialog] = false.
-    val exportCanvasLauncher = rememberLauncherForActivityResult(CreateDocument("image/png")) { uri ->
+    val exportCanvasLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
         uri?.let {
             onAction(
                 PockRefAction.ConfirmExportCanvas(
@@ -1127,13 +1223,8 @@ fun PockRefApp(
     // system folder picker opens there instead of the storage root.
     // On Samsung devices the root is read-only; opening Download
     // directly avoids the "无法在此文件夹创建文件" error.
-    val exportBatchInitialUri = remember {
-        // content://com.android.externalstorage.documents/root/primary%3ADownload
-        Uri.parse(
-            "content://com.android.externalstorage.documents/root/primary%3A" +
-                Environment.DIRECTORY_DOWNLOADS,
-        )
-    }
+    val saveDirectoryInitialUri = preferredSaveTreeUri
+
     val exportBatchPngLauncher = rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()) { uri ->
         // V3 diagnostic: log the launcher result so the
         // user can see in logcat whether the picker
@@ -1218,14 +1309,11 @@ fun PockRefApp(
         )
     }
     // V_NOW (2026-06-16): Save now goes through [RequestSaveScene]
-    // → [SaveSceneNameDialog] → [saveSceneTreeLauncher]. The
-    // dialog handles both "new file" (no currentSceneUri) and
-    // "save over" paths: in both cases the user picks a folder +
-    // a filename, and we call [DocumentsContract.createDocument].
-    // The two-step UX is the only known way to dodge the
-    // DocumentsUI + Downloads persistable-grant bug on Samsung
-    // One UI 6 / Android 14 (see comment block above the
-    // [saveSceneTreeLauncher] declaration for details).
+    // → [SaveSceneNameDialog]. For a new file, the confirmed name is
+    // created directly in the enabled default directory; otherwise
+    // [saveSceneTreeLauncher] lets the user choose a folder first.
+    // The two-step picker path is kept for providers where a manual
+    // folder grant is still required (see the launcher comments above).
     val onSaveScene: () -> Unit = {
         onAction(PockRefAction.RequestSaveScene)
     }
@@ -1235,9 +1323,9 @@ fun PockRefApp(
             // Same dialog flow as the top-bar Save button — the
             // unsaved-changes dialog's "Save" path now also
             // triggers [RequestSaveScene], so the user gets the
-            // same folder-picker + name-dialog UX whether they
-            // hit Save from the toolbar or from the close
-            // confirmation.
+            // same name-dialog flow whether they hit Save from the
+            // toolbar or from the close confirmation. The configured
+            // directory is used directly when the switch is enabled.
             onAction(PockRefAction.RequestSaveScene)
             onAction(PockRefAction.ClearSaveAsTrigger)
         }
@@ -1245,12 +1333,29 @@ fun PockRefApp(
 
     LaunchedEffect(state.pendingSaveSceneLaunch) {
         if (state.pendingSaveSceneLaunch) {
-            saveSceneTreeLauncher.launch(saveSceneTreeInitialUri)
-            // Don't consume the flag here — the launcher's
-            // callback (above) is the one source of truth for
-            // "we're done with this save attempt". If the user
-            // cancels the tree picker the callback fires with
-            // treeUri=null and clears the flag there.
+            val treeUri = preferredSaveTreeUri
+            if (treeUri == null) {
+                // No active default directory: let the user choose one.
+                saveSceneTreeLauncher.launch(null)
+            } else {
+                // The directory has already been authorized in Settings, so
+                // create the named document directly and avoid reopening the
+                // folder picker during the close-and-save flow.
+                val documentUri = createDocumentInTree(
+                    contentResolver = context.contentResolver,
+                    treeUri = treeUri,
+                    mimeType = com.pockref.app.MainActivity.PUR_SCENE_MIME,
+                    fileName = state.pendingSaveSceneName.ifBlank { "Untitled.pur" },
+                )
+                if (documentUri != null) {
+                    onAction(PockRefAction.SaveScene(documentUri))
+                    onAction(PockRefAction.ConsumePendingSaveSceneLaunch)
+                } else {
+                    // A revoked provider grant or a provider-side failure
+                    // falls back to the manual folder picker.
+                    saveSceneTreeLauncher.launch(treeUri)
+                }
+            }
         }
     }
 
@@ -1822,6 +1927,11 @@ fun PockRefApp(
                 },
                 onPickClipboard = onImportFromClipboard,
                 onPickFiles = onImport,
+                onEnterFloatingWindow = onEnterFloatingWindow,
+                onChooseDefaultSaveDirectory = {
+                    saveDirectoryPickerLauncher.launch(selectedSaveTreeUri)
+                },
+                showFloatingWindowButton = showFloatingWindowButton,
                 onTakePhoto = {
                     try {
                         val photoDir = context.getExternalFilesDir(
@@ -2066,7 +2176,13 @@ fun PockRefApp(
                 val gifExportImage = if (exportsOriginalGif) selectedExportImage else null
                 if (gifExportImage != null) {
                     LaunchedEffect(gifExportImage.id) {
-                        exportGifLauncher.launch("${gifExportImage.name}.gif")
+                        exportGifLauncher.launch(
+                            CreateDocumentInput(
+                                mimeType = "image/gif",
+                                fileName = "${gifExportImage.name}.gif",
+                                initialUri = preferredSaveTreeUri,
+                            ),
+                        )
                         onAction(PockRefAction.CancelExport)
                     }
                 } else {
@@ -2074,7 +2190,8 @@ fun PockRefApp(
                         selectedName = selectedExportImage?.name ?: "untitled",
                         isMulti = isMulti,
                         selectedCount = if (isMulti) multiCount else 1,
-                        exportBatchInitialUri = exportBatchInitialUri,
+                        saveDirectoryInitialUri = saveDirectoryInitialUri,
+
                         exportPngLauncher = exportPngLauncher,
                         exportJpgLauncher = exportJpgLauncher,
                         exportBatchPngLauncher = exportBatchPngLauncher,
@@ -2106,6 +2223,7 @@ fun PockRefApp(
                     maxDim = state.exportCanvasMaxDim,
                     backgroundMode = state.exportCanvasBackground,
                     onAction = onAction,
+                    initialUri = preferredSaveTreeUri,
                     exportCanvasLauncher = exportCanvasLauncher,
                 )
             }
@@ -2429,8 +2547,11 @@ fun PockRefApp(
                             ?: imageLazyLoader?.readImageBytes(off, len)
                     },
                 )
-            } else if (state.selectedImageIds.isNotEmpty() && !isLockEngaged &&
-                !state.markupModeActive) {
+            } else if (
+                state.practiceState != null ||
+                (state.selectedImageIds.isNotEmpty() && !isLockEngaged &&
+                    !state.markupModeActive)
+            ) {
                 // V_NOW (P2-C1): M3 ModalBottomSheet
                 // replaces the legacy
                 // SelectionFloatingToolbar. Visibility
@@ -2557,17 +2678,10 @@ fun PockRefApp(
                     selectedCount = state.selectedImageIds.size,
                     lastConfig = appPrefs.lastPracticeConfig,
                     onStart = { config ->
-                        // V_NOW: dismiss the sheet first,
-                        // then dispatch StartPractice. The
-                        // dispatch order matters — if we
-                        // dispatched StartPractice first,
-                        // the practice screen would briefly
-                        // render BEHIND the still-showing
-                        // sheet, which the user perceives
-                        // as a flicker. Closing the sheet
-                        // first means the practice screen
-                        // gets the whole stage to enter on.
-                        onAction(PockRefAction.DismissPracticeConfigSheet)
+                        // StartPractice closes the config sheet and
+                        // creates the practice state in one update, so
+                        // the first image appears immediately without
+                        // requiring a follow-up canvas tap.
                         onAction(
                             PockRefAction.StartPractice(
                                 imageIds = state.selectedImageIds.toList(),
@@ -6156,6 +6270,9 @@ private fun TopToolbar(
     onPickGallery: () -> Unit = {},
     onPickClipboard: () -> Unit = {},
     onPickFiles: () -> Unit = {},
+    onEnterFloatingWindow: () -> Unit = {},
+    onChooseDefaultSaveDirectory: () -> Unit = {},
+    showFloatingWindowButton: Boolean = true,
     onTakePhoto: () -> Unit = {},
     // V_NOW: parent container's max width, captured by the
     // [BoxWithConstraints] wrapper at the [PockRefApp] call
@@ -6888,6 +7005,13 @@ ToolbarIconButton(
                                 },
                                 active = importSourceMenuOpen,
                             )
+                            if (showFloatingWindowButton) {
+                                ToolbarIconButton(
+                                    imageVector = Icons.Rounded.PictureInPictureAlt,
+                                    contentDescription = "悬浮窗",
+                                    onClick = onEnterFloatingWindow,
+                                )
+                            }
 
         // V_NOW: settings sheet rendered at [PockRefApp] level
         // (was inside [TopToolbar] before). Reads
@@ -6906,6 +7030,7 @@ ToolbarIconButton(
             onDismiss = { onAction(PockRefAction.SetSettingsSheetOpen(false)) },
             state = state,
             onAction = onAction,
+            onChooseDefaultSaveDirectory = onChooseDefaultSaveDirectory,
         )
     }
 }
@@ -12725,9 +12850,9 @@ private fun ExportDialogHost(
     selectedName: String,
     isMulti: Boolean,
     selectedCount: Int,
-    exportBatchInitialUri: Uri?,
-    exportPngLauncher: ActivityResultLauncher<String>,
-    exportJpgLauncher: ActivityResultLauncher<String>,
+    saveDirectoryInitialUri: Uri?,
+    exportPngLauncher: ActivityResultLauncher<CreateDocumentInput>,
+    exportJpgLauncher: ActivityResultLauncher<CreateDocumentInput>,
     exportBatchPngLauncher: ActivityResultLauncher<Uri?>,
     exportBatchJpgLauncher: ActivityResultLauncher<Uri?>,
     onDismiss: () -> Unit,
@@ -12797,9 +12922,15 @@ private fun ExportDialogHost(
                     Button(
                         onClick = {
                             if (isMulti) {
-                                exportBatchPngLauncher.launch(exportBatchInitialUri)
+                                exportBatchPngLauncher.launch(saveDirectoryInitialUri)
                             } else {
-                                exportPngLauncher.launch("$selectedName.png")
+                                exportPngLauncher.launch(
+                                    CreateDocumentInput(
+                                        mimeType = "image/png",
+                                        fileName = "$selectedName.png",
+                                        initialUri = saveDirectoryInitialUri,
+                                    ),
+                                )
                             }
                         },
                         modifier = Modifier.weight(1f),
@@ -12809,9 +12940,15 @@ private fun ExportDialogHost(
                     Button(
                         onClick = {
                             if (isMulti) {
-                                exportBatchJpgLauncher.launch(exportBatchInitialUri)
+                                exportBatchJpgLauncher.launch(saveDirectoryInitialUri)
                             } else {
-                                exportJpgLauncher.launch("$selectedName.jpg")
+                                exportJpgLauncher.launch(
+                                    CreateDocumentInput(
+                                        mimeType = "image/jpeg",
+                                        fileName = "$selectedName.jpg",
+                                        initialUri = saveDirectoryInitialUri,
+                                    ),
+                                )
                             }
                         },
                         modifier = Modifier.weight(1f),
@@ -12868,7 +13005,8 @@ private fun ExportCanvasDialogHost(
     maxDim: Int?,
     backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode,
     onAction: (PockRefAction) -> Unit,
-    exportCanvasLauncher: androidx.activity.result.ActivityResultLauncher<String>,
+    initialUri: Uri?,
+    exportCanvasLauncher: ActivityResultLauncher<CreateDocumentInput>,
 ) {
     val effectiveSceneName = sceneName.ifBlank { "canvas" }
     AlertDialog(
@@ -13004,7 +13142,13 @@ private fun ExportCanvasDialogHost(
                     // because [exportCanvasLauncher] is a UI-scope
                     // ActivityResultLauncher that requires the
                     // Compose dispatch thread.
-                    exportCanvasLauncher.launch("$effectiveSceneName.png")
+                    exportCanvasLauncher.launch(
+                        CreateDocumentInput(
+                            mimeType = "image/png",
+                            fileName = "$effectiveSceneName.png",
+                            initialUri = initialUri,
+                        ),
+                    )
                 },
             ) {
                 Text("确认导出")

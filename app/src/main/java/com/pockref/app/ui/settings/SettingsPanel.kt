@@ -69,6 +69,7 @@ internal fun SettingsPanel(
  onDismiss: () -> Unit,
  state: PockRefUiState,
  onAction: (PockRefAction) -> Unit,
+ onChooseDefaultSaveDirectory: () -> Unit,
 ) {
  if (!open) return
  val sheetState = rememberModalBottomSheetState()
@@ -114,6 +115,7 @@ internal fun SettingsPanel(
  state = state,
  onAction = onAction,
  selectedTab = state.settingsTab,
+ onChooseDefaultSaveDirectory = onChooseDefaultSaveDirectory,
  )
  }
  }
@@ -133,6 +135,7 @@ internal fun SettingsPanel(
  state = state,
  onAction = onAction,
  selectedTab = state.settingsTab,
+ onChooseDefaultSaveDirectory = onChooseDefaultSaveDirectory,
  )
  }
  }

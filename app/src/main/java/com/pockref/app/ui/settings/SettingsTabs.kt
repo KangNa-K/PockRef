@@ -117,9 +117,14 @@ internal fun SettingsTabContent(
  state: PockRefUiState,
  onAction: (PockRefAction) -> Unit,
  selectedTab: SettingsTab,
+ onChooseDefaultSaveDirectory: () -> Unit,
 ) {
  when (selectedTab) {
- SettingsTab.GENERAL -> SettingsGeneralTab(state = state, onAction = onAction)
+ SettingsTab.GENERAL -> SettingsGeneralTab(
+ state = state,
+ onAction = onAction,
+ onChooseDefaultSaveDirectory = onChooseDefaultSaveDirectory,
+ )
  SettingsTab.APPEARANCE -> SettingsAppearanceTab(state = state, onAction = onAction)
  SettingsTab.GESTURES -> SettingsGesturesTab(state = state, onAction = onAction)
  }

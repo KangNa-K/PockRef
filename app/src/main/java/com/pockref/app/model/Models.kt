@@ -1208,12 +1208,11 @@ data class PockRefUiState(
     // V_NOW (2026-06-16, "Save 路径改走 OpenDocumentTree + createDocument"):
     // the Save button no longer launches CreateDocument directly — it
     // opens [SaveSceneNameDialog] (showSaveSceneNameDialog=true) where
-    // the user types a filename, then confirms. On confirm the dialog
-    // dismisses and [pendingSaveSceneLaunch] flips true; the UI layer
-    // watches that flag via LaunchedEffect and launches the
-    // [OpenDocumentTree] picker. After launch the flag is consumed
-    // (ConsumePendingSaveSceneLaunch) so a dialog confirm can't fire
-    // twice if the composition recomposes while the picker is up.
+    // the user types a filename, then confirms. With an enabled default
+    // directory the UI creates the document directly in that tree; when
+    // no active default directory exists it launches [OpenDocumentTree].
+    // After either route the flag is consumed so a dialog confirm can't
+    // fire twice if the composition recomposes while the picker is up.
     // [pendingSaveSceneName] is the name typed into the dialog (used
     // for DocumentsContract.createDocument after tree-pick) — empty
     // when no dialog is active.
@@ -1412,6 +1411,16 @@ data class PockRefUiState(
      * for the persistence side.
      */
     val autoSaveEnabled: Boolean = true,
+    /** Whether the selected save directory should be supplied to pickers. */
+    val defaultSavePathEnabled: Boolean = false,
+    /**
+     * Persisted SAF tree URI for the user's preferred save directory.
+     * Null means no custom directory has been saved; the caller can let
+     * DocumentsUI choose the initial location when the switch is off.
+     */
+    val defaultSaveDirectoryUri: String? = null,
+    /** Human-readable name of [defaultSaveDirectoryUri] for the settings UI. */
+    val defaultSaveDirectoryName: String? = null,
     /**
      * V_NOW (follow-up after "auto-save didn't fire when I set 1 min
      * and waited 1 min" bug): wall-clock timestamp of the most

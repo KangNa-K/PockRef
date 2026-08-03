@@ -26,6 +26,8 @@ internal sealed interface PracticeEvent {
     data object Pause : PracticeEvent
     data object Resume : PracticeEvent
     data object SkipRest : PracticeEvent
+    data object PreviousImage : PracticeEvent
+    data object NextImage : PracticeEvent
     data object Exit : PracticeEvent
 }
 
@@ -50,6 +52,8 @@ internal object PracticeReducer {
             PracticeEvent.Pause -> pause(state)
             PracticeEvent.Resume -> resume(state)
             PracticeEvent.SkipRest -> skipRest(state)
+            PracticeEvent.PreviousImage -> previousImage(state)
+            PracticeEvent.NextImage -> nextImage(state)
             PracticeEvent.Exit -> PracticeState.Idle
         }
 
@@ -149,6 +153,36 @@ internal object PracticeReducer {
             state
         }
 
+    private fun previousImage(state: PracticeState): PracticeState =
+        moveToAdjacentImage(state, delta = -1)
+
+    private fun nextImage(state: PracticeState): PracticeState =
+        moveToAdjacentImage(state, delta = 1)
+
+    /**
+     * Manual navigation changes the current practice page without
+     * altering the session status. A new page always starts at the
+     * beginning of COUNTDOWN, including when navigation happens
+     * during REST or from a paused session.
+     */
+    private fun moveToAdjacentImage(
+        state: PracticeState,
+        delta: Int,
+    ): PracticeState {
+        if (state.status != PracticeStatus.RUNNING &&
+            state.status != PracticeStatus.PAUSED
+        ) {
+            return state
+        }
+        val targetIndex = state.currentIndex + delta
+        if (targetIndex !in state.imageIds.indices) return state
+        return state.copy(
+            currentIndex = targetIndex,
+            phase = PracticePhase.COUNTDOWN,
+            remainingMs = state.config.practiceDurationMs,
+        )
+    }
+
     /** User explicitly skipped the current rest. No-op if not
      *  currently in REST (the "Skip rest" button only renders
      *  during REST, so the guard is defense-in-depth). */
@@ -242,6 +276,7 @@ internal class PockRefViewModelPractice(
         mainVm._uiState.update { current2 ->
             current2.copy(
                 practiceState = next,
+                practiceConfigSheetOpen = false,
                 selectedImageIds = emptySet(),
                 selectedImageId = null,
                 multiSelectMode = false,
@@ -277,6 +312,21 @@ internal class PockRefViewModelPractice(
     internal fun skipRest() {
         val current = mainVm.uiState.value.practiceState ?: return
         val next = PracticeReducer.reduce(current, PracticeEvent.SkipRest)
+        if (next === current) return
+        mainVm._uiState.update { it.copy(practiceState = next) }
+    }
+
+    internal fun previousImage() {
+        navigate(PracticeEvent.PreviousImage)
+    }
+
+    internal fun nextImage() {
+        navigate(PracticeEvent.NextImage)
+    }
+
+    private fun navigate(event: PracticeEvent) {
+        val current = mainVm.uiState.value.practiceState ?: return
+        val next = PracticeReducer.reduce(current, event)
         if (next === current) return
         mainVm._uiState.update { it.copy(practiceState = next) }
     }

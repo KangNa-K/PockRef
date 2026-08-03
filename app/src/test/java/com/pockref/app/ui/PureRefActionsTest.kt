@@ -171,7 +171,9 @@ class PockRefActionsTest {
     // renamed or removed.
     // 2026-07-11: refresh the stale 162 baseline to the current action
     // surface (including ToggleOriginalDisplaySelected).
-    private val expectedVariantCount: Int = 174
+    // 2026-08-03: 177 → 178 — kept both the save-path switch and the
+    // selectable default directory action.
+    private val expectedVariantCount: Int = 178
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses
