@@ -4,6 +4,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pockref.app.data.AppPreferences
 import com.pockref.app.model.BackgroundPreset
+import com.pockref.app.model.PracticeConfig
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -21,6 +22,7 @@ class AppPreferencesInstrumentedTest {
             singleFingerCanvasPanEnabled = false
             defaultSavePathEnabled = false
             defaultSaveDirectoryUri = null
+            lastPracticeConfig = null
         }
     }
 
@@ -65,6 +67,18 @@ class AppPreferencesInstrumentedTest {
         AppPreferences(context).defaultSavePathEnabled = true
 
         assertEquals(true, AppPreferences(context).defaultSavePathEnabled)
+    }
+
+    @Test
+    fun practiceResetTimerPreferencePersistsAcrossInstances() {
+        val config = PracticeConfig(
+            practiceDurationMs = 300_000L,
+            restDurationMs = 0L,
+            resetTimerOnImageChange = false,
+        )
+        AppPreferences(context).lastPracticeConfig = config
+
+        assertEquals(config, AppPreferences(context).lastPracticeConfig)
     }
 
     @Test

@@ -35,7 +35,7 @@ import kotlin.math.roundToInt
  * V_NOW (2026-06-08 速写练习 commit 2 — extended
  * duration chips + custom): the pre-flight config sheet.
  *
- * 4-section [ModalBottomSheet] that lets the user tweak
+ * 4-setting-row [ModalBottomSheet] that lets the user tweak
  * [PracticeConfig] before starting a slideshow session.
  *
  * Layout (top to bottom):
@@ -48,10 +48,13 @@ import kotlin.math.roundToInt
  *   4. Row "随机顺序": [Switch] — when on, the
  *      reducer shuffles the imageIds list on
  *      [StartPractice]
- *   5. Footer summary: "总时长约 M 分钟" — computed
+ *   5. Row "切换图片时重置计时": [Switch] — when on,
+ *      manually moving to another image starts its full
+ *      drawing interval; the default is on.
+ *   6. Footer summary: "总时长约 M 分钟" — computed
  *      live from `selectedCount × (practice +
  *      rest)`, rounded to the nearest minute
- *   6. Full-width "开始" [Button] — dispatches
+ *   7. Full-width "开始" [Button] — dispatches
  *      [PockRefAction.StartPractice] and dismisses
  *      the sheet
  *
@@ -62,7 +65,7 @@ import kotlin.math.roundToInt
  * [PracticeConfig], the pref key is gone from
  * [com.pockref.app.data.AppPreferences.lastPracticeConfig],
  * and the practice mode is silent by design. The
- * config sheet now has 3 sections (was 4) and
+ * config sheet now has 4 setting rows (was 3) and
  * surfaces a slightly taller total-height to keep
  * the start button comfortably above the navigation
  * bar.
@@ -111,7 +114,7 @@ fun PracticeConfigSheet(
     // [com.pockref.app.data.AppPreferences.lastPracticeConfig]).
     // When null (fresh install or after data clear),
     // fall back to [PracticeConfig]'s default ctor values
-    // (60s / 30s / shuffle-off). The `remember(lastConfig)`
+    // (60s / 30s / shuffle-off / reset-on). The `remember(lastConfig)`
     // key means the sheet re-initialises whenever the
     // caller hands us a different [lastConfig] — useful
     // when the user closes the sheet, edits the canvas,
@@ -126,10 +129,9 @@ fun PracticeConfigSheet(
         mutableStateOf(((lastConfig?.restDurationMs ?: 30_000L) / 1000L).toInt())
     }
     var shuffle by remember(lastConfig) { mutableStateOf(lastConfig?.shuffle ?: false) }
-    // soundEnabled state and its [ToggleRow] are
-    // GONE — the user removed the countdown-sound
-    // feature entirely. [PracticeConfig] no longer
-    // carries a soundEnabled field.
+    var resetTimerOnImageChange by remember(lastConfig) {
+        mutableStateOf(lastConfig?.resetTimerOnImageChange ?: true)
+    }
 
     // ── Custom-duration dialog state ──
     // `customDialogTarget` distinguishes which field the
@@ -222,6 +224,13 @@ fun PracticeConfigSheet(
             // ── 随机顺序 ──
             ToggleRow(label = "随机顺序", checked = shuffle, onCheckedChange = { shuffle = it })
 
+            // ── 切图时重置计时 ──
+            ToggleRow(
+                label = "切换图片时重置计时",
+                checked = resetTimerOnImageChange,
+                onCheckedChange = { resetTimerOnImageChange = it },
+            )
+
             // ── 总时长摘要 ──
             val totalMin = if (selectedCount == 0) 0
             else ((selectedCount * (practiceSeconds + restSeconds)).toDouble() / 60.0).roundToInt()
@@ -239,6 +248,7 @@ fun PracticeConfigSheet(
                             practiceDurationMs = practiceSeconds * 1000L,
                             restDurationMs = restSeconds * 1000L,
                             shuffle = shuffle,
+                            resetTimerOnImageChange = resetTimerOnImageChange,
                         )
                     )
                 },

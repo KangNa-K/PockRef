@@ -159,12 +159,12 @@ internal object PracticeReducer {
     private fun nextImage(state: PracticeState): PracticeState =
         moveToAdjacentImage(state, delta = 1)
 
-    /**
-     * Manual navigation changes the current practice page without
-     * altering the session status. A new page always starts at the
-     * beginning of COUNTDOWN, including when navigation happens
-     * during REST or from a paused session.
-     */
+    /** Manual navigation changes the current practice page without
+     * altering the session status. When [PracticeConfig.resetTimerOnImageChange]
+     * is enabled, the target page starts a fresh COUNTDOWN. When it is
+     * disabled, a page change during COUNTDOWN keeps the current timer;
+     * a page change during REST still starts a fresh COUNTDOWN so the
+     * rest phase cannot later auto-advance past the selected page. */
     private fun moveToAdjacentImage(
         state: PracticeState,
         delta: Int,
@@ -176,10 +176,16 @@ internal object PracticeReducer {
         }
         val targetIndex = state.currentIndex + delta
         if (targetIndex !in state.imageIds.indices) return state
+        val startsNewCountdown =
+            state.config.resetTimerOnImageChange || state.phase == PracticePhase.REST
         return state.copy(
             currentIndex = targetIndex,
-            phase = PracticePhase.COUNTDOWN,
-            remainingMs = state.config.practiceDurationMs,
+            phase = if (startsNewCountdown) PracticePhase.COUNTDOWN else state.phase,
+            remainingMs = if (startsNewCountdown) {
+                state.config.practiceDurationMs
+            } else {
+                state.remainingMs
+            },
         )
     }
 

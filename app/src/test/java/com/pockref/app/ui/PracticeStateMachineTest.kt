@@ -385,6 +385,42 @@ class PracticeStateMachineTest {
     }
 
     @Test
+    fun nextImage_whenResetDisabled_preservesCountdown() {
+        val configWithoutReset = config.copy(resetTimerOnImageChange = false)
+        val running = PracticeState(
+            status = PracticeStatus.RUNNING,
+            imageIds = imageIds,
+            currentIndex = 1,
+            phase = PracticePhase.COUNTDOWN,
+            remainingMs = 12_000L,
+            config = configWithoutReset,
+        )
+        val after = PracticeReducer.reduce(running, PracticeEvent.NextImage)
+
+        assertEquals(2, after.currentIndex)
+        assertEquals(PracticePhase.COUNTDOWN, after.phase)
+        assertEquals(12_000L, after.remainingMs)
+    }
+
+    @Test
+    fun navigation_fromRest_startsTargetCountdownWhenResetDisabled() {
+        val configWithoutReset = config.copy(resetTimerOnImageChange = false)
+        val resting = PracticeState(
+            status = PracticeStatus.RUNNING,
+            imageIds = imageIds,
+            currentIndex = 1,
+            phase = PracticePhase.REST,
+            remainingMs = 4_000L,
+            config = configWithoutReset,
+        )
+        val after = PracticeReducer.reduce(resting, PracticeEvent.NextImage)
+
+        assertEquals(2, after.currentIndex)
+        assertEquals(PracticePhase.COUNTDOWN, after.phase)
+        assertEquals(60_000L, after.remainingMs)
+    }
+
+    @Test
     fun previousImage_atFirstPage_isNoOp() {
         val first = PracticeState(
             status = PracticeStatus.RUNNING,
@@ -579,6 +615,7 @@ class PracticeStateMachineTest {
         assertEquals(60_000L, defaults.practiceDurationMs)
         assertEquals(30_000L, defaults.restDurationMs)
         assertFalse(defaults.shuffle)
+        assertTrue(defaults.resetTimerOnImageChange)
         // V_NOW (2026-06-08 user feedback "去掉倒计时提示音的功能"):
         // [PracticeConfig.soundEnabled] was removed entirely.
         // The countdown-sound feature is gone; the practice

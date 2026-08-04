@@ -357,7 +357,7 @@ class AppPreferences(context: Context) {
     /**
      * V_NOW (2026-06-08 速写练习): the user's last-used
      * [com.pockref.app.model.PracticeConfig] (practice
-     * duration / rest duration / shuffle / sound), persisted
+     * duration / rest duration / shuffle / reset-on-image-change), persisted
      * so the pre-flight config sheet (commit 2) comes up
      * with the user's last choices instead of the hard-coded
      * defaults every time.
@@ -365,7 +365,7 @@ class AppPreferences(context: Context) {
      * Returns `null` on a fresh install or after the user
      * clears app data — the pre-flight sheet then falls back
      * to [com.pockref.app.model.PracticeConfig]'s default
-     * constructor (60s / 30s / off / off).
+     * constructor (60s / 30s / shuffle-off / reset-on).
      *
      * Storage uses four separate primitive keys (one per
      * [com.pockref.app.model.PracticeConfig] field) rather
@@ -373,9 +373,9 @@ class AppPreferences(context: Context) {
      * settings in this file (each field is a separate
      * SharedPreferences entry) and keeps the read-side logic
      * trivial — no JSON / parcelable dance for a 4-field
-     * record. The setter reconstructs the [PracticeConfig]
-     * data class from the four primitives.
-     *
+     * record. The three original keys remain required so
+     * existing installs migrate cleanly; the new reset key
+     * defaults to `true` when absent.
      * The setter validates the constructed config via the
      * `init { require(...) }` block in [PracticeConfig] —
      * a corrupted pref with an out-of-range duration (e.g.
@@ -391,7 +391,7 @@ class AppPreferences(context: Context) {
      */
     var lastPracticeConfig: com.pockref.app.model.PracticeConfig?
         get() {
-            // All four keys absent → first launch since
+            // The three original keys absent → first launch since
             // the practice feature was added. Return null
             // and let the caller fall back to
             // [PracticeConfig]'s default ctor.
@@ -429,6 +429,10 @@ class AppPreferences(context: Context) {
                 practiceDurationMs = practiceMs,
                 restDurationMs = restMs,
                 shuffle = shuffle,
+                resetTimerOnImageChange = prefs.getBoolean(
+                    KEY_LAST_PRACTICE_RESET_TIMER_ON_IMAGE_CHANGE,
+                    true,
+                ),
             )
         }
         set(value) {
@@ -437,6 +441,7 @@ class AppPreferences(context: Context) {
                 editor.remove(KEY_LAST_PRACTICE_DURATION_MS)
                 editor.remove(KEY_LAST_REST_DURATION_MS)
                 editor.remove(KEY_LAST_PRACTICE_SHUFFLE)
+                editor.remove(KEY_LAST_PRACTICE_RESET_TIMER_ON_IMAGE_CHANGE)
                 // V_NOW (2026-06-08 user feedback "去掉倒计时提示音的功能"):
                 // [KEY_LAST_PRACTICE_SOUND] is no longer written
                 // here — the field is gone from [PracticeConfig]
@@ -449,6 +454,10 @@ class AppPreferences(context: Context) {
                 editor.putLong(KEY_LAST_PRACTICE_DURATION_MS, value.practiceDurationMs)
                 editor.putLong(KEY_LAST_REST_DURATION_MS, value.restDurationMs)
                 editor.putBoolean(KEY_LAST_PRACTICE_SHUFFLE, value.shuffle)
+                editor.putBoolean(
+                    KEY_LAST_PRACTICE_RESET_TIMER_ON_IMAGE_CHANGE,
+                    value.resetTimerOnImageChange,
+                )
             }
             editor.apply()
         }
@@ -551,11 +560,10 @@ class AppPreferences(context: Context) {
         private const val KEY_GLOBAL_IMAGE_LOCK = "global_image_lock"
  private const val KEY_LOCK_CANVAS_FROZEN = "lock_canvas_frozen"
         // V_NOW (2026-06-08 速写练习): see [lastPracticeConfig] field
-        // above. Three separate keys — one per PracticeConfig field
         // — match the rest of the settings in this file and avoid a
-        // JSON / parcelable serialization layer. "All three absent" =
-        // "no last config saved yet" (fresh install) and the getter
-        // returns null in that case.
+        // JSON / parcelable serialization layer. The three original
+        // keys are required to recognize a saved config; the new reset
+        // key is optional for backward compatibility and defaults on.
         //
         // V_NOW (2026-06-08 user feedback "去掉倒计时提示音的功能"):
         // the previous [KEY_LAST_PRACTICE_SOUND] was removed
@@ -568,6 +576,8 @@ class AppPreferences(context: Context) {
         private const val KEY_LAST_PRACTICE_DURATION_MS = "last_practice_duration_ms"
         private const val KEY_LAST_REST_DURATION_MS = "last_rest_duration_ms"
         private const val KEY_LAST_PRACTICE_SHUFFLE = "last_practice_shuffle"
+        private const val KEY_LAST_PRACTICE_RESET_TIMER_ON_IMAGE_CHANGE =
+            "last_practice_reset_timer_on_image_change"
     }
 }
 

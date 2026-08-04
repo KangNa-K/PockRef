@@ -21,6 +21,8 @@ package com.pockref.app.model
  *     flow)
  *   - [shuffle] = false (selection order is what the user expected to
  *     practice in — surprise ordering is opt-in)
+ *   - [resetTimerOnImageChange] = true (manually changing images gives
+ *     the new image a complete drawing interval by default)
  *
  * V_NOW (user feedback "去掉倒计时提示音的功能"): the previous
  * `soundEnabled` field was removed entirely. The countdown-sound
@@ -38,6 +40,7 @@ data class PracticeConfig(
     val practiceDurationMs: Long = 60_000L,
     val restDurationMs: Long = 30_000L,
     val shuffle: Boolean = false,
+    val resetTimerOnImageChange: Boolean = true,
 ) {
     init {
         // Defensive bounds so a corrupted pref (manually edited

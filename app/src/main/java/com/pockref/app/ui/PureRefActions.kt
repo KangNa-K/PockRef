@@ -1066,13 +1066,15 @@ sealed interface PockRefAction {
 
     /** User explicitly moved to the previous image in the practice queue.
      * No-op at the first image. The target image starts a fresh
-     * COUNTDOWN using the configured practice duration.
+     * COUNTDOWN when [PracticeConfig.resetTimerOnImageChange] is
+     * enabled; otherwise the current COUNTDOWN keeps its remaining time.
      */
     data object PreviousPracticeImage : PockRefAction
 
     /** User explicitly moved to the next image in the practice queue.
      * No-op at the last image. The target image starts a fresh
-     * COUNTDOWN using the configured practice duration.
+     * COUNTDOWN when [PracticeConfig.resetTimerOnImageChange] is
+     * enabled; otherwise the current COUNTDOWN keeps its remaining time.
      */
     data object NextPracticeImage : PockRefAction
 
