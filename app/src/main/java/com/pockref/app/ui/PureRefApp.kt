@@ -7887,11 +7887,16 @@ private fun PockRefCanvas(
         state.images,
         state.selectedImageIds,
         state.selectedImageId,
+        state.globalImageLock,
+        state.lockCanvasFrozen,
+        state.lockRetainedHdImageId,
     ) {
-        ImageTilePolicy.hdSingleSelectedImageId(
+        ImageTilePolicy.hdImageIdForDisplay(
             images = state.images,
             selectedImageIds = state.selectedImageIds,
             selectedImageId = state.selectedImageId,
+            retainedImageId = state.lockRetainedHdImageId,
+            retainWhileLocked = state.globalImageLock || state.lockCanvasFrozen,
         )
     }
     val currentFocusedHighResImageId by rememberUpdatedState(focusedHighResImageId)
@@ -8058,7 +8063,7 @@ private fun PockRefCanvas(
             !ImageTilePolicy.shouldRequestTiles(
                 image = activeImage,
                 canvasScale = currentState.canvasScale,
-                isSingleImageSelected = true,
+                isHdDisplayActive = true,
             )
         ) {
             tileCache.clear()
@@ -8094,6 +8099,9 @@ private fun PockRefCanvas(
         state.images,
         focusedHighResImageId,
         tileImageId,
+        state.globalImageLock,
+        state.lockCanvasFrozen,
+        state.lockRetainedHdImageId,
         tilePipeline,
     ) {
         requestViewportDecode()

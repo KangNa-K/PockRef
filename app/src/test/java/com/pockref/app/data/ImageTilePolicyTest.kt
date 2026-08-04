@@ -50,6 +50,61 @@ class ImageTilePolicyTest {
     }
 
     @Test
+    fun hdImageIdForDisplay_retainsEnabledImageAfterSelectionClearsOnlyWhileLocked() {
+        val enabled = testImage(id = "enabled").copy(showsOriginalResolution = true)
+
+        assertEquals(
+            "enabled",
+            ImageTilePolicy.hdImageIdForDisplay(
+                images = listOf(enabled),
+                selectedImageIds = emptySet(),
+                selectedImageId = null,
+                retainedImageId = "enabled",
+                retainWhileLocked = true,
+            ),
+        )
+        assertNull(
+            ImageTilePolicy.hdImageIdForDisplay(
+                images = listOf(enabled),
+                selectedImageIds = emptySet(),
+                selectedImageId = null,
+                retainedImageId = "enabled",
+                retainWhileLocked = false,
+            ),
+        )
+    }
+
+    @Test
+    fun hdImageIdIfEnabled_rejectsMissingDisabledAndGifImages() {
+        val disabled = testImage(id = "disabled")
+        val gif = testImage(id = "gif").copy(
+            mimeType = "image/gif",
+            showsOriginalResolution = true,
+        )
+
+        assertNull(ImageTilePolicy.hdImageIdIfEnabled(listOf(disabled), "missing"))
+        assertNull(ImageTilePolicy.hdImageIdIfEnabled(listOf(disabled), "disabled"))
+        assertNull(ImageTilePolicy.hdImageIdIfEnabled(listOf(gif), "gif"))
+    }
+
+    @Test
+    fun hdImageIdForDisplay_prefersCurrentSelectedImageOverRetainedId() {
+        val selected = testImage(id = "selected").copy(showsOriginalResolution = true)
+        val retained = testImage(id = "retained").copy(showsOriginalResolution = true)
+
+        assertEquals(
+            "selected",
+            ImageTilePolicy.hdImageIdForDisplay(
+                images = listOf(selected, retained),
+                selectedImageIds = setOf("selected"),
+                selectedImageId = "selected",
+                retainedImageId = "retained",
+                retainWhileLocked = true,
+            ),
+        )
+    }
+
+    @Test
     fun singleSelectedImageId_staysAvailableAfterFitModeClears() {
         assertEquals(
             "selected",
@@ -77,9 +132,9 @@ class ImageTilePolicyTest {
     fun requestsTilesWhenSingleSelectedImageExceedsHdTriggerOnScreen() {
         val image = testImage()
 
-        assertFalse(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 0.14f, isSingleImageSelected = true))
-        assertTrue(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 0.15f, isSingleImageSelected = true))
-        assertFalse(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 1f, isSingleImageSelected = false))
+        assertFalse(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 0.14f, isHdDisplayActive = true))
+        assertTrue(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 0.15f, isHdDisplayActive = true))
+        assertFalse(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 1f, isHdDisplayActive = false))
     }
 
     @Test
@@ -88,7 +143,7 @@ class ImageTilePolicyTest {
             displaySize = Size2D(720f, 930f),
         )
 
-        assertTrue(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 3f, isSingleImageSelected = true))
+        assertTrue(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 3f, isHdDisplayActive = true))
     }
 
     private fun testImage(id: String = "image") = SceneImage(

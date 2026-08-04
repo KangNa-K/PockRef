@@ -890,6 +890,13 @@ data class PockRefUiState(
  * for irreversible-action affordances.
  */
  val lockCanvasFrozen: Boolean = false,
+ /**
+ * Transient render-only image ID retained when global lock or canvas
+ * freeze clears selection. It is not persisted in the scene or included
+ * in undo history; it exists only to keep already-visible HD tiles alive
+ * during the read-only lock surface.
+ */
+ val lockRetainedHdImageId: String? = null,
     /**
  * V_NOW (2026-06-19 user spec "全局锁定+冻结模式下点
  * 一下应用界面,右上角锁定按钮隐藏/再点显示"): when

@@ -21,19 +21,51 @@ internal object ImageTilePolicy {
         selectedImageId: String?,
     ): String? {
         val selectedId = singleSelectedImageId(selectedImageIds, selectedImageId) ?: return null
-        return selectedId.takeIf { id ->
-            images.firstOrNull { it.id == id }
-                ?.takeUnless { it.mimeType.equals("image/gif", ignoreCase = true) }
-                ?.showsOriginalResolution == true
-        }
+        return hdImageIdIfEnabled(images, selectedId)
+    }
+
+    /**
+     * Return [imageId] only when it is an eligible non-GIF image with
+     * original-resolution display enabled. This is also used after the
+     * lock reducer clears selection, so the renderer never trusts a stale
+     * retained ID without validating it against the current scene.
+     */
+    fun hdImageIdIfEnabled(
+        images: List<SceneImage>,
+        imageId: String?,
+    ): String? = imageId?.takeIf { id ->
+        images.firstOrNull { it.id == id }
+            ?.takeUnless { it.mimeType.equals("image/gif", ignoreCase = true) }
+            ?.showsOriginalResolution == true
+    }
+
+    /**
+     * Resolve the image whose HD tiles should be rendered. Normal mode
+     * remains selection-scoped; lock mode may use the image retained just
+     * before selection was cleared.
+     */
+    fun hdImageIdForDisplay(
+        images: List<SceneImage>,
+        selectedImageIds: Set<String>,
+        selectedImageId: String?,
+        retainedImageId: String?,
+        retainWhileLocked: Boolean,
+    ): String? {
+        hdSingleSelectedImageId(
+            images = images,
+            selectedImageIds = selectedImageIds,
+            selectedImageId = selectedImageId,
+        )?.let { return it }
+        if (!retainWhileLocked) return null
+        return hdImageIdIfEnabled(images, retainedImageId)
     }
 
     fun shouldRequestTiles(
         image: SceneImage,
         canvasScale: Float,
-        isSingleImageSelected: Boolean,
+        isHdDisplayActive: Boolean,
     ): Boolean {
-        if (!isSingleImageSelected) return false
+        if (!isHdDisplayActive) return false
         val intrinsicLongEdge = maxOf(image.intrinsicWidth, image.intrinsicHeight)
         if (intrinsicLongEdge <= SceneImageDecoder.DECODE_LADDER.last()) return false
 

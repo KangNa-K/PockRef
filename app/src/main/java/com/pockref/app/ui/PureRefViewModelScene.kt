@@ -565,6 +565,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // .pur has 50+ images.
                     selectedImageId = null,
                     selectedImageIds = emptySet(),
+                    lockRetainedHdImageId = null,
                     multiSelectMode = false,
                     canUndo = false,
                     canRedo = false,
@@ -612,6 +613,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 editingMarkupTextId = null,
                 selectedImageId = null,
                 selectedImageIds = emptySet(),
+                lockRetainedHdImageId = null,
                 multiSelectMode = false,
                 canUndo = false,
                 canRedo = false,
@@ -1844,6 +1846,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 editingMarkupTextId = null,
                 selectedImageId = null,
                 selectedImageIds = emptySet(),
+                lockRetainedHdImageId = null,
                 canUndo = false,
                 canRedo = false,
                 canvasScale = 1f,

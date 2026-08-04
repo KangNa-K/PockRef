@@ -16,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.AppPreferences
 import com.pockref.app.data.AutoSaveManager
 import com.pockref.app.data.ImageOptimizer
+import com.pockref.app.data.ImageTilePolicy
 import com.pockref.app.data.PurFileParser
 import com.pockref.app.data.PurSceneCodec
 import com.pockref.app.data.RecoverySessionManager
@@ -905,7 +906,17 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             // stack and does NOT clear redo — same policy as
             // [ToggleMultiSelectMode] / [ToggleBoxSelectMode].
             PockRefAction.ToggleGlobalImageLock -> {
-                val newValue = !_uiState.value.globalImageLock
+                val currentState = _uiState.value
+                val newValue = !currentState.globalImageLock
+                val retainedHdImageId = if (newValue) {
+                    ImageTilePolicy.hdSingleSelectedImageId(
+                        images = currentState.images,
+                        selectedImageIds = currentState.selectedImageIds,
+                        selectedImageId = currentState.selectedImageId,
+                    ) ?: currentState.lockRetainedHdImageId
+                } else {
+                    currentState.lockRetainedHdImageId
+                }
                 appPrefs.globalImageLock = newValue
                 // V_NOW (2026-06-08 "开启全局锁定自动取消选中"):
                 // when the user TURNS ON [globalImageLock],
@@ -935,6 +946,10 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 _uiState.update {
                     it.copy(
                         globalImageLock = newValue,
+                        lockRetainedHdImageId = when {
+                            newValue || it.lockCanvasFrozen -> retainedHdImageId
+                            else -> null
+                        },
                         // V_NOW: auto-close box-select when locking
                         boxSelectMode = if (newValue) false else it.boxSelectMode,
                         boxSelectRect = if (newValue) null else it.boxSelectRect,
@@ -1007,8 +1022,18 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  // the [SelectionBottomSheet] doesn't show actions
  // for selected-but-frozen images.
  PockRefAction.ToggleLockCanvasFrozen -> {
- val nowFrozen = _uiState.value.lockCanvasFrozen
+ val currentState = _uiState.value
+ val nowFrozen = currentState.lockCanvasFrozen
  val newFrozen = !nowFrozen
+ val retainedHdImageId = if (newFrozen) {
+ ImageTilePolicy.hdSingleSelectedImageId(
+ images = currentState.images,
+ selectedImageIds = currentState.selectedImageIds,
+ selectedImageId = currentState.selectedImageId,
+ ) ?: currentState.lockRetainedHdImageId
+ } else {
+ currentState.lockRetainedHdImageId
+ }
  if (newFrozen) {
  // turning ON frozen: also engage globalImageLock.
  // Deselect so the SelectionBottomSheet doesn't
@@ -1021,6 +1046,10 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
  it.copy(
  lockCanvasFrozen = newFrozen,
  globalImageLock = if (newFrozen) true else it.globalImageLock,
+ lockRetainedHdImageId = when {
+ newFrozen || it.globalImageLock -> retainedHdImageId
+ else -> null
+ },
  // V_NOW: auto-close box-select when freezing
  boxSelectMode = if (newFrozen) false else it.boxSelectMode,
  boxSelectRect = if (newFrozen) null else it.boxSelectRect,
