@@ -22,7 +22,11 @@ internal sealed interface PracticeEvent {
         val imageIds: List<String>,
         val config: PracticeConfig,
     ) : PracticeEvent
-    data class OnTick(val remainingMs: Long) : PracticeEvent
+    data class OnTick(
+        val remainingMs: Long,
+        val imageIndex: Int? = null,
+        val phase: PracticePhase? = null,
+    ) : PracticeEvent
     data object Pause : PracticeEvent
     data object Resume : PracticeEvent
     data object SkipRest : PracticeEvent
@@ -48,7 +52,7 @@ internal object PracticeReducer {
     fun reduce(state: PracticeState, event: PracticeEvent): PracticeState =
         when (event) {
             is PracticeEvent.Start -> start(state, event)
-            is PracticeEvent.OnTick -> onTick(state, event.remainingMs)
+            is PracticeEvent.OnTick -> onTick(state, event)
             PracticeEvent.Pause -> pause(state)
             PracticeEvent.Resume -> resume(state)
             PracticeEvent.SkipRest -> skipRest(state)
@@ -86,7 +90,15 @@ internal object PracticeReducer {
     }
 
     /**
-     * Ticker update. Three branches:
+     * Ticker updates are tagged with the image and phase that
+     * produced them. A navigation action can cancel the old
+     * coroutine just after it has emitted a frame, so accepting
+     * an untagged stale frame here could overwrite a freshly
+     * reset countdown. The nullable fields preserve the small
+     * reducer API used by older unit tests and callers; the UI
+     * ticker always supplies both values.
+     *
+     * The remaining branches are:
      *   - status != RUNNING: no-op (the ticker should not be
      *     firing while PAUSED / FINISHED; this is a defensive
      *     check in case a stale frame slips through after a pause)
@@ -99,7 +111,17 @@ internal object PracticeReducer {
      * so a 16ms-frame jitter that overshoots zero by a few
      * ms doesn't strand the session in an inconsistent state.
      */
-    private fun onTick(state: PracticeState, remainingMs: Long): PracticeState {
+    private fun onTick(
+        state: PracticeState,
+        event: PracticeEvent.OnTick,
+    ): PracticeState {
+        if (event.imageIndex != null && event.imageIndex != state.currentIndex) {
+            return state
+        }
+        if (event.phase != null && event.phase != state.phase) {
+            return state
+        }
+        val remainingMs = event.remainingMs
         if (state.status != PracticeStatus.RUNNING) return state
         if (remainingMs > 0L) return state.copy(remainingMs = remainingMs)
         return when (state.phase) {
@@ -293,10 +315,21 @@ internal class PockRefViewModelPractice(
         }
     }
 
-    internal fun onTick(remainingMs: Long) {
+    internal fun onTick(
+        remainingMs: Long,
+        imageIndex: Int? = null,
+        phase: PracticePhase? = null,
+    ) {
         val current = mainVm.uiState.value.practiceState ?: return
         if (current.status != PracticeStatus.RUNNING) return
-        val next = PracticeReducer.reduce(current, PracticeEvent.OnTick(remainingMs))
+        val next = PracticeReducer.reduce(
+            current,
+            PracticeEvent.OnTick(
+                remainingMs = remainingMs,
+                imageIndex = imageIndex,
+                phase = phase,
+            ),
+        )
         if (next === current) return
         mainVm._uiState.update { it.copy(practiceState = next) }
     }

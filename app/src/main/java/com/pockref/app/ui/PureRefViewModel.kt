@@ -1293,7 +1293,11 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 action.imageIds,
                 action.config,
             )
-            is PockRefAction.PracticeTick -> practiceController.onTick(action.remainingMs)
+            is PockRefAction.PracticeTick -> practiceController.onTick(
+                remainingMs = action.remainingMs,
+                imageIndex = action.imageIndex,
+                phase = action.phase,
+            )
             PockRefAction.PausePractice -> practiceController.pause()
             PockRefAction.ResumePractice -> practiceController.resume()
             PockRefAction.SkipRest -> practiceController.skipRest()

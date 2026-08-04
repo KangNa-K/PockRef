@@ -199,7 +199,13 @@ fun BoxScope.PracticeScreen(
         val phaseEndMs = System.currentTimeMillis() + state.remainingMs.coerceAtLeast(0L)
         while (true) {
             val remaining = phaseEndMs - System.currentTimeMillis()
-            onAction(PockRefAction.PracticeTick(remaining))
+            onAction(
+                PockRefAction.PracticeTick(
+                    remainingMs = remaining,
+                    imageIndex = state.currentIndex,
+                    phase = state.phase,
+                )
+            )
             if (remaining <= 0L) break
             delay(16L)
         }

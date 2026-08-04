@@ -11,6 +11,7 @@ import com.pockref.app.model.CropAspect
 import com.pockref.app.data.ThemeMode
 import com.pockref.app.model.CropRect
 import com.pockref.app.model.PracticeConfig
+import com.pockref.app.model.PracticePhase
 import com.pockref.app.model.SettingsTab
 
 sealed interface PockRefAction {
@@ -1044,7 +1045,11 @@ sealed interface PockRefAction {
      * / IDLE all reject the event), so a stale frame from
      * before a pause can't accidentally advance the state.
      */
-    data class PracticeTick(val remainingMs: Long) : PockRefAction
+    data class PracticeTick(
+        val remainingMs: Long,
+        val imageIndex: Int? = null,
+        val phase: PracticePhase? = null,
+    ) : PockRefAction
 
     /** Freeze the current phase's `remainingMs` and switch to
      *  PAUSED. No-op when the session is not RUNNING. */

@@ -122,6 +122,29 @@ class PracticeStateMachineTest {
     }
 
     @Test
+    fun onTick_fromPreviousImage_isIgnoredAfterNavigation() {
+        val afterPrevious = PracticeState(
+            status = PracticeStatus.RUNNING,
+            imageIds = imageIds,
+            currentIndex = 1,
+            phase = PracticePhase.COUNTDOWN,
+            remainingMs = 60_000L,
+            config = config,
+        )
+        val afterStaleTick = PracticeReducer.reduce(
+            afterPrevious,
+            PracticeEvent.OnTick(
+                remainingMs = 45_000L,
+                imageIndex = 2,
+                phase = PracticePhase.COUNTDOWN,
+            ),
+        )
+
+        assertSame(afterPrevious, afterStaleTick)
+        assertEquals(60_000L, afterStaleTick.remainingMs)
+    }
+
+    @Test
     fun onTick_whilePaused_isNoOp() {
         val paused = PracticeState(
             status = PracticeStatus.PAUSED,
