@@ -82,6 +82,40 @@ class PurSceneCodecCustomFormatTest {
     }
 
     @Test
+    fun desktopCompatibleWriteRoundTripsBackgroundColor() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-desktop-background", ".pur")
+        file.deleteOnExit()
+        val scene = PockRefScene(
+            name = "desktop-background",
+            backgroundColor = Color(0xFFB0D8E8),
+            backgroundColorIsPersisted = true,
+            images = listOf(
+                SceneImage(
+                    id = "background-image",
+                    name = "background-image.png",
+                    mimeType = "image/png",
+                    imageBytes = Base64.getDecoder().decode(
+                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL+XQAAAABJRU5ErkJggg==",
+                    ),
+                    intrinsicWidth = 1,
+                    intrinsicHeight = 1,
+                    center = Offset.Zero,
+                    displaySize = Size2D(1f, 1f),
+                ),
+            ),
+        )
+
+        file.outputStream().use { output ->
+            codec.writeDesktopCompatible(scene, output, File("build/tmp"))
+        }
+
+        val restored = codec.readFromFile(file)
+        assertEquals(scene.backgroundColor, restored.backgroundColor)
+        assertTrue(restored.backgroundColorIsPersisted)
+    }
+
+    @Test
     fun desktopCompatibleWriteRoundTripsOriginalResolutionPreference() {
         val codec = PurSceneCodec()
         val file = File.createTempFile("pockref-desktop-hd-preference", ".pur")
@@ -283,7 +317,7 @@ class PurSceneCodecCustomFormatTest {
     }
 
     @Test
-    fun desktopCompatibleWriteBakesMarkupIntoImageLayerWithoutPrivateExtension() {
+    fun desktopCompatibleWriteBakesMarkupIntoImageLayerWithoutMarkupOrColorAdjustExtension() {
         val codec = PurSceneCodec()
         val scene = markupScene("desktop-markup")
         val file = File.createTempFile("pockref_desktop_markup_", ".pur")

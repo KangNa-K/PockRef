@@ -77,6 +77,38 @@ class CanvasPanGestureTest {
     }
 
     @Test
+    fun lockedOrFrozenCanvas_blocksMultiFingerHistoryGestures() {
+        assertFalse(
+            shouldAllowMultiFingerHistoryGesture(
+                globalImageLock = true,
+                canvasFrozen = false,
+            ),
+        )
+        assertFalse(
+            shouldAllowMultiFingerHistoryGesture(
+                globalImageLock = false,
+                canvasFrozen = true,
+            ),
+        )
+        assertFalse(
+            shouldAllowMultiFingerHistoryGesture(
+                globalImageLock = true,
+                canvasFrozen = true,
+            ),
+        )
+    }
+
+    @Test
+    fun unlockedCanvas_allowsMultiFingerHistoryGestures() {
+        assertTrue(
+            shouldAllowMultiFingerHistoryGesture(
+                globalImageLock = false,
+                canvasFrozen = false,
+            ),
+        )
+    }
+
+    @Test
     fun softLockedCanvas_skipsTwoFingerImageSelection() {
         assertFalse(
             shouldSelectImageForTwoFingerCanvasGesture(

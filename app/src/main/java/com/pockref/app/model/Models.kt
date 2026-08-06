@@ -496,6 +496,12 @@ data class PockRefScene(
     val version: Int = 1,
     val name: String = "Scene",
     val backgroundColor: Color = Color.White,
+    /**
+     * Whether [backgroundColor] was read from the scene file. Legacy desktop
+     * .pur files have no canvas-color field, so callers can fall back to the
+     * app default when this is false.
+     */
+    val backgroundColorIsPersisted: Boolean = false,
     val images: List<SceneImage> = emptyList(),
     val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
     val markupTexts: List<CanvasMarkupText> = emptyList(),
@@ -1646,6 +1652,7 @@ fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
     version = 3,
     name = sceneName,
     backgroundColor = backgroundColor,
+    backgroundColorIsPersisted = true,
     images = images.sortedBy { it.zIndex },
     markupStrokes = markupStrokes,
     markupTexts = markupTexts,

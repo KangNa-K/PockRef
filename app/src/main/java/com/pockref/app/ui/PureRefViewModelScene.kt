@@ -525,7 +525,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.gestureUndoRecorded = false
             mainVm.rememberRecentScene(uri, mainVm.queryDisplayNameSync(uri)?.let { SceneNaming.fromPurFileName(it) } ?: scene.name.ifBlank { "Scene" }, "Opened")
             mainVm._uiState.update {
-                val bg = if (mainVm.isImportedPurFile) mainVm.appPrefs.defaultBackgroundPreset.color else scene.backgroundColor
+                val bg = if (scene.backgroundColorIsPersisted) {
+                    scene.backgroundColor
+                } else {
+                    // Legacy/external .pur files do not carry a canvas color;
+                    // keep their historical behavior of using the app default.
+                    mainVm.appPrefs.defaultBackgroundPreset.color
+                }
                 // V_NOW (2026-06-11): prefer the disk
                 // filename (URI display name) over the
                 // scene-internal name so that when the

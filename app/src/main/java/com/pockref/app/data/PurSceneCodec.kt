@@ -153,6 +153,11 @@ class PurSceneCodec {
             legacy.writeLongBe(record.end)
         }
 
+        // Keep the legacy header/index untouched for desktop readers, but
+        // persist PockRef's canvas color in a trailing block they can ignore.
+        legacy.write(LEGACY_BACKGROUND_TRAILER_MAGIC)
+        legacy.writeLongBe(scene.backgroundColor.value.toLong())
+
         val withRefs = legacy.toByteArray()
         val canvas = legacyCanvasBounds(images)
         ByteBuffer.wrap(withRefs, 0, 4).order(ByteOrder.BIG_ENDIAN).putInt(8)
@@ -478,6 +483,9 @@ class PurSceneCodec {
                     raf.writeLongBe(record.end)
                 }
 
+                raf.write(LEGACY_BACKGROUND_TRAILER_MAGIC)
+                raf.writeLongBe(scene.backgroundColor.value.toLong())
+
                 patchLegacyHeader(raf, images, fileLength)
             }
 
@@ -677,7 +685,7 @@ class PurSceneCodec {
                     }
                 }
                 try {
-                    return readLegacyPurScene(allBytes)
+                    return applyLegacySceneExtension(file, readLegacyPurScene(allBytes))
                 } catch (e: Exception) {
                     Log.w(TAG, "Legacy parser failed, trying desktop parser", e)
                     try {
@@ -718,17 +726,37 @@ class PurSceneCodec {
     }
 
     private fun applyLegacySceneExtension(file: File, scene: PockRefScene): PockRefScene {
-        val extension = readLegacySceneExtensionFromFile(file) ?: return scene
+        val extension = readLegacySceneExtensionFromFile(file)
+        val backgroundColor = readLegacyBackgroundColorFromFile(file)
+        if (extension == null && backgroundColor == null) return scene
         return scene.copy(
-            images = scene.images.mapIndexed { index, image ->
-                image.copy(showsOriginalResolution = index in extension.originalResolutionImageIndexes)
-            },
-            defaultSpacing = extension.defaultSpacing,
-            defaultAlignment = extension.defaultAlignment,
-            markupStrokes = extension.markupStrokes,
-            markupTexts = extension.markupTexts,
+            images = extension?.let {
+                scene.images.mapIndexed { index, image ->
+                    image.copy(showsOriginalResolution = index in it.originalResolutionImageIndexes)
+                }
+            } ?: scene.images,
+            defaultSpacing = extension?.defaultSpacing ?: scene.defaultSpacing,
+            defaultAlignment = extension?.defaultAlignment ?: scene.defaultAlignment,
+            markupStrokes = extension?.markupStrokes ?: scene.markupStrokes,
+            markupTexts = extension?.markupTexts ?: scene.markupTexts,
+            backgroundColor = backgroundColor ?: scene.backgroundColor,
+            backgroundColorIsPersisted = backgroundColor != null || scene.backgroundColorIsPersisted,
         )
     }
+
+    private fun readLegacyBackgroundColorFromFile(file: File): Color? = runCatching {
+        if (file.length() < LEGACY_BACKGROUND_TRAILER_SIZE) return@runCatching null
+        RandomAccessFile(file, "r").use { raf ->
+            raf.seek(file.length() - LEGACY_BACKGROUND_TRAILER_SIZE)
+            val marker = ByteArray(LEGACY_BACKGROUND_TRAILER_MAGIC.size)
+            raf.readFully(marker)
+            if (!marker.contentEquals(LEGACY_BACKGROUND_TRAILER_MAGIC)) {
+                null
+            } else {
+                Color(raf.readLong().toULong())
+            }
+        }
+    }.getOrNull()
 
     private fun readLegacySceneExtensionFromFile(file: File): LegacySceneExtension? = runCatching {
         RandomAccessFile(file, "r").use { raf ->
@@ -988,6 +1016,7 @@ class PurSceneCodec {
             version = version,
             name = name,
             backgroundColor = backgroundColor,
+            backgroundColorIsPersisted = true,
             images = images,
             markupStrokes = markupStrokes,
             markupTexts = markupTexts,
@@ -1065,6 +1094,7 @@ class PurSceneCodec {
             version = version,
             name = name,
             backgroundColor = backgroundColor,
+            backgroundColorIsPersisted = true,
             images = images,
             markupStrokes = markupStrokes,
             markupTexts = markupTexts,
@@ -1386,6 +1416,7 @@ class PurSceneCodec {
             // the title reflects the file they opened.
             name = folderLocation.ifBlank { "" },
             backgroundColor = Color(0xFF111111),
+            backgroundColorIsPersisted = false,
             images = images.mapIndexed { index, image ->
                 image.copy(showsOriginalResolution = index in extension.originalResolutionImageIndexes)
             }.sortedBy { it.zIndex },
@@ -1921,6 +1952,10 @@ class PurSceneCodec {
 
         // Scene-level metadata payload size (spacingX + spacingY + alignment).
         private const val SCENE_METADATA_PAYLOAD_SIZE = 8 + 8 + 4
+        private const val LEGACY_BACKGROUND_TRAILER_SIZE = 4 + 8
+        private val LEGACY_BACKGROUND_TRAILER_MAGIC = byteArrayOf(
+            'P'.code.toByte(), 'R'.code.toByte(), 'B'.code.toByte(), 'G'.code.toByte(),
+        )
         private val MAGIC = byteArrayOf('P'.code.toByte(), 'R'.code.toByte(), 'F'.code.toByte(), 'A'.code.toByte())
         private val MARKUP_MAGIC = byteArrayOf('M'.code.toByte(), 'R'.code.toByte(), 'K'.code.toByte(), '1'.code.toByte())
         private val SCENE_SETTINGS_MAGIC = byteArrayOf('S'.code.toByte(), 'E'.code.toByte(), 'T'.code.toByte(), '1'.code.toByte())

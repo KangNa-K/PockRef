@@ -10426,7 +10426,11 @@ private fun PockRefCanvas(
                         !dragStarted && !transformStarted &&
                         !gestureMoved &&
                         (upTime - downTime) < 300L &&
-                        peakPointerCount >= 2
+                        peakPointerCount >= 2 &&
+                        shouldAllowMultiFingerHistoryGesture(
+                            globalImageLock = currentState.globalImageLock,
+                            canvasFrozen = currentState.lockCanvasFrozen,
+                        )
                     ) {
                         when (peakPointerCount) {
                             2 -> {
@@ -12152,6 +12156,11 @@ internal fun shouldSkipFrozenCanvasPointerWork(
     canvasFrozen: Boolean,
     hasPressedPointers: Boolean,
 ): Boolean = canvasFrozen && hasPressedPointers
+
+internal fun shouldAllowMultiFingerHistoryGesture(
+    globalImageLock: Boolean,
+    canvasFrozen: Boolean,
+): Boolean = !globalImageLock && !canvasFrozen
 
 internal fun shouldSelectImageForTwoFingerCanvasGesture(
     globalImageLock: Boolean,
