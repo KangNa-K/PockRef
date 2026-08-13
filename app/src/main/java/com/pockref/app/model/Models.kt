@@ -71,13 +71,10 @@ data class CanvasMarkupText(
 )
 
 /**
- * Image format for the export action. Drives the document
- * launcher's MIME type and the [android.graphics.Bitmap.CompressFormat]
- * the reducer uses to encode the rendered bitmap. PNG is
- * lossless and supports alpha; JPEG is much smaller for
- * photographic content but is opaque. Both choices are
- * user-facing in the export chooser dialog — there's no
- * "default" in code, the user picks every time.
+ * Legacy format contract retained for compatibility with older internal
+ * callers. The selected-image export UI no longer exposes a format choice:
+ * original-image export copies source bytes, and canvas export always writes
+ * a lossless PNG.
  */
 enum class ExportFormat(val mimeType: String, val extension: String) {
     PNG("image/png", "png"),
@@ -1035,11 +1032,10 @@ data class PockRefUiState(
      */
     val renameDialogValue: String? = null,
     /**
-     * The "export as PNG / JPG" chooser dialog. Non-null = dialog
-     * is visible. The dialog is shown by [PockRefAction.ExportSelected]
-     * and dismissed by either the user's format choice (which
-     * triggers the [PockRefAction.ConfirmExport] path) or by
-     * [PockRefAction.CancelExport].
+     * The lossless export-mode chooser. Non-null = dialog is visible.
+     * The user chooses between copying each selected source image and
+     * rendering the selection into one PNG canvas; [PockRefAction.CancelExport]
+     * dismisses it.
      */
     val showExportDialog: Boolean = false,
     val showExportCanvasDialog: Boolean = false,
@@ -1056,11 +1052,11 @@ data class PockRefUiState(
     * with a small heap; the export dialog warns the user before
     * letting them pick this.
     *
-    * Only affects export-canvas. The per-image
-    * [com.pockref.app.ui.PureRefViewModelScene.exportSelected] /
-    * [com.pockref.app.ui.PureRefViewModelScene.exportBatchToTree]
-    * paths are unaffected — those write one image per file at
-    * intrinsic resolution and don't aggregate into a large canvas.
+    * Only affects the dedicated whole-scene export-canvas path. The
+    * selected-image export paths use original bytes for per-file output
+    * and use the high-quality PNG policy for selected canvas output;
+    * device-safe scaling or source tiles may be applied when the canvas
+    * would exceed the available memory.
     *
     * Set by [com.pockref.app.ui.PockRefAction.SetExportCanvasMaxDim]
     * via the export dialog (or by direct state copy in tests).
@@ -1595,6 +1591,8 @@ data class PockRefUiState(
     // [LaunchedEffect] on this tick and calls
     // [sheetState.hide()] when it changes.
     val selectionSheetDismissTick: Int = 0,
+    /** True while the temporary blank canvas is open. Not persisted. */
+    val blankCanvasOpen: Boolean = false,
 )
 
 /**
@@ -1662,6 +1660,9 @@ fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
 
 internal val PockRefUiState.hasSceneContent: Boolean
     get() = images.isNotEmpty() || markupStrokes.isNotEmpty() || markupTexts.isNotEmpty()
+
+internal val PockRefUiState.isCanvasOpen: Boolean
+    get() = blankCanvasOpen || hasSceneContent
 
 /**
  * V_NOW (2026-06-08 "global image lock" feature):
