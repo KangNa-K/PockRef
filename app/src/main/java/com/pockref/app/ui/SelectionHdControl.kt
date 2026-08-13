@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -55,10 +56,51 @@ internal fun originalResolutionControlPosition(
     return Offset(x, y)
 }
 
+/**
+ * Projects the HD control's local position through the same rotation frame
+ * used by the selected image renderer. The caller supplies the image center
+ * and dimensions in screen pixels so canvas zoom is already represented.
+ */
+internal fun projectOriginalResolutionControlCenter(
+    imageCenter: Offset,
+    imageWidthPx: Float,
+    imageHeightPx: Float,
+    rotationDegrees: Float,
+    flipX: Boolean = false,
+    flipY: Boolean = false,
+    controlWidthPx: Float = CONTROL_WIDTH_PX,
+    controlHeightPx: Float = CONTROL_HEIGHT_PX,
+    insetPx: Float = CONTROL_INSET_PX,
+): Offset {
+    val localCenter = originalResolutionControlPosition(
+        frame = Rect(0f, 0f, imageWidthPx, imageHeightPx),
+        controlWidthPx = controlWidthPx,
+        controlHeightPx = controlHeightPx,
+        insetPx = insetPx,
+    )
+    val dx = (localCenter.x - imageWidthPx / 2f) * if (flipX) -1f else 1f
+    val dy = (localCenter.y - imageHeightPx / 2f) * if (flipY) -1f else 1f
+    val radians = Math.toRadians(rotationDegrees.toDouble())
+    val cosRotation = kotlin.math.cos(radians).toFloat()
+    val sinRotation = kotlin.math.sin(radians).toFloat()
+    return Offset(
+        x = imageCenter.x + dx * cosRotation - dy * sinRotation,
+        y = imageCenter.y + dx * sinRotation + dy * cosRotation,
+    )
+}
+
+internal data class OriginalResolutionControlPlacement(
+    val center: Offset,
+    val rotationDegrees: Float,
+    val controlWidthPx: Float,
+    val controlHeightPx: Float,
+)
+
 @Composable
 internal fun SelectionHdControl(
     state: OriginalResolutionSelectionState,
     onClick: () -> Unit,
+    rotationDegrees: Float = 0f,
     modifier: Modifier = Modifier,
 ) {
     val selected = state != OriginalResolutionSelectionState.OFF
@@ -78,6 +120,9 @@ internal fun SelectionHdControl(
         onClick = onClick,
         modifier = modifier
             .size(width = 52.dp, height = 44.dp)
+            .graphicsLayer {
+                rotationZ = rotationDegrees
+            }
             .semantics {
                 contentDescription = "高清显示"
                 stateDescription = stateLabel

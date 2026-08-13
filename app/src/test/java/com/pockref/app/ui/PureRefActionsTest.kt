@@ -173,7 +173,8 @@ class PockRefActionsTest {
     // surface (including ToggleOriginalDisplaySelected).
     // 2026-08-03: 177 → 178 — kept both the save-path switch and the
     // selectable default directory action.
-    private val expectedVariantCount: Int = 178
+    // 2026-08-13: 181 → 183 — added transient posterize controls.
+    private val expectedVariantCount: Int = 183
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses
@@ -215,6 +216,23 @@ class PockRefActionsTest {
         assertTrue(
             directSubclasses().contains(PockRefAction.ToggleOriginalDisplaySelected::class.java),
         )
+    }
+
+    @Test
+    fun blankCanvasActions_areActionVariants() {
+        val variants = directSubclasses()
+
+        assertTrue(variants.contains(PockRefAction.OpenBlankCanvas::class.java))
+        assertTrue(variants.contains(PockRefAction.CloseBlankCanvas::class.java))
+        assertTrue(variants.contains(PockRefAction.OpenSceneFromPicker::class.java))
+    }
+
+    @Test
+    fun posterizeActions_areActionVariants() {
+        val variants = directSubclasses()
+
+        assertTrue(variants.contains(PockRefAction.TogglePosterizeLevel::class.java))
+        assertTrue(variants.contains(PockRefAction.ClearPosterizePreview::class.java))
     }
 
     @Test

@@ -11,6 +11,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.view.HapticFeedbackConstants
@@ -257,6 +258,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -344,6 +346,7 @@ import com.pockref.app.model.SceneImage
 import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.SelectionMode
 import com.pockref.app.model.hasSceneContent
+import com.pockref.app.model.isCanvasOpen
 import com.pockref.app.model.isImageLocked
 import com.pockref.app.model.Size2D
 import com.pockref.app.ui.settings.SettingsPanel
@@ -646,20 +649,6 @@ fun PockRefApp(
     // resolve content URIs and clean up orphan temp files
     // when the user cancels the camera.
     val context = androidx.compose.ui.platform.LocalContext.current
-    // V_NOW (L2 empty-canvas revamp 2026-06-10): the new
-    // single-launcher import path. The launcher accepts the
-    // union of image/* and PockRef scene MIME / octet-stream
-    // so the user gets a single SAF picker that can pick
-    // BOTH images and .pur files. The reducer (via
-    // PockRefViewModel.importMixed) routes the URI list to
-    // ImportImages or LoadScene based on the URI's MIME.
-    val mixedImportLauncher = rememberLauncherForActivityResult(
-        OpenMultipleDocuments(),
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            onAction(PockRefAction.ImportMixed(uris))
-        }
-    }
     // V_NOW (2026-06-10 #2 import popup): gallery picker.
     // [PickMultipleVisualMedia] is the Android 13+
     // PhotoPicker API (auto-fallback to SAF on older
@@ -851,6 +840,7 @@ fun PockRefApp(
     //      system and the Activity finishes (Android: returns
     //      to the home screen, satisfying "无文件打开状态
     //      直接退出软件回到桌面").
+    val blankCanvasActive = state.blankCanvasOpen && !state.hasSceneContent
     val sceneIsOpen = state.hasSceneContent || state.canDirectSave
     val unsavedDialogShowing = state.showUnsavedChangesDialog
     // V_NOW (2026-06-10, "启动页多选" back-press contract):
@@ -881,8 +871,10 @@ fun PockRefApp(
         enabled = state.pendingMarkupTextPosition != null ||
             state.markupModeActive ||
             menuExpanded ||
+            state.importSourceMenuOpen ||
             recentMultiSelectActive ||
             state.bulkDeleteConfirmOpen ||
+            blankCanvasActive ||
             (sceneIsOpen && !unsavedDialogShowing),
     ) {
         when {
@@ -894,7 +886,10 @@ fun PockRefApp(
                 onAction(PockRefAction.DismissBulkDeleteConfirm)
             recentMultiSelectActive ->
                 onAction(PockRefAction.ExitRecentMultiSelect)
+            state.importSourceMenuOpen ->
+                onAction(PockRefAction.SetImportSourceMenuOpen(false))
             menuExpanded -> menuExpanded = false
+            blankCanvasActive -> onAction(PockRefAction.CloseBlankCanvas)
             else -> onAction(PockRefAction.CloseScene)
         }
     }
@@ -925,6 +920,16 @@ fun PockRefApp(
     val canvasBitmapCache = remember { mutableStateMapOf<String, Pair<Int, ImageBitmap>>() }
     val canvasTileCache = remember {
         mutableStateMapOf<com.pockref.app.data.ImageTileKey, ImageBitmap>()
+    }
+    val posterizeCache = rememberCoroutineScope().let { scope ->
+        remember(scope) { PosterizeBitmapCache(scope) }
+    }
+    val gifFrameBitmapCache = remember { GifFrameBitmapCache() }
+    DisposableEffect(Unit) {
+        onDispose {
+            posterizeCache.clear()
+            gifFrameBitmapCache.clear()
+        }
     }
     val gifPlaybackSources = remember { mutableStateMapOf<String, GifPlaybackSource>() }
     val gifPlaybackStates = remember { mutableStateMapOf<String, GifPlaybackState>() }
@@ -987,6 +992,8 @@ fun PockRefApp(
         canvasBitmapCache.keys.filterNot { it in currentIds }.forEach { key ->
             canvasBitmapCache.remove(key)
         }
+        posterizeCache.removeImagesNotIn(currentIds)
+        gifFrameBitmapCache.removeImagesNotIn(currentIds)
         gifPlaybackSources.keys.filterNot { it in currentIds }.forEach { key ->
             gifPlaybackSources.remove(key)
         }
@@ -1018,6 +1025,8 @@ fun PockRefApp(
             if (oldKey != null && oldKey != newKey) {
                 // Image bytes or intrinsic dimensions changed — evict stale cache
                 canvasBitmapCache.remove(id)
+                posterizeCache.removeImage(id)
+                gifFrameBitmapCache.removeImage(id)
                 gifPlaybackSources.remove(id)
                 gifPlaybackStates.remove(id)
             }
@@ -1040,7 +1049,7 @@ fun PockRefApp(
     val openSceneLauncher = rememberLauncherForActivityResult(
         OpenDocument(),
     ) { uri ->
-        uri?.let { onAction(PockRefAction.LoadScene(it)) }
+        uri?.let { onAction(PockRefAction.OpenSceneFromPicker(it)) }
     }
     // V_NOW: save .pur with [com.pockref.app.MainActivity.PUR_SCENE_MIME]
     // ("application/x-pockref-scene") so the resulting file is
@@ -1068,8 +1077,7 @@ fun PockRefApp(
     //
     // Fix: switch the Save flow to the two-step [OpenDocumentTree] +
     // [DocumentsContract.createDocument] pattern already used by
-    // [exportBatchPngLauncher] / [exportBatchJpgLauncher]. The
-    // user picks a folder first (opened at the previously selected folder
+    // [exportOriginalsLauncher]. The user picks a folder first (opened at the previously selected folder
     // when the switch is enabled), then types a filename in
     // [SaveSceneNameDialog], then we takePersistable on the tree
     // and createDocument on it. OpenDocumentTree on a tree URI
@@ -1103,7 +1111,7 @@ fun PockRefApp(
         } catch (e: SecurityException) {
             // per-task grant still good for the lifetime of the
             // process — log but proceed (mirrors
-            // [exportBatchPngLauncher] behavior).
+            // [exportOriginalsLauncher] behavior).
             android.util.Log.w(
                 "PockRefSave",
                 "takePersistableUriPermission failed: ${e.message}",
@@ -1120,8 +1128,8 @@ fun PockRefApp(
         // 6 (SM-X810 confirmed via PockRefSave log), so the user's
         // "新建的 .pur 文件没法保存" report comes back as a silent
         // failure with no scene on disk. Convert tree → document
-        // the same way [exportBatchToTree] does
-        // (PureRefViewModelScene.kt exportBatchToTree()).
+        // the same way [exportOriginalsToTree] does
+        // (PureRefViewModelScene.kt exportOriginalsToTree()).
         val documentUri = createDocumentInTree(
             contentResolver = context.contentResolver,
             treeUri = treeUri,
@@ -1166,31 +1174,25 @@ fun PockRefApp(
         )
     }
 
-    // Export launchers are declared inside [if
-    // (state.showExportDialog)] (where they're used) so the
-    // closure capture of function-scope locals is trivial. Two
-    // separate launchers because the document picker is bound
-    // to a MIME type.
-    val exportPngLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
-        uri?.let { onAction(PockRefAction.ConfirmExport(it, com.pockref.app.model.ExportFormat.PNG)) }
+    // Lossless selected-export launchers. The original-image path uses a
+    // folder so every selected item can be copied with its own source MIME
+    // and filename. The canvas path creates one PNG document.
+    var pendingSelectedCanvasImageIds by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
+    val exportSelectedCanvasLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
+        uri?.let {
+            val imageIds = pendingSelectedCanvasImageIds.toSet()
+            pendingSelectedCanvasImageIds = emptyList()
+            onAction(
+                PockRefAction.ConfirmExportCanvas(
+                    uri = it,
+                    backgroundMode = state.exportCanvasBackground,
+                    imageIds = imageIds,
+                ),
+            )
+        }
     }
-    val exportJpgLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
-        uri?.let { onAction(PockRefAction.ConfirmExport(it, com.pockref.app.model.ExportFormat.JPEG)) }
-    }
-    val exportGifLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
-        uri?.let { onAction(PockRefAction.ConfirmExportGif(it)) }
-    }
-    // Canvas export: export the entire canvas as a single PNG.
-    // V_NOW (2026-06-16): the URI-returning callback reads the
-    // current [state.exportCanvasBackground] (which the
-    // [ExportCanvasDialogHost] wrote via
-    // [PockRefAction.SetExportCanvasBackground]) and passes it
-    // through [PockRefAction.ConfirmExportCanvas] so the
-    // [com.pockref.app.ui.PureRefViewModelScene.exportCanvas]
-    // call knows whether to fill the bitmap with the canvas
-    // background colour or leave it transparent. The dialog
-    // dismisses itself in the same reducer via
-    // [PockRefUiState.showExportCanvasDialog] = false.
+    // Canvas export from the right-bottom action panel: export the entire
+    // scene and keep the existing background / size options.
     val exportCanvasLauncher = rememberLauncherForActivityResult(CreateDocumentWithInitialUri()) { uri ->
         uri?.let {
             onAction(
@@ -1201,45 +1203,13 @@ fun PockRefApp(
             )
         }
     }
-    // Multi-export: pick a FOLDER, then write every selected image
-    // as a sibling file inside it. The same format launches both
-    // tree-picker branches; the dialog uses one of the two based on
-    // how many images are selected.
-    //
-    // V2 fix: the OpenDocumentTree contract grants per-task write
-    // permission, which is enough for [DocumentsContract.createDocument]
-    // to work *while* the activity is alive — but a few OEM SAF
-    // forks (and some cloud providers) reject createDocument with
-    // "无法使用此文件夹" unless we ALSO call
-    // [ContentResolver.takePersistableUriPermission]. The persistable
-    // grant survives process death, so a background batch export
-    // also resumes cleanly. SecurityException is swallowed because
-    // some providers don't support persistable grants at all — the
-    // per-task grant is still good for the lifetime of the process,
-    // which is enough for an in-session batch export.
-    // (context is hoisted to the top of the composable
-    // for use by the camera launcher's cleanup path.)
-    // Build an initial URI pointing at the Download folder so the
-    // system folder picker opens there instead of the storage root.
-    // On Samsung devices the root is read-only; opening Download
-    // directly avoids the "无法在此文件夹创建文件" error.
+    // Original-image export: choose a folder, then copy each selected
+    // source file verbatim. Keep the persisted grant when the provider
+    // supports it; the current task grant is enough for providers that do not.
     val saveDirectoryInitialUri = preferredSaveTreeUri
-
-    val exportBatchPngLauncher = rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()) { uri ->
-        // V3 diagnostic: log the launcher result so the
-        // user can see in logcat whether the picker
-        // returned a tree URI at all (and what authority
-        // it was). The previous version silently dropped
-        // `uri == null` (cancelled), which was fine for
-        // UX but invisible when debugging. The user's
-        // "无法使用此文件夹" report now also gets a
-        // distinct log line so logcat can confirm
-        // whether the picker returned null or returned
-        // a tree URI that later failed createDocument.
-        android.util.Log.i(
-            "PockRefExport",
-            "OpenDocumentTree callback: uri=$uri",
-        )
+    val exportOriginalsLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
         uri?.let { treeUri ->
             try {
                 context.contentResolver.takePersistableUriPermission(
@@ -1250,32 +1220,10 @@ fun PockRefApp(
             } catch (e: SecurityException) {
                 android.util.Log.w(
                     "PockRefExport",
-                    "takePersistableUriPermission failed: ${e.message}",
-                )
-                // non-fatal: per-task grant is still active
-            }
-            onAction(PockRefAction.ConfirmExportBatch(treeUri, com.pockref.app.model.ExportFormat.PNG))
-        }
-    }
-    val exportBatchJpgLauncher = rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()) { uri ->
-        android.util.Log.i(
-            "PockRefExport",
-            "OpenDocumentTree callback (JPG): uri=$uri",
-        )
-        uri?.let { treeUri ->
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    treeUri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-                )
-            } catch (e: SecurityException) {
-                android.util.Log.w(
-                    "PockRefExport",
-                    "takePersistableUriPermission (JPG) failed: ${e.message}",
+                    "takePersistableUriPermission for original export failed: ${e.message}",
                 )
             }
-            onAction(PockRefAction.ConfirmExportBatch(treeUri, com.pockref.app.model.ExportFormat.JPEG))
+            onAction(PockRefAction.ConfirmExportOriginals(treeUri))
         }
     }
     // Top toolbar used to share these launchers with
@@ -1288,7 +1236,7 @@ fun PockRefApp(
     // 按钮取消;保存动作只走 [LaunchedEffect] →
     // [saveSceneLauncher] 路径,即 unsaved-changes-dialog
     // 的 "Save As" 流程)。
-    val onImport: () -> Unit = { mixedImportLauncher.launch(arrayOf("image/*", "application/x-pockref-scene", "application/octet-stream")) }
+    val onImport: () -> Unit = { importLauncher.launch(arrayOf("image/*")) }
     // V_NOW: open-scene picker accepts the dedicated .pur
     // MIME plus the legacy `application/octet-stream` (so
     // files saved by older builds, which wrote octet-stream,
@@ -1566,7 +1514,7 @@ fun PockRefApp(
                 // wired there directly. [CanvasPanel] no longer
                 // needs the [onMenuDismiss] param.
                  imageLazyLoader = imageLazyLoader,
-                 imageDecoder = imageDecoder,
+                imageDecoder = imageDecoder,
                  gifPlaybackSources = gifPlaybackSources,
                  gifPlaybackStates = gifPlaybackStates,
                  selectedGifPlaybackImageId = selectedGifPlaybackImageId,
@@ -1576,9 +1524,11 @@ fun PockRefApp(
                  modifier = Modifier
                      .fillMaxSize(),
                  hoverProgress = hoverProgress,
-                 canvasBitmapCache = canvasBitmapCache,
-                 canvasTileCache = canvasTileCache,
-             )
+                canvasBitmapCache = canvasBitmapCache,
+                canvasTileCache = canvasTileCache,
+                posterizeCache = posterizeCache,
+                gifFrameBitmapCache = gifFrameBitmapCache,
+            )
 
             // V_NOW (2026-06-19): lock-button visibility
             // toggle is now handled inside the canvas's
@@ -1833,7 +1783,12 @@ fun PockRefApp(
             // gated by this — it stays visible on the
             // start screen because it's the primary "add
             // your first image" affordance.
-            if (state.practiceState == null && state.images.isNotEmpty() && !isLockEngaged) {
+            // A temporary blank canvas has no lockable scene content, so its
+            // add/open toolbar must remain reachable even if lock mode was
+            // persisted from the previous scene.
+            if (state.practiceState == null && state.isCanvasOpen &&
+                (!isLockEngaged || state.blankCanvasOpen)
+            ) {
                 TopToolbar(
                 state = state,
                 // V_NOW: any click on the top toolbar
@@ -1927,6 +1882,7 @@ fun PockRefApp(
                 },
                 onPickClipboard = onImportFromClipboard,
                 onPickFiles = onImport,
+                onOpenScene = onOpenScene,
                 onEnterFloatingWindow = onEnterFloatingWindow,
                 onChooseDefaultSaveDirectory = {
                     saveDirectoryPickerLauncher.launch(selectedSaveTreeUri)
@@ -2158,47 +2114,25 @@ fun PockRefApp(
                 )
             }
             if (state.showExportDialog) {
-                // Multi-export kicks in when the user has ≥2
-                // selected images. Single-select keeps the old
-                // per-image "give it a name" flow; multi-select
-                // switches to the folder-pick flow (each image
-                // gets its own file in the chosen folder).
-                val multiCount = state.selectedImageIds.size
-                val isMulti = multiCount >= 2
-                val selectedId = state.selectedImageIds.singleOrNull() ?: state.selectedImageId
-                val selectedExportImage = state.images.firstOrNull { image ->
-                    image.id == selectedId
-                }
-                val exportsOriginalGif = !isMulti &&
-                    selectedExportImage != null &&
-                    isGifMimeType(selectedExportImage.mimeType) &&
-                    selectedExportImage.cropRect == null
-                val gifExportImage = if (exportsOriginalGif) selectedExportImage else null
-                if (gifExportImage != null) {
-                    LaunchedEffect(gifExportImage.id) {
-                        exportGifLauncher.launch(
-                            CreateDocumentInput(
-                                mimeType = "image/gif",
-                                fileName = "${gifExportImage.name}.gif",
-                                initialUri = preferredSaveTreeUri,
-                            ),
-                        )
-                        onAction(PockRefAction.CancelExport)
-                    }
+                val selectedExportIds = if (state.selectedImageIds.isNotEmpty()) {
+                    state.selectedImageIds
                 } else {
-                    ExportDialogHost(
-                        selectedName = selectedExportImage?.name ?: "untitled",
-                        isMulti = isMulti,
-                        selectedCount = if (isMulti) multiCount else 1,
-                        saveDirectoryInitialUri = saveDirectoryInitialUri,
-
-                        exportPngLauncher = exportPngLauncher,
-                        exportJpgLauncher = exportJpgLauncher,
-                        exportBatchPngLauncher = exportBatchPngLauncher,
-                        exportBatchJpgLauncher = exportBatchJpgLauncher,
-                        onDismiss = { onAction(PockRefAction.CancelExport) },
-                    )
+                    state.selectedImageId?.let { setOf(it) }.orEmpty()
                 }
+                val selectedCount = selectedExportIds.size
+                ExportDialogHost(
+                    selectedCount = selectedCount,
+                    onExportOriginals = {
+                        onAction(PockRefAction.CancelExport)
+                        exportOriginalsLauncher.launch(saveDirectoryInitialUri)
+                    },
+                    onExportCanvas = {
+                        pendingSelectedCanvasImageIds = selectedExportIds.toList()
+                        onAction(PockRefAction.CancelExport)
+                        onAction(PockRefAction.ExportCanvas)
+                    },
+                    onDismiss = { onAction(PockRefAction.CancelExport) },
+                )
             }
             // V_NOW (2026-06-16): the canvas-export options
             // dialog. Was previously a dead state — the
@@ -2220,14 +2154,20 @@ fun PockRefApp(
             if (state.showExportCanvasDialog) {
                 ExportCanvasDialogHost(
                     sceneName = state.sceneName,
+                    selectedImageIds = pendingSelectedCanvasImageIds.toSet().takeIf { it.isNotEmpty() },
                     maxDim = state.exportCanvasMaxDim,
                     backgroundMode = state.exportCanvasBackground,
                     onAction = onAction,
                     initialUri = preferredSaveTreeUri,
                     exportCanvasLauncher = exportCanvasLauncher,
+                    exportSelectedCanvasLauncher = exportSelectedCanvasLauncher,
                 )
             }
-            // V_NOW (2026-06-16): Save button → name dialog →
+            LaunchedEffect(state.showExportCanvasDialog) {
+                if (!state.showExportCanvasDialog) {
+                    pendingSelectedCanvasImageIds = emptyList()
+                }
+            }
             // OpenDocumentTree. See [PockRefAction.RequestSaveScene]
             // and the comment block above [saveSceneTreeLauncher]
             // for why the Save flow no longer uses
@@ -2281,6 +2221,7 @@ fun PockRefApp(
             HoverMagnifierOverlay(
                 state = state,
                 bitmapCache = canvasBitmapCache,
+                posterizeCache = posterizeCache,
                 progress = hoverProgress,
             )
         }
@@ -2313,6 +2254,8 @@ fun PockRefApp(
     hoverProgress: Float = 0f,
     canvasBitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
     canvasTileCache: androidx.compose.runtime.snapshots.SnapshotStateMap<com.pockref.app.data.ImageTileKey, ImageBitmap>,
+    posterizeCache: PosterizeBitmapCache,
+    gifFrameBitmapCache: GifFrameBitmapCache,
     gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
     gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
     selectedGifPlaybackImageId: String?,
@@ -2365,6 +2308,8 @@ fun PockRefApp(
             hoverProgress = hoverProgress,
             bitmapCache = canvasBitmapCache,
             tileCache = canvasTileCache,
+            posterizeCache = posterizeCache,
+            gifFrameBitmapCache = gifFrameBitmapCache,
             gifPlaybackSources = gifPlaybackSources,
             gifPlaybackStates = gifPlaybackStates,
             selectedGifPlaybackImageId = selectedGifPlaybackImageId,
@@ -2378,7 +2323,7 @@ fun PockRefApp(
                     .padding(top = statusBarTopDp + Dimens.CornerInset),
             )
         }
-        if (!state.hasSceneContent) {
+        if (!state.hasSceneContent && !state.blankCanvasOpen) {
             // V_NOW (2026-06-10, "启动页多选 + 底部 Bulk
             // Action Bar 置顶"): the start-page multi-select
             // chrome. Three siblings of the centered
@@ -2465,7 +2410,7 @@ fun PockRefApp(
             EmptyCanvasState(
                 state = state,
                 onAction = onAction,
-                onImportMixed = onImport,
+                onOpenBlankCanvas = { onAction(PockRefAction.OpenBlankCanvas) },
                 showLogExportFab = showLogExportFab.value,
                 onLogExportFab = { showLogExportFab.value = true },
                 modifier = Modifier.align(Alignment.Center),
@@ -2497,7 +2442,7 @@ fun PockRefApp(
                         .padding(Dimens.EdgeInset),
                 )
             }
-        } else {
+        } else if (state.hasSceneContent) {
             if (state.cropImageId != null) {
                 // V_NOW (M3 sheet chrome, user feedback "裁切界面的视觉风格
                 // 要跟现在选区弹出后整体窗口的展示风格保持一致"): the
@@ -2979,6 +2924,11 @@ private fun SelectionBottomSheet(
     val selectedCount = state.selectedImageIds.size
     if (selectedCount == 0) return
 
+    val posterizeControlsVisible =
+        state.posterizeControlsVisible &&
+            state.posterizeTargetImageIds == state.selectedImageIds &&
+            state.selectedImageIds.isNotEmpty()
+
     val activeSelectedIds = state.selectedImageIds.ifEmpty {
         state.selectedImageId?.let(::setOf).orEmpty()
     }
@@ -3015,11 +2965,21 @@ private fun SelectionBottomSheet(
                     .padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "已选 $selectedCount 张",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                if (posterizeControlsVisible) {
+                    PosterizeLevelButtons(
+                        selectedLevels = state.posterizeLevels,
+                        onLevelClick = { levels ->
+                            onAction(PockRefAction.TogglePosterizeLevel(levels))
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    Text(
+                        text = "已选 $selectedCount 张",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
                 if (isLockedPanel) {
                     Spacer(Modifier.width(8.dp))
                     Surface(
@@ -5951,10 +5911,10 @@ private fun Modifier.verticalLayoutSwap() = this.layout { measurable, constraint
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
- private fun EmptyCanvasState(
+private fun EmptyCanvasState(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
-    onImportMixed: () -> Unit,
+    onOpenBlankCanvas: () -> Unit,
     // V_NOW (2026-06-16 user feedback "把导出日志按钮改成默认
     // 不显示,点 pockref 图标 7 次后才会显示"): the start-page
     // log-export FAB is hidden by default and unlocked via
@@ -6054,7 +6014,7 @@ private fun Modifier.verticalLayoutSwap() = this.layout { measurable, constraint
                 color = MaterialTheme.colorScheme.primary,
             )
             ExtendedFloatingActionButton(
-                onClick = onImportMixed,
+                onClick = onOpenBlankCanvas,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 // P1 (2026-06-11 chrome unify): match the
                 // chrome surface tier so the EFAB inside
@@ -6270,6 +6230,7 @@ private fun TopToolbar(
     onPickGallery: () -> Unit = {},
     onPickClipboard: () -> Unit = {},
     onPickFiles: () -> Unit = {},
+    onOpenScene: () -> Unit = {},
     onEnterFloatingWindow: () -> Unit = {},
     onChooseDefaultSaveDirectory: () -> Unit = {},
     showFloatingWindowButton: Boolean = true,
@@ -7077,7 +7038,7 @@ ToolbarIconButton(
                     ToolbarIconButton(
                         imageVector = Icons.Rounded.Close,
                         contentDescription = "关闭",
-                        enabled = state.images.isNotEmpty(),
+                        enabled = state.isCanvasOpen,
                         onClick = { onAction(PockRefAction.CloseScene) },
                     )
                 }
@@ -7313,7 +7274,7 @@ ToolbarIconButton(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    // [文件] — files.
+                    // [载入图片] — image files.
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -7325,6 +7286,40 @@ ToolbarIconButton(
                             ) {
                                 onImportSourceMenuOpenChange(false)
                                 onPickFiles()
+                            }
+                            .padding(
+                                horizontal = 12.dp,
+                                vertical = 10.dp,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.FileOpen,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = "载入图片",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // [打开文件] — PockRef scene files.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember {
+                                    MutableInteractionSource()
+                                },
+                                indication = null,
+                            ) {
+                                onImportSourceMenuOpenChange(false)
+                                onOpenScene()
                             }
                             .padding(
                                 horizontal = 12.dp,
@@ -7662,6 +7657,8 @@ private fun PockRefCanvas(
     // used to live here.
     bitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
     tileCache: androidx.compose.runtime.snapshots.SnapshotStateMap<com.pockref.app.data.ImageTileKey, ImageBitmap>,
+    posterizeCache: PosterizeBitmapCache,
+    gifFrameBitmapCache: GifFrameBitmapCache,
     gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
     gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
     selectedGifPlaybackImageId: String?,
@@ -7713,6 +7710,22 @@ private fun PockRefCanvas(
     val lastPointerPosState = remember { mutableStateOf(Offset.Zero) }
     val autoScrollEligibleState = remember { mutableStateOf(false) }
     val autoScrollViewportSize = remember { mutableStateOf(Size.Zero) }
+    var localCanvasSize by remember { mutableStateOf(Size.Zero) }
+    val renderViewportSize = if (
+        localCanvasSize.width > 0f && localCanvasSize.height > 0f
+    ) {
+        localCanvasSize
+    } else {
+        Size(
+            state.canvasViewportSize.width,
+            state.canvasViewportSize.height,
+        )
+    }
+    // V_NOW: the Activity and floating overlay render this composable in
+    // separate windows but share one ViewModel state. Decode/tile planning
+    // must use this host's measured canvas size; the global state viewport
+    // can still contain the full-screen Activity dimensions while the
+    // overlay is showing.
     // V3: auto-scroll worker also feeds the active drag.
     // The user's reported bug was that the canvas panned
     // under a stationary image when the finger sat in
@@ -7784,7 +7797,7 @@ private fun PockRefCanvas(
     val tilePipeline = remember(imageDecoder) {
         imageDecoder?.let { decoder ->
             com.pockref.app.data.ImageTilePipeline<android.graphics.Bitmap>(
-                decodeTile = decoder::decodeTile,
+                decodeTile = { image, request -> decoder.decodeTile(image, request) },
             )
         }
     }
@@ -7998,15 +8011,15 @@ private fun PockRefCanvas(
     // Scene-changed effect: load all images that aren't cached
     LaunchedEffect(
         state.images.map { Triple(it.id, it.imageBytes.size, it.mimeType) },
-        state.canvasViewportSize,
+        renderViewportSize,
         focusedHighResImageId,
     ) {
         val s = currentState
         val viewport = worldViewportRect(
             canvasOffset = s.canvasOffset,
             canvasScale = s.canvasScale,
-            viewportWidth = s.canvasViewportSize.width,
-            viewportHeight = s.canvasViewportSize.height,
+            viewportWidth = renderViewportSize.width,
+            viewportHeight = renderViewportSize.height,
         )
         pipeline.onSceneChanged(
             images = s.images,
@@ -8016,8 +8029,6 @@ private fun PockRefCanvas(
             ImageDecodePolicy.requestFor(
                 image = image,
                 canvasScale = s.canvasScale,
-                viewportWidth = s.canvasViewportSize.width,
-                viewportHeight = s.canvasViewportSize.height,
                 isFocusedImage = image.id == focusedHighResImageId,
             )
         }
@@ -8028,8 +8039,8 @@ private fun PockRefCanvas(
         val viewport = worldViewportRect(
             canvasOffset = s.canvasOffset,
             canvasScale = s.canvasScale,
-            viewportWidth = s.canvasViewportSize.width,
-            viewportHeight = s.canvasViewportSize.height,
+            viewportWidth = renderViewportSize.width,
+            viewportHeight = renderViewportSize.height,
         )
         if (viewport.width <= 0f || viewport.height <= 0f) return
         val cachedLevels = bitmapCache.mapValues { it.value.first }
@@ -8042,8 +8053,6 @@ private fun PockRefCanvas(
             ImageDecodePolicy.requestFor(
                 image = image,
                 canvasScale = s.canvasScale,
-                viewportWidth = s.canvasViewportSize.width,
-                viewportHeight = s.canvasViewportSize.height,
                 isFocusedImage = image.id == currentFocusedHighResImageId,
             )
         }
@@ -8074,28 +8083,28 @@ private fun PockRefCanvas(
         val viewport = worldViewportRect(
             canvasOffset = s.canvasOffset,
             canvasScale = s.canvasScale,
-            viewportWidth = s.canvasViewportSize.width,
-            viewportHeight = s.canvasViewportSize.height,
+            viewportWidth = renderViewportSize.width,
+            viewportHeight = renderViewportSize.height,
             bufferPx = 0f,
         )
         val requests = ImageTilePlanner.visibleTiles(activeImage, viewport)
-        val missing = requests.filterNot { it.key in tileCache }
+        val keepKeys = requests
+            .take(MAX_TILE_CACHE_ENTRIES)
+            .mapTo(mutableSetOf()) { it.key }
+        tileCache.keys
+            .filter { it !in keepKeys }
+            .forEach { tileCache.remove(it) }
+        val missing = requests.filter { it.key in keepKeys && it.key !in tileCache }
         tilePipelineSnapshot.decode(activeImage, missing) { decoded ->
-            tileCache[decoded.request.key] = decoded.bitmap.asImageBitmap()
-        }
-
-        if (tileCache.size > MAX_TILE_CACHE_ENTRIES) {
-            val visibleKeys = requests.mapTo(mutableSetOf()) { it.key }
-            tileCache.keys
-                .filter { it !in visibleKeys }
-                .take(tileCache.size - MAX_TILE_CACHE_ENTRIES)
-                .forEach { tileCache.remove(it) }
+            if (decoded.request.key in keepKeys) {
+                tileCache[decoded.request.key] = decoded.bitmap.asImageBitmap()
+            }
         }
     }
 
     LaunchedEffect(
         state.canvasScale,
-        state.canvasViewportSize,
+        renderViewportSize,
         state.images,
         focusedHighResImageId,
         tileImageId,
@@ -8261,6 +8270,10 @@ private fun PockRefCanvas(
         }
     }
 
+    val controlDensity = LocalDensity.current
+    val controlWidthPx = with(controlDensity) { 52.dp.toPx() }
+    val controlHeightPx = with(controlDensity) { 44.dp.toPx() }
+    val controlInsetPx = with(controlDensity) { 8.dp.toPx() }
     val selectedImageForHd = remember(
         state.images,
         state.selectedImageIds,
@@ -8274,27 +8287,52 @@ private fun PockRefCanvas(
             ?.let { id -> state.images.firstOrNull { it.id == id } }
             ?.takeUnless { image -> isGifMimeType(image.mimeType) }
     }
-    val selectionHdFrame = remember(
+    val selectionHdPlacement = remember(
         selectedImageForHd,
         state.canvasOffset,
         state.canvasScale,
-        state.canvasViewportSize,
+        renderViewportSize,
+        state.transientDragImageIds,
+        state.transientDragDelta,
+        controlWidthPx,
+        controlHeightPx,
+        controlInsetPx,
     ) {
         val image = selectedImageForHd
-        val viewport = state.canvasViewportSize
+        val viewport = renderViewportSize
         if (image == null || viewport.width <= 0f || viewport.height <= 0f) {
             null
         } else {
-            val worldFrame = groupSelectionAabb(listOf(image)).rect
+            val dragOffset = if (image.id in state.transientDragImageIds) {
+                state.transientDragDelta
+            } else {
+                Offset.Zero
+            }
             val canvasCenter = Offset(
                 x = viewport.width / 2f + state.canvasOffset.x,
                 y = viewport.height / 2f + state.canvasOffset.y,
             )
-            Rect(
-                left = canvasCenter.x + worldFrame.left * state.canvasScale,
-                top = canvasCenter.y + worldFrame.top * state.canvasScale,
-                right = canvasCenter.x + worldFrame.right * state.canvasScale,
-                bottom = canvasCenter.y + worldFrame.bottom * state.canvasScale,
+            val imageCenter = Offset(
+                x = canvasCenter.x + (image.center.x + dragOffset.x) * state.canvasScale,
+                y = canvasCenter.y + (image.center.y + dragOffset.y) * state.canvasScale,
+            )
+            val imageWidth = image.displaySize.width * image.scale * state.canvasScale
+            val imageHeight = image.displaySize.height * image.scale * state.canvasScale
+            OriginalResolutionControlPlacement(
+                center = projectOriginalResolutionControlCenter(
+                    imageCenter = imageCenter,
+                    imageWidthPx = imageWidth,
+                    imageHeightPx = imageHeight,
+                    rotationDegrees = image.rotationDegrees,
+                    flipX = image.flipX,
+                    flipY = image.flipY,
+                    controlWidthPx = controlWidthPx,
+                    controlHeightPx = controlHeightPx,
+                    insetPx = controlInsetPx,
+                ),
+                rotationDegrees = image.rotationDegrees,
+                controlWidthPx = controlWidthPx,
+                controlHeightPx = controlHeightPx,
             )
         }
     }
@@ -8305,6 +8343,10 @@ private fun PockRefCanvas(
             .fillMaxSize()
             .background(state.backgroundColor)
             .onSizeChanged { canvasSize ->
+                localCanvasSize = Size(
+                    canvasSize.width.toFloat(),
+                    canvasSize.height.toFloat(),
+                )
                 onAction(PockRefAction.UpdateCanvasViewport(canvasSize.width.toFloat(), canvasSize.height.toFloat()))
                 // Mirror the viewport into a local
                 // mutableStateOf so the drag-to-edge
@@ -10629,6 +10671,11 @@ private fun PockRefCanvas(
                     canvasOffset = renderCanvasOffset,
                     transientDragIds = state.transientDragImageIds,
                     transientDragDelta = state.transientDragDelta,
+                    posterizeLevels = state.posterizeLevelsFor(image.id),
+                    posterizeCache = posterizeCache,
+                    posterizeSourceToken = posterizeSourceToken(image),
+                    bitmapDecodeLevel = bitmapCache[image.id]?.first ?: 0,
+                    gifFrameBitmapCache = gifFrameBitmapCache,
                     // V_NOW (4-corner scale handles):
                     // per-image handles are only drawn
                     // in SINGLE mode. In MULTI/BOX the
@@ -10831,17 +10878,7 @@ private fun PockRefCanvas(
         }
         }
 
-        if (selectedImageForHd != null && selectionHdFrame != null) {
-            val controlDensity = LocalDensity.current
-            val controlWidthPx = with(controlDensity) { 52.dp.toPx() }
-            val controlHeightPx = with(controlDensity) { 44.dp.toPx() }
-            val insetPx = with(controlDensity) { 8.dp.toPx() }
-            val controlCenter = originalResolutionControlPosition(
-                frame = selectionHdFrame,
-                controlWidthPx = controlWidthPx,
-                controlHeightPx = controlHeightPx,
-                insetPx = insetPx,
-            )
+        if (selectedImageForHd != null && selectionHdPlacement != null) {
             SelectionHdControl(
                 state = originalResolutionStateFor(
                     listOf(selectedImageForHd.showsOriginalResolution),
@@ -10849,10 +10886,11 @@ private fun PockRefCanvas(
                 onClick = {
                     onAction(PockRefAction.ToggleOriginalDisplaySelected)
                 },
+                rotationDegrees = selectionHdPlacement.rotationDegrees,
                 modifier = Modifier.offset {
                     IntOffset(
-                        x = (controlCenter.x - controlWidthPx / 2f).roundToInt(),
-                        y = (controlCenter.y - controlHeightPx / 2f).roundToInt(),
+                        x = (selectionHdPlacement.center.x - selectionHdPlacement.controlWidthPx / 2f).roundToInt(),
+                        y = (selectionHdPlacement.center.y - selectionHdPlacement.controlHeightPx / 2f).roundToInt(),
                     )
                 },
             )
@@ -11480,6 +11518,11 @@ private fun DrawScope.drawSceneImage(
     canvasOffset: Offset,
     transientDragIds: Set<String>,
     transientDragDelta: Offset,
+    posterizeLevels: Int? = null,
+    posterizeCache: PosterizeBitmapCache? = null,
+    posterizeSourceToken: String = com.pockref.app.ui.posterizeSourceToken(image),
+    bitmapDecodeLevel: Int = 0,
+    gifFrameBitmapCache: GifFrameBitmapCache? = null,
     /**
      * V_NOW (4-corner scale handles): total number
      * of currently selected images. When 1, the
@@ -11541,6 +11584,11 @@ private fun DrawScope.drawSceneImage(
                         width = width,
                         height = height,
                         colorAdjust = image.colorAdjust,
+                        imageId = image.id,
+                        sourceToken = posterizeSourceToken,
+                        posterizeLevels = posterizeLevels,
+                        posterizeCache = posterizeCache,
+                        frameBitmapCache = gifFrameBitmapCache,
                     )
                 } else if (bitmap != null && crop != null) {
                     val srcW = bitmap.width
@@ -11553,19 +11601,89 @@ private fun DrawScope.drawSceneImage(
                         ((crop.right - crop.left) * srcW).toInt().coerceIn(1, srcW - srcOffset.x),
                         ((crop.bottom - crop.top) * srcH).toInt().coerceIn(1, srcH - srcOffset.y),
                     )
-                    drawImage(
-                        image = bitmap,
-                        srcOffset = srcOffset,
-                        srcSize = srcSize,
-                        dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
-                        colorFilter = buildColorFilter(image.colorAdjust),
+                    val sourceRect = android.graphics.Rect(
+                        srcOffset.x,
+                        srcOffset.y,
+                        srcOffset.x + srcSize.width,
+                        srcOffset.y + srcSize.height,
                     )
+                    val destinationRect = android.graphics.RectF(0f, 0f, width, height)
+                    val drawn = if (posterizeLevels != null && posterizeCache != null) {
+                        val source = bitmap.asAndroidBitmap()
+                        val request = PosterizeRequest(posterizeLevels, image.colorAdjust)
+                        val key = PosterizeCacheKey(
+                            imageId = image.id,
+                            sourceToken = posterizeSourceToken,
+                            decodeLevel = bitmapDecodeLevel,
+                            tileToken = null,
+                            levels = posterizeLevels,
+                            brightnessBits = image.colorAdjust.brightness.toBits(),
+                            contrastBits = image.colorAdjust.contrast.toBits(),
+                            saturationBits = image.colorAdjust.saturation.toBits(),
+                        )
+                        val fallback = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                            posterizeCache.getOrRequest(key, source, request)
+                        } else null
+                        var result = false
+                        drawIntoCanvas { canvas ->
+                            result = PosterizeRenderer.drawBitmap(
+                                canvas = canvas.nativeCanvas,
+                                source = source,
+                                sourceRect = sourceRect,
+                                destinationRect = destinationRect,
+                                request = request,
+                                cpuFallback = fallback,
+                            )
+                        }
+                        result
+                    } else false
+                    if (!drawn) {
+                        drawImage(
+                            image = bitmap,
+                            srcOffset = srcOffset,
+                            srcSize = srcSize,
+                            dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
+                            colorFilter = buildColorFilter(image.colorAdjust),
+                        )
+                    }
                 } else if (bitmap != null) {
-                    drawImage(
-                        image = bitmap,
-                        dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
-                        colorFilter = buildColorFilter(image.colorAdjust),
-                    )
+                    val drawn = if (posterizeLevels != null && posterizeCache != null) {
+                        val source = bitmap.asAndroidBitmap()
+                        val request = PosterizeRequest(posterizeLevels, image.colorAdjust)
+                        val sourceRect = android.graphics.Rect(0, 0, source.width, source.height)
+                        val key = PosterizeCacheKey(
+                            imageId = image.id,
+                            sourceToken = posterizeSourceToken,
+                            decodeLevel = bitmapDecodeLevel,
+                            tileToken = null,
+                            levels = posterizeLevels,
+                            brightnessBits = image.colorAdjust.brightness.toBits(),
+                            contrastBits = image.colorAdjust.contrast.toBits(),
+                            saturationBits = image.colorAdjust.saturation.toBits(),
+                        )
+                        val fallback = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                            posterizeCache.getOrRequest(key, source, request)
+                        } else null
+                        var result = false
+                        drawIntoCanvas { canvas ->
+                            result = PosterizeRenderer.drawBitmap(
+                                canvas = canvas.nativeCanvas,
+                                source = source,
+                                sourceRect = sourceRect,
+                                destinationRect = android.graphics.RectF(0f, 0f, width, height),
+                                request = request,
+                                cpuFallback = fallback,
+                            )
+                        }
+                        result
+                    } else false
+                    if (!drawn) {
+                        drawImage(
+                            image = bitmap,
+                            dstSize = androidx.compose.ui.unit.IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
+                            colorFilter = buildColorFilter(image.colorAdjust),
+                        )
+                    }
                 }
                 if (tiles.isNotEmpty()) {
                     drawImageTiles(
@@ -11573,6 +11691,9 @@ private fun DrawScope.drawSceneImage(
                         tiles = tiles,
                         width = width,
                         height = height,
+                        posterizeLevels = posterizeLevels,
+                        posterizeCache = posterizeCache,
+                        posterizeSourceToken = posterizeSourceToken,
                     )
                 }
                 if (isBoxSelectPreview && !isSelected) {
@@ -11684,6 +11805,9 @@ private fun DrawScope.drawImageTiles(
     tiles: Map<com.pockref.app.data.ImageTileKey, ImageBitmap>,
     width: Float,
     height: Float,
+    posterizeLevels: Int? = null,
+    posterizeCache: PosterizeBitmapCache? = null,
+    posterizeSourceToken: String = com.pockref.app.ui.posterizeSourceToken(image),
 ) {
     val crop = image.cropRect ?: CropRect()
     val imageWidth = image.intrinsicWidth.toFloat()
@@ -11721,14 +11845,55 @@ private fun DrawScope.drawImageTiles(
         val dstWidth = ((sourceRight - sourceLeft) / cropWidth * width).toInt().coerceAtLeast(1)
         val dstHeight = ((sourceBottom - sourceTop) / cropHeight * height).toInt().coerceAtLeast(1)
 
-        drawImage(
-            image = tile,
-            srcOffset = androidx.compose.ui.unit.IntOffset(srcOffsetX, srcOffsetY),
-            srcSize = androidx.compose.ui.unit.IntSize(srcWidth, srcHeight),
-            dstOffset = androidx.compose.ui.unit.IntOffset(dstLeft, dstTop),
-            dstSize = androidx.compose.ui.unit.IntSize(dstWidth, dstHeight),
-            colorFilter = buildColorFilter(image.colorAdjust),
-        )
+        val drawn = if (posterizeLevels != null && posterizeCache != null) {
+            val source = tile.asAndroidBitmap()
+            val request = PosterizeRequest(posterizeLevels, image.colorAdjust)
+            val key = PosterizeCacheKey(
+                imageId = image.id,
+                sourceToken = posterizeSourceToken,
+                decodeLevel = 0,
+                tileToken = "${key.column}:${key.row}",
+                levels = posterizeLevels,
+                brightnessBits = image.colorAdjust.brightness.toBits(),
+                contrastBits = image.colorAdjust.contrast.toBits(),
+                saturationBits = image.colorAdjust.saturation.toBits(),
+            )
+            val fallback = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                posterizeCache.getOrRequest(key, source, request)
+            } else null
+            var result = false
+            drawIntoCanvas { canvas ->
+                result = PosterizeRenderer.drawBitmap(
+                    canvas = canvas.nativeCanvas,
+                    source = source,
+                    sourceRect = android.graphics.Rect(
+                        srcOffsetX,
+                        srcOffsetY,
+                        srcOffsetX + srcWidth,
+                        srcOffsetY + srcHeight,
+                    ),
+                    destinationRect = android.graphics.RectF(
+                        dstLeft.toFloat(),
+                        dstTop.toFloat(),
+                        (dstLeft + dstWidth).toFloat(),
+                        (dstTop + dstHeight).toFloat(),
+                    ),
+                    request = request,
+                    cpuFallback = fallback,
+                )
+            }
+            result
+        } else false
+        if (!drawn) {
+            drawImage(
+                image = tile,
+                srcOffset = androidx.compose.ui.unit.IntOffset(srcOffsetX, srcOffsetY),
+                srcSize = androidx.compose.ui.unit.IntSize(srcWidth, srcHeight),
+                dstOffset = androidx.compose.ui.unit.IntOffset(dstLeft, dstTop),
+                dstSize = androidx.compose.ui.unit.IntSize(dstWidth, dstHeight),
+                colorFilter = buildColorFilter(image.colorAdjust),
+            )
+        }
     }
 }
 
@@ -11739,6 +11904,11 @@ private fun DrawScope.drawGifMovieFrame(
     width: Float,
     height: Float,
     colorAdjust: ColorAdjust,
+    imageId: String,
+    sourceToken: String,
+    posterizeLevels: Int? = null,
+    posterizeCache: PosterizeBitmapCache? = null,
+    frameBitmapCache: GifFrameBitmapCache? = null,
 ) {
     val movie = source.movie
     val movieWidth = movie.width()
@@ -11748,6 +11918,51 @@ private fun DrawScope.drawGifMovieFrame(
     movie.setTime(source.timeline.timeForFrame(playback.frameIndex))
     val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         colorFilter = buildColorMatrix(colorAdjust)?.let { ColorMatrixColorFilter(it) }
+    }
+    if (posterizeLevels != null && posterizeCache != null && frameBitmapCache != null) {
+        posterizeCache.retainGifFrame(imageId, playback.frameIndex)
+        val frame = frameBitmapCache.obtain(imageId, movieWidth, movieHeight)
+        val frameCanvas = android.graphics.Canvas(frame)
+        frameCanvas.drawColor(
+            android.graphics.Color.TRANSPARENT,
+            android.graphics.PorterDuff.Mode.CLEAR,
+        )
+        movie.draw(frameCanvas, 0f, 0f, paint)
+        val request = PosterizeRequest(posterizeLevels, colorAdjust)
+        val key = PosterizeCacheKey(
+            imageId = imageId,
+            sourceToken = sourceToken,
+            decodeLevel = 0,
+            tileToken = "gif-frame:${playback.frameIndex}",
+            levels = posterizeLevels,
+            brightnessBits = colorAdjust.brightness.toBits(),
+            contrastBits = colorAdjust.contrast.toBits(),
+            saturationBits = colorAdjust.saturation.toBits(),
+        )
+        val fallback = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            posterizeCache.getOrRequest(key, frame, request, snapshotSource = true)
+        } else null
+        var drawn = false
+        drawIntoCanvas { canvas ->
+            drawn = PosterizeRenderer.drawBitmap(
+                canvas = canvas.nativeCanvas,
+                source = frame,
+                sourceRect = android.graphics.Rect(0, 0, movieWidth, movieHeight),
+                destinationRect = android.graphics.RectF(0f, 0f, width, height),
+                request = request,
+                cpuFallback = fallback,
+            )
+            if (!drawn) {
+                val checkpoint = canvas.nativeCanvas.save()
+                try {
+                    canvas.nativeCanvas.scale(width / movieWidth.toFloat(), height / movieHeight.toFloat())
+                    canvas.nativeCanvas.drawBitmap(frame, 0f, 0f, null)
+                } finally {
+                    canvas.nativeCanvas.restoreToCount(checkpoint)
+                }
+            }
+        }
+        return
     }
     drawIntoCanvas { canvas ->
         val nativeCanvas = canvas.nativeCanvas
@@ -11784,6 +11999,7 @@ private fun DrawScope.drawGifMovieFrame(
 private fun BoxScope.HoverMagnifierOverlay(
     state: PockRefUiState,
     bitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    posterizeCache: PosterizeBitmapCache,
     progress: Float,
 ) {
     if (progress <= 0f) return
@@ -11812,6 +12028,10 @@ private fun BoxScope.HoverMagnifierOverlay(
             imageScreenWidth = imageScreenW,
             imageScreenHeight = imageScreenH,
             progress = progress,
+            posterizeLevels = state.posterizeLevelsFor(hoveredImage.id),
+            posterizeCache = posterizeCache,
+            posterizeSourceToken = posterizeSourceToken(hoveredImage),
+            bitmapDecodeLevel = bitmapCache[hoveredImage.id]?.first ?: 0,
         )
     }
 }
@@ -11931,6 +12151,10 @@ private fun DrawScope.drawHoverMagnifier(
     imageScreenWidth: Float,
     imageScreenHeight: Float,
     progress: Float,
+    posterizeLevels: Int? = null,
+    posterizeCache: PosterizeBitmapCache? = null,
+    posterizeSourceToken: String = com.pockref.app.ui.posterizeSourceToken(image),
+    bitmapDecodeLevel: Int = 0,
 ) {
     if (progress <= 0f) return
     val vpW = size.width
@@ -12048,14 +12272,50 @@ private fun DrawScope.drawHoverMagnifier(
                     scaleY = if (image.flipY) -1f else 1f,
                     pivot = Offset(currentW / 2f, currentH / 2f),
                 ) {
-                    drawImage(
-                        image = bitmap,
-                        dstSize = androidx.compose.ui.unit.IntSize(
-                            currentW.toInt().coerceAtLeast(1),
-                            currentH.toInt().coerceAtLeast(1),
-                        ),
-                        colorFilter = buildColorFilter(image.colorAdjust),
-                    )
+                    val drawn = if (posterizeLevels != null && posterizeCache != null) {
+                        val source = bitmap.asAndroidBitmap()
+                        val request = PosterizeRequest(posterizeLevels, image.colorAdjust)
+                        val key = PosterizeCacheKey(
+                            imageId = image.id,
+                            sourceToken = posterizeSourceToken,
+                            decodeLevel = bitmapDecodeLevel,
+                            tileToken = "magnifier",
+                            levels = posterizeLevels,
+                            brightnessBits = image.colorAdjust.brightness.toBits(),
+                            contrastBits = image.colorAdjust.contrast.toBits(),
+                            saturationBits = image.colorAdjust.saturation.toBits(),
+                        )
+                        val fallback = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                            posterizeCache.getOrRequest(key, source, request)
+                        } else null
+                        var result = false
+                        drawIntoCanvas { canvas ->
+                            result = PosterizeRenderer.drawBitmap(
+                                canvas = canvas.nativeCanvas,
+                                source = source,
+                                sourceRect = android.graphics.Rect(0, 0, source.width, source.height),
+                                destinationRect = android.graphics.RectF(
+                                    0f,
+                                    0f,
+                                    currentW,
+                                    currentH,
+                                ),
+                                request = request,
+                                cpuFallback = fallback,
+                            )
+                        }
+                        result
+                    } else false
+                    if (!drawn) {
+                        drawImage(
+                            image = bitmap,
+                            dstSize = androidx.compose.ui.unit.IntSize(
+                                currentW.toInt().coerceAtLeast(1),
+                                currentH.toInt().coerceAtLeast(1),
+                            ),
+                            colorFilter = buildColorFilter(image.colorAdjust),
+                        )
+                    }
                 }
             }
         }
@@ -12842,70 +13102,28 @@ private fun MarkupModeBar(
 }
 
 /**
- * Export dialog rendered when [PockRefUiState.showExportDialog]
- * is true. Pulled out into its own @Composable so the
- * [PockRefApp] function body can pass the launchers as
- * parameters (rather than capturing them through deeply nested
- * lambdas — see the [PockRefApp] note for why we did this
- * refactor).
- *
- * [exportPngLauncher] / [exportJpgLauncher] are the document
- * pickers for image/png and image/jpeg respectively. Each
- * button is labeled in plain language (lossless / smaller) and
- * the file extension so the user can make an informed pick even
- * if they don't know what PNG / JPEG are.
- *
- * In multi-select mode ([isMulti] = true), the format buttons
- * launch [exportBatchPngLauncher] / [exportBatchJpgLauncher]
- * instead — those are OpenDocumentTree pickers, and the result
- * is a folder URI. The export logic then writes one file per
- * selected image as a sibling of that folder, using the SAF
- * filename-collision API.
+ * Lossless export-mode dialog for the current image selection. Both
+ * choices avoid a JPEG re-encode: one copies each source file verbatim,
+ * the other renders only the selected images into one PNG canvas.
  */
 @Composable
 private fun ExportDialogHost(
-    selectedName: String,
-    isMulti: Boolean,
     selectedCount: Int,
-    saveDirectoryInitialUri: Uri?,
-    exportPngLauncher: ActivityResultLauncher<CreateDocumentInput>,
-    exportJpgLauncher: ActivityResultLauncher<CreateDocumentInput>,
-    exportBatchPngLauncher: ActivityResultLauncher<Uri?>,
-    exportBatchJpgLauncher: ActivityResultLauncher<Uri?>,
+    onExportOriginals: () -> Unit,
+    onExportCanvas: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val titleText = if (isMulti) "导出 $selectedCount 张图片" else "导出当前选中的图"
-    val helperText = if (isMulti) {
-        "选择导出格式,再选一个目标文件夹。每张图会以它自己的" +
-            "名字写入(同名会自动加 \"(1)\"、\"(2)\" 区分)。"
+    val titleText = if (selectedCount == 1) {
+        "导出选中的图片"
     } else {
-        "选择导出格式。PNG 无损(适合透明背景或后续编辑)," +
-            "JPG 体积更小(适合照片类内容,不支持透明)。"
+        "导出选中的 $selectedCount 张图片"
     }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(titleText) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // V_NOW (R-05): explicit scope chip at the
-                // top of the dialog body. The user invoked
-                // this dialog by tapping the "导出" button
-                // in [SelectionBottomSheet] — but they ALSO
-                // have a separate "导出画布" entry in the
-                // right-bottom action panel that exports the
-                // WHOLE canvas as a single PNG. Two entries
-                // with similar icons is ambiguous: does
-                // THIS dialog export the selection, or the
-                // entire canvas? The chip says "仅导出选中
-                // 的图片 · 「导出画布」在右下角面板" with
-                // a [PhotoLibrary] icon as a quick visual
-                // reminder. The "导出画布" path stays in
-                // the right-bottom action panel and uses a
-                // distinct icon + label.
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Surface(
-                    // P1 (2026-06-11 chrome unify): chip tier
-                    // — same as Recent-file-grid tile / HSV
-                    // swatch / Settings title-edit field.
                     shape = RoundedCornerShape(Dimens.ChipCornerRadius),
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
                     tonalElevation = 0.dp,
@@ -12922,55 +13140,50 @@ private fun ExportDialogHost(
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                         Text(
-                            text = "仅导出选中的${if (isMulti) " $selectedCount 张" else ""}图片 · 「导出画布」在右下角面板",
+                            text = "仅导出当前选中的图片 · 两种方式均为无损导出",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                     }
                 }
-                Text(
-                    helperText,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Row(
+                OutlinedButton(
+                    onClick = onExportOriginals,
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Button(
-                        onClick = {
-                            if (isMulti) {
-                                exportBatchPngLauncher.launch(saveDirectoryInitialUri)
-                            } else {
-                                exportPngLauncher.launch(
-                                    CreateDocumentInput(
-                                        mimeType = "image/png",
-                                        fileName = "$selectedName.png",
-                                        initialUri = saveDirectoryInitialUri,
-                                    ),
-                                )
-                            }
-                        },
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Rounded.Image,
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(
                         modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.Start,
                     ) {
-                        Text("PNG\n(无损)", textAlign = TextAlign.Center)
+                        Text("逐张导出原始图像")
+                        Text(
+                            "保留原始格式和文件内容,选择一个目标文件夹",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
-                    Button(
-                        onClick = {
-                            if (isMulti) {
-                                exportBatchJpgLauncher.launch(saveDirectoryInitialUri)
-                            } else {
-                                exportJpgLauncher.launch(
-                                    CreateDocumentInput(
-                                        mimeType = "image/jpeg",
-                                        fileName = "$selectedName.jpg",
-                                        initialUri = saveDirectoryInitialUri,
-                                    ),
-                                )
-                            }
-                        },
+                }
+                Button(
+                    onClick = onExportCanvas,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Rounded.Layers,
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(
                         modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.Start,
                     ) {
-                        Text("JPG\n(更小)", textAlign = TextAlign.Center)
+                        Text("合并导出为一张画布")
+                        Text(
+                            "仅包含选中的图片,PNG 无损;可选手动高画质/原图优先",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
             }
@@ -13019,13 +13232,19 @@ private fun ExportDialogHost(
 @Composable
 private fun ExportCanvasDialogHost(
     sceneName: String,
+    selectedImageIds: Set<String>?,
     maxDim: Int?,
     backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode,
     onAction: (PockRefAction) -> Unit,
     initialUri: Uri?,
     exportCanvasLauncher: ActivityResultLauncher<CreateDocumentInput>,
+    exportSelectedCanvasLauncher: ActivityResultLauncher<CreateDocumentInput>,
 ) {
-    val effectiveSceneName = sceneName.ifBlank { "canvas" }
+    val isSelectionExport = !selectedImageIds.isNullOrEmpty()
+    val selectedCount = selectedImageIds?.size ?: 0
+    val effectiveSceneName = sceneName.ifBlank {
+        if (isSelectionExport) "selected-images" else "canvas"
+    }
     AlertDialog(
         onDismissRequest = { onAction(PockRefAction.CancelExportCanvas) },
         title = { Text("导出画布") },
@@ -13052,7 +13271,11 @@ private fun ExportCanvasDialogHost(
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                         Text(
-                            text = "导出当前画布的全部图片(单张 PNG,不是逐图)",
+                            text = if (isSelectionExport) {
+                                "仅导出选中的 $selectedCount 张图片,合并为一张 PNG"
+                            } else {
+                                "导出当前画布的全部图片,合并为一张 PNG"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
@@ -13061,7 +13284,7 @@ private fun ExportCanvasDialogHost(
 
                 // ── Max-dim segmented control ──
                 Text(
-                    text = "尺寸上限",
+                    text = if (isSelectionExport) "画质与尺寸" else "尺寸上限",
                     style = MaterialTheme.typography.labelLarge,
                 )
                 Row(
@@ -13071,13 +13294,21 @@ private fun ExportCanvasDialogHost(
                     FilterChip(
                         selected = maxDim == 8192,
                         onClick = { onAction(PockRefAction.SetExportCanvasMaxDim(8192)) },
-                        label = { Text("标准\n(最长 8192px)") },
+                        label = {
+                            Text(
+                                if (isSelectionExport) "高画质\n(设备可承受)" else "标准\n(最长 8192px)",
+                            )
+                        },
                         modifier = Modifier.weight(1f),
                     )
                     FilterChip(
                         selected = maxDim == null,
                         onClick = { onAction(PockRefAction.SetExportCanvasMaxDim(null)) },
-                        label = { Text("原始画质\n(无上限)") },
+                        label = {
+                            Text(
+                                if (isSelectionExport) "尽量原图\n(自动防 OOM)" else "原始画质\n(无上限)",
+                            )
+                        },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -13087,9 +13318,22 @@ private fun ExportCanvasDialogHost(
                 // expectations before the user picks.
                 if (maxDim == null) {
                     Text(
-                        text = "⚠ 画布按实际内容尺寸输出,可能非常大,小内存设备可能 OOM",
+                        text = if (isSelectionExport) {
+                            "超大原图会按分块读取,画布尺寸仍会根据设备内存自动保护"
+                        } else {
+                            "⚠ 画布按实际内容尺寸输出,可能非常大,小内存设备可能 OOM"
+                        },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                        color = if (isSelectionExport) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                    )
+                } else if (isSelectionExport) {
+                    Text(
+                        text = "PNG 无损编码,超大图片按分块读取以尽量保留原图细节",
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
 
@@ -13151,18 +13395,19 @@ private fun ExportCanvasDialogHost(
         confirmButton = {
             TextButton(
                 onClick = {
-                    // V_NOW: chip clicks above already wrote the
-                    // chosen [maxDim] and [backgroundMode] into
-                    // state; the SAF callback reads them back via
-                    // [PockRefAction.ConfirmExportCanvas]. We
-                    // launch the picker here, NOT in a reducer,
-                    // because [exportCanvasLauncher] is a UI-scope
-                    // ActivityResultLauncher that requires the
-                    // Compose dispatch thread.
-                    exportCanvasLauncher.launch(
+                    val launcher = if (isSelectionExport) {
+                        exportSelectedCanvasLauncher
+                    } else {
+                        exportCanvasLauncher
+                    }
+                    launcher.launch(
                         CreateDocumentInput(
                             mimeType = "image/png",
-                            fileName = "$effectiveSceneName.png",
+                            fileName = if (isSelectionExport) {
+                                "${effectiveSceneName}_selected.png"
+                            } else {
+                                "$effectiveSceneName.png"
+                            },
                             initialUri = initialUri,
                         ),
                     )

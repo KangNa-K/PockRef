@@ -11,6 +11,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.ImageOptimizer
+import com.pockref.app.data.ImageTileKey
+import com.pockref.app.data.ImageTilePlanner
+import com.pockref.app.data.ImageTileRequest
 import com.pockref.app.data.decodeOriginalImage
 import com.pockref.app.data.sceneImageFromOriginalImport
 import com.pockref.app.model.CanvasMarkupStroke
@@ -22,10 +25,13 @@ import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.Size2D
+import com.pockref.app.model.hasSceneContent
 import com.pockref.app.model.toScene
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -226,6 +232,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
     fun dropImages(uris: List<Uri>, dragPermission: android.view.DragAndDropPermissions? = null) {
         if (uris.isEmpty()) return
+        val operationToken = mainVm.beginSceneOperation()
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
             val imported = try {
@@ -282,12 +289,15 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 throw e
             } catch (error: Throwable) {
                 dragPermission?.release()
+                if (!mainVm.isSceneOperationActive(operationToken)) return@launch
                 mainVm.reportError("拖拽导入图片失败: ${error.message ?: error.javaClass.simpleName}", error)
                 mainVm.setBusy(false)
                 return@launch
             }
 
             dragPermission?.release()
+
+            if (!mainVm.isSceneOperationActive(operationToken)) return@launch
 
             if (imported.isEmpty()) {
                 mainVm.reportError("没有可导入的图片文件")
@@ -314,6 +324,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 mainVm._uiState.update { state ->
                     state.copy(
                         sceneName = newName,
+                        blankCanvasOpen = false,
                         images = state.images + imported,
                         selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
                         selectedImageIds = imported.mapTo(linkedSetOf()) { it.id },
@@ -323,6 +334,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             } else {
                 mainVm._uiState.update { state ->
                     state.copy(
+                        blankCanvasOpen = false,
                         images = state.images + imported,
                         selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
                         selectedImageIds = imported.mapTo(linkedSetOf()) { it.id },
@@ -376,19 +388,37 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
     fun importImages(uris: List<Uri>) {
         if (uris.isEmpty()) return
+        val operationToken = mainVm.beginSceneOperation()
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
-            val imported = try {
+            val (imported, failedCount) = try {
                 withContext(Dispatchers.IO) {
                     val existingImages = mainVm._uiState.value.images
                     val existingCount = existingImages.size
                     val imageSpacing = 8f
                     val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
-                    uris.mapIndexedNotNull { index, uri ->
-                        val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@mapIndexedNotNull null
+                    var failures = 0
+                    val images = uris.mapIndexedNotNull { index, uri ->
+                        val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        if (rawBytes == null) {
+                            failures++
+                            Log.w("PockRefImport", "Cannot read image uri=$uri")
+                            return@mapIndexedNotNull null
+                        }
                         val originalMime = mainVm.contentResolver.getType(uri) ?: "application/octet-stream"
                         val result = decodeOriginalImage(rawBytes, originalMime)
-                            ?: return@mapIndexedNotNull null
+                        if (result == null) {
+                            failures++
+                            val header = rawBytes.take(16).joinToString("") {
+                                (it.toInt() and 0xff).toString(16).padStart(2, '0')
+                            }
+                            Log.w(
+                                "PockRefImport",
+                                "Cannot decode image name=${mainVm.queryDisplayName(uri)} " +
+                                    "mime=$originalMime bytes=${rawBytes.size} header=$header",
+                            )
+                            return@mapIndexedNotNull null
+                        }
                         val baseWidth = result.width.toFloat().coerceAtMost(720f)
                         val baseHeight = result.height.toFloat() * baseWidth / result.width.coerceAtLeast(1)
                         // Grid layout: 4 columns max, placed below
@@ -398,31 +428,59 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         val row = index / maxColumns
                         val centerX = placementOrigin.x + col * (baseWidth + imageSpacing) + baseWidth / 2f
                         val centerY = placementOrigin.y + row * (baseHeight + imageSpacing) + baseHeight / 2f
-                        sceneImageFromOriginalImport(
+                        val importedImage = sceneImageFromOriginalImport(
                             name = mainVm.queryDisplayName(uri) ?: "image_${existingCount + index + 1}",
                             imported = result,
                             center = Offset(centerX, centerY),
                             zIndex = existingCount + index,
                             displayWidth = baseWidth,
                         )
+                        val preview = mainVm.imageDecoder.decodeThumbnail(importedImage)
+                        if (preview == null) {
+                            failures++
+                            val header = rawBytes.take(16).joinToString("") {
+                                (it.toInt() and 0xff).toString(16).padStart(2, '0')
+                            }
+                            Log.w(
+                                "PockRefImport",
+                                "Pixel decode failed name=${importedImage.name} " +
+                                    "mime=$originalMime bytes=${rawBytes.size} header=$header",
+                            )
+                            return@mapIndexedNotNull null
+                        }
+                        preview.bitmap.recycle()
+                        importedImage
                     }
+                    images to failures
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (error: Throwable) {
+                if (!mainVm.isSceneOperationActive(operationToken)) return@launch
                 mainVm.reportError("导入图片失败: ${error.message ?: error.javaClass.simpleName}", error)
                 mainVm.setBusy(false)
                 return@launch
+            }
+            if (!mainVm.isSceneOperationActive(operationToken)) return@launch
+            if (imported.isEmpty()) {
+                mainVm.reportError("没有可导入的图片，设备不支持其图片编码")
+                mainVm.setBusy(false)
+                return@launch
+            }
+            if (failedCount > 0) {
+                mainVm.reportError("已导入 ${imported.size} 张，另有 $failedCount 张因编码不受支持而跳过")
             }
             mainVm.recordUndoState()
             mainVm._uiState.update { state ->
                 val newSelection = imported.mapTo(linkedSetOf()) { it.id }
                 state.copy(
+                    blankCanvasOpen = false,
                     images = state.images + imported,
                     selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
                     selectedImageIds = newSelection.ifEmpty { state.selectedImageIds },
                 ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
             }
+            mainVm.notifyContentChanged()
             mainVm.batchController.fitToScreen()
             mainVm.setBusy(false)
         }
@@ -445,6 +503,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
      * Surfaces errors via [PockRefViewModel.reportError].
      */
     fun importFromClipboard() {
+        val operationToken = mainVm.beginSceneOperation()
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
             // V_NOW (2026-06-12 "剪贴板多张导入" extension):
@@ -458,10 +517,12 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (error: Throwable) {
+                if (!mainVm.isSceneOperationActive(operationToken)) return@launch
                 mainVm.reportError("从剪贴板导入失败: ${error.message ?: error.javaClass.simpleName}", error)
                 mainVm.setBusy(false)
                 return@launch
             }
+            if (!mainVm.isSceneOperationActive(operationToken)) return@launch
             val imported = batchResult.imported
             val failedCount = batchResult.failedCount
             if (imported.isEmpty()) {
@@ -481,16 +542,21 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm._uiState.update { state ->
                 val newSelection = imported.mapTo(linkedSetOf()) { it.id }
                 state.copy(
+                    blankCanvasOpen = false,
                     images = state.images + imported,
                     selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
                     selectedImageIds = newSelection.ifEmpty { state.selectedImageIds },
                 ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
             }
+            mainVm.notifyContentChanged()
             mainVm.batchController.fitToScreen()
             mainVm.setBusy(false)
         }
     }
     fun loadScene(uri: Uri, dropRecentOnFailure: Boolean = false) {
+        val operationToken = mainVm.beginSceneOperation()
+        val wasBlankCanvas = mainVm._uiState.value.blankCanvasOpen &&
+            !mainVm._uiState.value.hasSceneContent
         mainVm.currentSceneUri = uri
         val fileName = mainVm.queryDisplayNameSync(uri) ?: ""
         mainVm.isImportedPurFile = fileName.endsWith(".pur", ignoreCase = true)
@@ -506,6 +572,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (error: Throwable) {
+                if (!mainVm.isSceneOperationActive(operationToken)) return@launch
                 // User request: when a recent file fails to
                 // open from the launch page, remove only the
                 // stale recent-list entry. Do not call
@@ -514,10 +581,18 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 if (dropRecentOnFailure) {
                     mainVm.dropRecentSceneFromList(uri.toString())
                 }
+                if (wasBlankCanvas) {
+                    mainVm.currentSceneUri = null
+                    mainVm.isImportedPurFile = false
+                    mainVm.lastSaveSnapshotHash = ""
+                    mainVm.syncDirectSaveState()
+                    mainVm._uiState.update { it.copy(blankCanvasOpen = true).clearPosterizePreview() }
+                }
                 mainVm.reportError(openSceneFailureMessage(error), error)
                 mainVm.setBusy(false)
                 return@launch
             }
+            if (!mainVm.isSceneOperationActive(operationToken)) return@launch
             mainVm.autoSaveManager.clearRecoveryBackups()
             mainVm.undoStack.clear()
             mainVm.redoStack.clear()
@@ -548,6 +623,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     scene.name.ifBlank { "Scene" }
                 }
                 it.copy(
+                    blankCanvasOpen = false,
                     sceneName = SceneNaming.sanitizeForStorage(displaySceneName),
                     backgroundColor = bg,
                     backgroundCustomColor = bg,
@@ -580,7 +656,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     fittedImageId = null,
                     transientDragImageIds = emptySet(),
                     transientDragDelta = Offset.Zero,
-                )
+                ).clearPosterizePreview()
             }
             mainVm.lastSaveSnapshotHash = mainVm.computeQuickHash(mainVm._uiState.value.toScene())
             mainVm.syncDirectSaveState()
@@ -619,6 +695,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 editingMarkupTextId = null,
                 selectedImageId = null,
                 selectedImageIds = emptySet(),
+                posterizeControlsVisible = false,
+                posterizeLevels = null,
+                posterizeTargetImageIds = emptySet(),
                 lockRetainedHdImageId = null,
                 multiSelectMode = false,
                 canUndo = false,
@@ -628,7 +707,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 fittedImageId = null,
                 transientDragImageIds = emptySet(),
                 transientDragDelta = Offset.Zero,
-            )
+            ).clearPosterizePreview()
         }
         mainVm.syncDirectSaveState()
         mainVm.batchController.fitToScreen()
@@ -963,7 +1042,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 try {
                     val bufferedOut = java.io.BufferedOutputStream(FileOutputStream(tempOutput), 256 * 1024)
                     bufferedOut.use { tempFileOutput ->
-                        mainVm.codec.writeDesktopCompatible(scene, tempFileOutput, cacheDir)
+                        mainVm.codec.write(scene, tempFileOutput)
                     }
 
                     val t1 = System.nanoTime()
@@ -1160,20 +1239,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
     }
 
     /**
-     * Render the current selection (or the single selected
-     * image) and write it to [uri] as [format]. Cancels silently
-     * when nothing is selected or the image is in the middle of
-     * a crop (the in-progress crop's image is a stale state).
-     *
-     * The render path applies the image's full transform —
-     * scale, rotation, and both flip axes — in that order, so
-     * the exported file is "what the user sees" rather than the
-     * raw decoded bytes. Decoding, transform, encode, and
-     * write all run on [Dispatchers.IO] to keep the main
-     * thread free; the surrounding [mainVm.setBusy] /
-     * [setBusy] pair drives the progress indicator.
+     * Copy the currently selected image to [uri] without decoding or
+     * re-encoding it. The legacy action still carries [ExportFormat], but
+     * the export is intentionally format-independent now: original bytes
+     * are copied verbatim so JPEG/GIF/WebP data never receives another
+     * lossy encode.
      */
-    fun exportSelected(uri: Uri, format: ExportFormat) {
+    fun exportSelected(uri: Uri, _format: ExportFormat) {
         val state = mainVm._uiState.value
         val targets = if (state.selectedImageIds.isNotEmpty()) {
             state.images.filter { it.id in state.selectedImageIds }
@@ -1182,81 +1254,16 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         } else {
             emptyList()
         }
-        if (targets.isEmpty()) return
-        // For multi-select we still want a single output. The
-        // user picked one save location; we write the FIRST
-        // selected image to it. The chooser dialog explicitly
-        // tells the user "导出当前选中的图" (singular) for this
-        // reason — single-image export is the supported
-        // workflow. (Batch export to a folder would need a
-        // separate action and UI.)
-        val image = targets.first()
-        if (image == state.images.find { it.id == state.cropImageId }) {
-            // Don't allow exporting an image that's mid-crop
-            // (its display state is stale).
-            return
-        }
+        val image = targets.firstOrNull() ?: return
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
             try {
                 withContext(Dispatchers.IO) {
-                    val bytes = mainVm.resolveImageBytes(image)
-                    var source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        ?: error("无法解码图片数据")
-                    // Apply non-destructive crop before transforms.
-                    // The crop rect is stored as 0..1 normalized
-                    // coordinates on the original image.
-                    val crop = image.cropRect
-                    val croppedSource = if (crop != null) {
-                        val cx = (crop.left * source.width).toInt().coerceIn(0, source.width - 1)
-                        val cy = (crop.top * source.height).toInt().coerceIn(0, source.height - 1)
-                        val cw = ((crop.right - crop.left) * source.width).toInt().coerceIn(1, source.width - cx)
-                        val ch = ((crop.bottom - crop.top) * source.height).toInt().coerceIn(1, source.height - cy)
-                        Bitmap.createBitmap(source, cx, cy, cw, ch)
-                            .also { if (it !== source) source.recycle() }
-                    } else {
-                        source
-                    }
-                    // Apply transforms in canvas-render order:
-                    // scale first, then rotation, then both
-                    // flips. The matrix's pre-/post- semantics
-                    // mean we build the matrix incrementally
-                    // and pass the whole thing to createBitmap.
-                    val matrix = android.graphics.Matrix()
-                    matrix.postScale(image.scale, image.scale)
-                    if (image.rotationDegrees != 0f) {
-                        matrix.postRotate(
-                            image.rotationDegrees,
-                            croppedSource.width / 2f,
-                            croppedSource.height / 2f,
-                        )
-                    }
-                    if (image.flipX || image.flipY) {
-                        val sx = if (image.flipX) -1f else 1f
-                        val sy = if (image.flipY) -1f else 1f
-                        matrix.postScale(sx, sy, croppedSource.width / 2f, croppedSource.height / 2f)
-                    }
-                    val rendered = if (matrix.isIdentity) croppedSource
-                    else Bitmap.createBitmap(croppedSource, 0, 0, croppedSource.width, croppedSource.height, matrix, true)
-                        .also { if (it !== croppedSource) croppedSource.recycle() }
-                    try {
-                        val resolver = mainVm.contentResolver
-                        val outputStream = resolver.openOutputStream(uri)
-                            ?: error("无法打开目标 URI 的输出流")
-                        outputStream.use { stream ->
-                            val compressFormat = when (format) {
-                                ExportFormat.PNG -> Bitmap.CompressFormat.PNG
-                                ExportFormat.JPEG -> Bitmap.CompressFormat.JPEG
-                            }
-                            // Quality 95 matches the crop path —
-                            // visually lossless for JPEG and
-                            // ignored by PNG.
-                            val ok = rendered.compress(compressFormat, 95, stream)
-                            if (!ok) error("图片编码失败")
-                        }
-                    } finally {
-                        if (rendered !== source) rendered.recycle()
-                    }
+                    val bytes = mainVm.resolveRawImageBytes(image)
+                    if (bytes.isEmpty()) error("无法读取原始图片数据")
+                    val outputStream = mainVm.contentResolver.openOutputStream(uri)
+                        ?: error("无法打开目标 URI 的输出流")
+                    outputStream.use { stream -> stream.write(bytes) }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -1301,21 +1308,147 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         }
     }
 
+    private fun originalExportMime(image: SceneImage): String {
+        return image.mimeType
+            .takeIf { it.startsWith("image/", ignoreCase = true) }
+            ?: "application/octet-stream"
+    }
+
+    private fun originalExportFileName(image: SceneImage): String {
+        val name = image.name
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .trim()
+            .ifBlank { "image" }
+        val dot = name.lastIndexOf('.')
+        val mime = originalExportMime(image).lowercase()
+        val preferredExtension = when (mime) {
+            "image/jpeg", "image/jpg" -> "jpg"
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            "image/gif" -> "gif"
+            "image/avif" -> "avif"
+            "image/heic", "image/heif" -> "heic"
+            "image/bmp" -> "bmp"
+            "image/svg+xml" -> "svg"
+            else -> "img"
+        }
+        if (dot > 0 && dot < name.lastIndex) {
+            val currentExtension = name.substring(dot + 1).lowercase()
+            val compatible = when {
+                !mime.startsWith("image/") -> true
+                preferredExtension == "img" -> true
+                mime == "image/jpeg" || mime == "image/jpg" ->
+                    currentExtension == "jpg" || currentExtension == "jpeg"
+                else -> currentExtension == preferredExtension
+            }
+            if (compatible) return name
+        }
+        val baseName = if (dot > 0) name.substring(0, dot) else name
+        return "$baseName.$preferredExtension"
+    }
+
     /**
-     * Batch export: write every selected image as a sibling file inside
-     * the folder the user picked via ACTION_OPEN_DOCUMENT_TREE. Mirrors
-     * [exportSelected]'s render path (scale → rotation → flips → encode)
-     * but creates a new DocumentFile per image via
-     * [DocumentsContract.createDocument] so name collisions are handled
-     * by the Storage Access Framework (it appends " (N)" for duplicates).
-     *
-     * Selected images whose name collides with an existing file in the
-     * tree are still written, but under the SAF-disambiguated name —
-     * i.e. we don't silently skip them. The single-image export path
-     * (the per-image CreateDocument flow) gives the user the chance to
-     * overwrite or rename manually; the batch path deliberately does
-     * not, because the use case is "export the whole selection" and
-     * silent skips would surprise the user.
+     * Copy every selected image into a user-chosen folder without decoding
+     * or re-encoding. The source MIME and bytes are preserved, so an
+     * animated GIF stays animated and a JPEG is never compressed again.
+     */
+    fun exportOriginalsToTree(treeUri: Uri) {
+        val state = mainVm._uiState.value
+        val targets = if (state.selectedImageIds.isNotEmpty()) {
+            state.images.filter { it.id in state.selectedImageIds }
+        } else if (state.selectedImageId != null) {
+            state.images.filter { it.id == state.selectedImageId }
+        } else {
+            emptyList()
+        }
+        if (targets.isEmpty()) return
+
+        mainVm.viewModelScope.launch {
+            mainVm.setBusy(true)
+            try {
+                withContext(Dispatchers.IO) {
+                    val resolver = mainVm.contentResolver
+                    val documentId = DocumentsContract.getTreeDocumentId(treeUri)
+                    val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+                    val candidateMimes = targets
+                        .map(::originalExportMime)
+                        .distinct()
+                    var probeUri: Uri? = null
+                    for ((index, mime) in candidateMimes.withIndex()) {
+                        val probeExtension = when (mime.lowercase()) {
+                            "image/jpeg", "image/jpg" -> "jpg"
+                            "image/png" -> "png"
+                            "image/webp" -> "webp"
+                            "image/gif" -> "gif"
+                            else -> "img"
+                        }
+                        probeUri = runCatching {
+                            DocumentsContract.createDocument(
+                                resolver,
+                                parentUri,
+                                mime,
+                                "__pockref_export_probe_${System.currentTimeMillis()}_$index.$probeExtension",
+                            )
+                        }.getOrNull()
+                        if (probeUri != null) break
+                    }
+                    val createdProbeUri = probeUri
+                    if (createdProbeUri == null) {
+                        mainVm.reportError("无法在此文件夹创建原始图片,请尝试选择 Download 或 Documents 文件夹。")
+                        return@withContext
+                    }
+                    runCatching { DocumentsContract.deleteDocument(resolver, createdProbeUri) }
+
+                    var successCount = 0
+                    var failCount = 0
+                    for (image in targets) {
+                        var documentUri: Uri? = null
+                        try {
+                            val bytes = mainVm.resolveRawImageBytes(image)
+                            if (bytes.isEmpty()) error("无法读取原始图片数据")
+                            documentUri = DocumentsContract.createDocument(
+                                resolver,
+                                parentUri,
+                                originalExportMime(image),
+                                originalExportFileName(image),
+                            ) ?: error("无法创建目标文件")
+                            resolver.openOutputStream(documentUri)?.use { stream ->
+                                stream.write(bytes)
+                            } ?: error("无法打开目标文件")
+                            successCount++
+                        } catch (error: Throwable) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            if (documentUri != null) {
+                                runCatching { DocumentsContract.deleteDocument(resolver, documentUri) }
+                            }
+                            Log.w(
+                                "PockRefExport",
+                                "original export failed for ${image.name}: ${error.message}",
+                            )
+                            failCount++
+                        }
+                    }
+                    if (failCount > 0) {
+                        mainVm.reportError("原始图片导出完成: $successCount 张成功, $failCount 张失败")
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (error: Throwable) {
+                mainVm.reportError(
+                    "原始图片导出失败: ${error.message ?: error.javaClass.simpleName}",
+                    error,
+                )
+            } finally {
+                mainVm.setBusy(false)
+            }
+        }
+    }
+
+    /**
+     * Legacy rendered batch path retained for compatibility with older
+     * callers. The current selection UI uses [exportOriginalsToTree].
      */
     fun exportBatchToTree(treeUri: Uri, format: ExportFormat) {
         val state = mainVm._uiState.value
@@ -1801,6 +1934,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
     }
 
     private fun closeScene() {
+        mainVm.invalidateSceneOperations()
         mainVm.undoStack.clear()
         mainVm.redoStack.clear()
         mainVm.currentSceneUri = null
@@ -1852,6 +1986,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 editingMarkupTextId = null,
                 selectedImageId = null,
                 selectedImageIds = emptySet(),
+                posterizeControlsVisible = false,
+                posterizeLevels = null,
+                posterizeTargetImageIds = emptySet(),
                 lockRetainedHdImageId = null,
                 canUndo = false,
                 canRedo = false,
@@ -1975,20 +2112,36 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
      * the export canvas, which is negligible relative to the
      * existing two-pass decode work.
      */
-    fun exportCanvas(uri: Uri, backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode) {
+    fun exportCanvas(
+        uri: Uri,
+        backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode,
+        imageIds: Set<String>? = null,
+    ) {
         val state = mainVm._uiState.value
-        val images = state.images
-        val markupStrokes = if (state.markupVisible) {
+        val selectionOnly = imageIds != null
+        val images = if (imageIds == null) {
+            state.images
+        } else {
+            state.images
+                .filter { it.id in imageIds }
+                .sortedBy { it.zIndex }
+        }
+        val markupStrokes = if (!selectionOnly && state.markupVisible) {
             state.markupStrokes.filter { it.isRenderable }
         } else {
             emptyList()
         }
-        val markupTexts = if (state.markupVisible) {
+        val markupTexts = if (!selectionOnly && state.markupVisible) {
             state.markupTexts.filter { it.text.isNotBlank() }
         } else {
             emptyList()
         }
-        if (images.isEmpty() && markupStrokes.isEmpty() && markupTexts.isEmpty()) return
+        if (images.isEmpty() && markupStrokes.isEmpty() && markupTexts.isEmpty()) {
+            if (selectionOnly) {
+                mainVm.reportError("没有可导出的选中图片")
+            }
+            return
+        }
 
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
@@ -2051,7 +2204,12 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             inJustDecodeBounds = true
                         }
                         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) continue
+                        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                            if (selectionOnly) {
+                                error("无法解码选中的图片: ${image.name}")
+                            }
+                            continue
+                        }
                         probes += ProbeInfo(
                             image = image,
                             byteSize = bytes.size,
@@ -2211,7 +2369,40 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // the user pick this). Default8192 preserves
                     // the pre-feature behaviour for callers that
                     // don't set [PockRefUiState.exportCanvasMaxDim].
-                    val maxDim = state.exportCanvasMaxDim
+                    // Selected-image canvas export is always PNG/lossless,
+                    // but it must remain within a device-safe pixel budget.
+                    // Full-resolution source files are still available through
+                    // the separate "逐张导出原始图像" mode.
+                    val runtime = Runtime.getRuntime()
+                    val selectedCanvasSafeDim = if (selectionOnly) {
+                        selectedCanvasSafeMaxDim(
+                            maxMemoryBytes = runtime.maxMemory(),
+                            usedHeapBytes = runtime.totalMemory() - runtime.freeMemory(),
+                        )
+                    } else {
+                        0
+                    }
+                    val maxDim = if (selectionOnly) {
+                        val requestedMaxDim = state.exportCanvasMaxDim
+                        selectedCanvasSafeDim.also { safeDim ->
+                            Log.i(
+                                "ExportCanvas",
+                                "selected canvas maxDim=$safeDim requested=$requestedMaxDim",
+                            )
+                        }.let { safeDim ->
+                            requestedMaxDim?.let { minOf(it, safeDim) } ?: safeDim
+                        }
+                    } else {
+                        state.exportCanvasMaxDim
+                    }
+                    val selectedSourceTargetDim = if (selectionOnly) {
+                        selectedCanvasSourceTargetDim(
+                            maxMemoryBytes = runtime.maxMemory(),
+                            usedHeapBytes = runtime.totalMemory() - runtime.freeMemory(),
+                        )
+                    } else {
+                        0
+                    }
                     // V_NOW (2026-06-09): scale accounts for
                     // exportDensity. The canvas pixel dimensions
                     // = displayBbox × exportDensity × scale.
@@ -2237,7 +2428,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // keeps the per-image source bitmap at ≤64MB
                     // so we stay safely under the heap (canvas
                     // 64MB + source 64MB = 128MB peak).
-                    val maxImageDim = if (maxDim == null) Int.MAX_VALUE else 4096
+                    val maxImageDim = if (selectionOnly) {
+                        selectedSourceTargetDim
+                    } else if (maxDim == null) {
+                        Int.MAX_VALUE
+                    } else {
+                        4096
+                    }
 
                     // V_NOW (2026-06-09): canvas pixel size =
                     // display bbox × exportDensity × scale.
@@ -2245,12 +2442,24 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // display coords to accommodate intrinsic
                     // resolution; scale optionally shrinks it
                     // back down if maxDim is exceeded.
-                    val bitmap = Bitmap.createBitmap(
-                        (canvasWidth * exportDensity * scale).toInt().coerceAtLeast(1),
-                        (canvasHeight * exportDensity * scale).toInt().coerceAtLeast(1),
-                        Bitmap.Config.ARGB_8888,
-                    )
+                    val outputWidth = (canvasWidth * exportDensity * scale).toInt().coerceAtLeast(1)
+                    val outputHeight = (canvasHeight * exportDensity * scale).toInt().coerceAtLeast(1)
+                    val bitmap = try {
+                        Bitmap.createBitmap(
+                            outputWidth,
+                            outputHeight,
+                            Bitmap.Config.ARGB_8888,
+                        )
+                    } catch (_: OutOfMemoryError) {
+                        val message = if (selectionOnly) {
+                            "选中画布仍超出设备内存,请减少选中图片或改用逐张导出原始图像"
+                        } else {
+                            "导出画布内存不足"
+                        }
+                        error(message)
+                    }
                     val canvas = android.graphics.Canvas(bitmap)
+                    try {
 
                     // V_NOW (2026-06-16 user spec "导出画布新增背景选项"):
                     // if the user picked [ExportCanvasBackgroundMode.CANVAS_BACKGROUND]
@@ -2270,102 +2479,91 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // -----------------------------------------------------------------
                     for (probe in probes) {
                         val image = probe.image
-                        // V_NOW (2026-06-09 bug fix "导出画布图片
-                        // 不是原始分辨率"): decode at intrinsic
-                        // resolution so the export preserves
-                        // original photo quality. The canvas
-                        // is in display coords × exportDensity,
-                        // so each image's render size is
-                        // [displaySize.width * image.scale
-                        //   * exportDensity * scale].
-                        // Decoding at intrinsic resolution
-                        // ensures the source has enough pixels
-                        // for the bilinear drawBitmap to
-                        // produce a sharp result.
-                        val targetW = probe.intrinsicW
-                            .coerceAtMost(maxImageDim).coerceAtLeast(1)
-                        val targetH = probe.intrinsicH
-                            .coerceAtMost(maxImageDim).coerceAtLeast(1)
-                        val sampleSize = calculateSampleSize(
-                            probe.intrinsicW, probe.intrinsicH, targetW, targetH,
-                        )
+                        // Large source images are rendered from bounded source
+                        // regions. This keeps their original pixels available
+                        // without allocating one huge ARGB_8888 bitmap.
+                        val useSourceTiles = selectionOnly &&
+                            maxOf(probe.intrinsicW, probe.intrinsicH) > maxImageDim &&
+                            !image.mimeType.equals("image/gif", ignoreCase = true)
+                        if (useSourceTiles) {
+                            val renderedByTiles = try {
+                                renderImageTilesToCanvas(
+                                    canvas = canvas,
+                                    image = image,
+                                    intrinsicWidth = probe.intrinsicW,
+                                    intrinsicHeight = probe.intrinsicH,
+                                    minX = minX,
+                                    minY = minY,
+                                    scale = scale,
+                                    exportDensity = exportDensity,
+                                )
+                            } catch (t: Throwable) {
+                                if (t is kotlinx.coroutines.CancellationException) throw t
+                                Log.e(
+                                    "ExportCanvas",
+                                    "tile decode failed for ${image.name}: ${t.message}",
+                                )
+                                throw t
+                            }
+                            if (renderedByTiles) continue
+                        }
 
-                        // Re-read bytes — resolveImageBytes may go through
-                        // a RandomAccessFile when imageBytes is empty, so
-                        // we don't want to hold every image's bytes
-                        // resident across the whole pass.
+                        val targetW = ceil(probe.intrinsicW.toDouble() * scale)
+                            .toInt().coerceAtLeast(1)
+                        val targetH = ceil(probe.intrinsicH.toDouble() * scale)
+                            .toInt().coerceAtLeast(1)
+                        val cappedTargetW = targetW.coerceAtMost(maxImageDim)
+                        val cappedTargetH = targetH.coerceAtMost(maxImageDim)
+                        val sampleSize = if (selectionOnly) {
+                            calculateMemorySafeSampleSize(
+                                probe.intrinsicW,
+                                probe.intrinsicH,
+                                targetW,
+                                targetH,
+                            )
+                        } else {
+                            calculateSampleSize(
+                                probe.intrinsicW, probe.intrinsicH, cappedTargetW, cappedTargetH,
+                            )
+                        }
+
+                        // Re-read bytes only for the bounded full-source path.
                         val bytes = mainVm.resolveImageBytes(image)
 
-                        // V_NOW (2026-06-08 user feedback "导出图
-                        // 不如原图清晰"): the previous pipeline
-                        // did inSampleSize → nearest-neighbor
-                        // createBitmap(..., filter=false). The
-                        // nearest-neighbor was the main reason
-                        // the export looked "fuzzy / pixelated"
-                        // — it drops pixels in blocks, producing
-                        // visible jaggies on every edge. We now:
-                        //   (1) target intrinsicW/H (the original
-                        //       photo resolution, capped at
-                        //       maxImageDim=4096) so we have
-                        //       full detail to draw from,
-                        //   (2) use inSampleSize only as a coarse
-                        //       shrink to keep the decoded
-                        //       bitmap ≤2x the target (see
-                        //       calculateSampleSize), and
-                        //   (3) use bilinear (filter=true) for
-                        //       the exact resize — at ≤0.5x
-                        //       shrink this is the sweet spot
-                        //       for preserving detail without
-                        //       aliasing. The final drawBitmap
-                        //       (in renderImageToCanvas) takes
-                        //       the high-res source and bilinearly
-                        //       scales it down to dstRect
-                        //       (displaySize in canvas pixels)
-                        //       for the on-screen-equivalent
-                        //       placement.
                         val decodeOpts = BitmapFactory.Options().apply {
                             inSampleSize = sampleSize
                             inPreferredConfig = Bitmap.Config.ARGB_8888
                         }
                         val source = try {
                             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
-                        } catch (oom: OutOfMemoryError) {
+                        } catch (_: OutOfMemoryError) {
                             Log.e(
                                 "ExportCanvas",
                                 "OOM decoding id=${image.id} name=${image.name} " +
                                     "intrinsic=${probe.intrinsicW}x${probe.intrinsicH} " +
                                     "sampleSize=$sampleSize",
                             )
-                            null
-                        } ?: continue
-
-                        val scaled = if (source.width != targetW || source.height != targetH) {
-                            try {
-                                val sx = targetW.toFloat() / source.width.toFloat()
-                                val sy = targetH.toFloat() / source.height.toFloat()
-                                val m = android.graphics.Matrix().apply { setScale(sx, sy) }
-                                val exact = Bitmap.createBitmap(
-                                    source, 0, 0, source.width, source.height, m, true,
-                                )
-                                if (exact !== source && !source.isRecycled) source.recycle()
-                                exact
-                            } catch (oom: OutOfMemoryError) {
-                                Log.e(
-                                    "ExportCanvas",
-                                    "OOM scaling id=${image.id} name=${image.name} " +
-                                        "src=${source.width}x${source.height} " +
-                                        "target=${targetW}x${targetH}",
-                                )
-                                if (!source.isRecycled) source.recycle()
-                                continue
+                            if (selectionOnly) {
+                                error("选中画布导出内存不足: ${image.name}")
                             }
-                        } else source
+                            null
+                        }
+                        if (source == null) {
+                            if (selectionOnly) {
+                                error("无法解码选中的图片: ${image.name}")
+                            }
+                            continue
+                        }
 
                         try {
+                            // drawBitmap with filter=true performs the final
+                            // bilinear resize directly into the output canvas;
+                            // avoiding a second Bitmap removes the largest
+                            // transient allocation in this export path.
                             renderImageToCanvas(
                                 canvas = canvas,
                                 image = image,
-                                source = scaled,
+                                source = source,
                                 minX = minX,
                                 minY = minY,
                                 scale = scale,
@@ -2373,6 +2571,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             )
                         } catch (t: Throwable) {
                             if (t is kotlinx.coroutines.CancellationException) throw t
+                            if (selectionOnly) throw t
                             Log.e(
                                 "ExportCanvas",
                                 "skip img id=${image.id} name=${image.name}: " +
@@ -2380,7 +2579,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                 t,
                             )
                         } finally {
-                            if (!scaled.isRecycled) scaled.recycle()
+                            if (!source.isRecycled) source.recycle()
                         }
                     }
 
@@ -2408,11 +2607,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     // Write PNG to URI
                     val resolver = mainVm.contentResolver
                     resolver.openOutputStream(uri)?.use { stream ->
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                        val ok = bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                        if (!ok) error("画布编码失败")
                     } ?: error("无法打开目标 URI 的输出流")
 
-                    // Cleanup
-                    bitmap.recycle()
+                    } finally {
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -2441,6 +2642,166 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
      * on-screen pipeline in [drawSceneImage]. See
      * [exportCanvas] for the full rationale.
      */
+    private fun createExportImagePaint(image: SceneImage): android.graphics.Paint {
+        return android.graphics.Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
+            val matrix = buildColorMatrix(image.colorAdjust)
+            if (matrix != null) {
+                colorFilter = android.graphics.ColorMatrixColorFilter(
+                    android.graphics.ColorMatrix(matrix),
+                )
+            }
+        }
+    }
+
+    /**
+     * Render a large source image by decoding only the source regions needed
+     * for each tile. The destination canvas can still be high resolution, but
+     * no full-size source bitmap is ever created.
+     */
+    private fun renderImageTilesToCanvas(
+        canvas: android.graphics.Canvas,
+        image: SceneImage,
+        intrinsicWidth: Int,
+        intrinsicHeight: Int,
+        minX: Float,
+        minY: Float,
+        scale: Float,
+        exportDensity: Float,
+    ): Boolean {
+        if (intrinsicWidth <= 0 || intrinsicHeight <= 0) return false
+
+        val crop = image.cropRect
+        val cropLeft = floor((crop?.left ?: 0f).coerceIn(0f, 1f) * intrinsicWidth)
+            .toInt().coerceIn(0, intrinsicWidth - 1)
+        val cropTop = floor((crop?.top ?: 0f).coerceIn(0f, 1f) * intrinsicHeight)
+            .toInt().coerceIn(0, intrinsicHeight - 1)
+        val cropRight = ceil((crop?.right ?: 1f).coerceIn(0f, 1f) * intrinsicWidth)
+            .toInt().coerceIn(cropLeft + 1, intrinsicWidth)
+        val cropBottom = ceil((crop?.bottom ?: 1f).coerceIn(0f, 1f) * intrinsicHeight)
+            .toInt().coerceIn(cropTop + 1, intrinsicHeight)
+        val cropWidth = (cropRight - cropLeft).toFloat()
+        val cropHeight = (cropBottom - cropTop).toFloat()
+        val factor = exportDensity * scale
+        val canvasCenterX = (image.center.x - minX) * factor
+        val canvasCenterY = (image.center.y - minY) * factor
+        val dstW = image.displaySize.width * image.scale * factor
+        val dstH = image.displaySize.height * image.scale * factor
+        if (!dstW.isFinite() || !dstH.isFinite() || dstW <= 0f || dstH <= 0f) return false
+
+        val paint = createExportImagePaint(image)
+        val overlap = 2
+        val firstColumn = cropLeft / ImageTilePlanner.TILE_EDGE_PX
+        val lastColumn = (cropRight - 1) / ImageTilePlanner.TILE_EDGE_PX
+        val firstRow = cropTop / ImageTilePlanner.TILE_EDGE_PX
+        val lastRow = (cropBottom - 1) / ImageTilePlanner.TILE_EDGE_PX
+
+        // Verify the decoder supports this source before drawing anything. A
+        // mid-export failure must not leave already-painted tiles on the canvas
+        // and then fall back to a second full-image draw.
+        val firstLeft = maxOf(cropLeft, firstColumn * ImageTilePlanner.TILE_EDGE_PX)
+        val firstTop = maxOf(cropTop, firstRow * ImageTilePlanner.TILE_EDGE_PX)
+        val firstRight = minOf(
+            cropRight,
+            (firstColumn + 1) * ImageTilePlanner.TILE_EDGE_PX,
+        )
+        val firstBottom = minOf(
+            cropBottom,
+            (firstRow + 1) * ImageTilePlanner.TILE_EDGE_PX,
+        )
+        val firstRequest = ImageTileRequest(
+            key = ImageTileKey(image.id, firstColumn, firstRow),
+            sourceLeft = firstLeft,
+            sourceTop = firstTop,
+            sourceWidth = firstRight - firstLeft,
+            sourceHeight = firstBottom - firstTop,
+        )
+        val probeTile = mainVm.imageDecoder.decodeTile(image, firstRequest, overlap)
+            ?: return false
+        if (!probeTile.isRecycled) probeTile.recycle()
+
+        canvas.save()
+        try {
+            canvas.translate(canvasCenterX, canvasCenterY)
+            canvas.rotate(image.rotationDegrees)
+            canvas.scale(
+                if (image.flipX) -1f else 1f,
+                if (image.flipY) -1f else 1f,
+            )
+            for (row in firstRow..lastRow) {
+                for (column in firstColumn..lastColumn) {
+                    val tileLeft = maxOf(cropLeft, column * ImageTilePlanner.TILE_EDGE_PX)
+                    val tileTop = maxOf(cropTop, row * ImageTilePlanner.TILE_EDGE_PX)
+                    val tileRight = minOf(
+                        cropRight,
+                        (column + 1) * ImageTilePlanner.TILE_EDGE_PX,
+                    )
+                    val tileBottom = minOf(
+                        cropBottom,
+                        (row + 1) * ImageTilePlanner.TILE_EDGE_PX,
+                    )
+                    if (tileRight <= tileLeft || tileBottom <= tileTop) continue
+
+                    val request = ImageTileRequest(
+                        key = ImageTileKey(image.id, column, row),
+                        sourceLeft = tileLeft,
+                        sourceTop = tileTop,
+                        sourceWidth = tileRight - tileLeft,
+                        sourceHeight = tileBottom - tileTop,
+                    )
+                    // Decode with a small source overlap, draw the complete
+                    // expanded region, then clip it to this tile's interior.
+                    // Clipping after sampling is important: cropping the source
+                    // rect first would make bilinear filtering clamp at every
+                    // 1024px tile edge and recreate the visible grid.
+                    val decodedLeft = (tileLeft - overlap).coerceAtLeast(0)
+                    val decodedTop = (tileTop - overlap).coerceAtLeast(0)
+                    val decodedRight = (tileRight + overlap).coerceAtMost(intrinsicWidth)
+                    val decodedBottom = (tileBottom + overlap).coerceAtMost(intrinsicHeight)
+                    val tile = mainVm.imageDecoder.decodeTile(image, request, overlap)
+                        ?: error("无法解码选中的图片: ${image.name}")
+                    try {
+                        val left = -dstW / 2f + (tileLeft - cropLeft) / cropWidth * dstW
+                        val top = -dstH / 2f + (tileTop - cropTop) / cropHeight * dstH
+                        val right = -dstW / 2f + (tileRight - cropLeft) / cropWidth * dstW
+                        val bottom = -dstH / 2f + (tileBottom - cropTop) / cropHeight * dstH
+                        val expandedLeft = -dstW / 2f +
+                            (decodedLeft - cropLeft) / cropWidth * dstW
+                        val expandedTop = -dstH / 2f +
+                            (decodedTop - cropTop) / cropHeight * dstH
+                        val expandedRight = -dstW / 2f +
+                            (decodedRight - cropLeft) / cropWidth * dstW
+                        val expandedBottom = -dstH / 2f +
+                            (decodedBottom - cropTop) / cropHeight * dstH
+                        canvas.save()
+                        try {
+                            canvas.clipRect(left, top, right, bottom)
+                            canvas.drawBitmap(
+                                tile,
+                                android.graphics.Rect(0, 0, tile.width, tile.height),
+                                android.graphics.RectF(
+                                    expandedLeft,
+                                    expandedTop,
+                                    expandedRight,
+                                    expandedBottom,
+                                ),
+                                paint,
+                            )
+                        } finally {
+                            canvas.restore()
+                        }
+                    } finally {
+                        if (!tile.isRecycled) tile.recycle()
+                    }
+                }
+            }
+            return true
+        } finally {
+            canvas.restore()
+        }
+    }
+
     private fun renderImageToCanvas(
         canvas: android.graphics.Canvas,
         image: SceneImage,
@@ -2450,19 +2811,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         scale: Float,
         exportDensity: Float,
     ) {
-        val paint = android.graphics.Paint().apply {
-            isAntiAlias = true
-            isFilterBitmap = true
-            // Apply colorAdjust (brightness/contrast/saturation) to
-            // match the on-screen rendering in drawSceneImage which
-            // uses buildColorFilter(image.colorAdjust).
-            val matrix = buildColorMatrix(image.colorAdjust)
-            if (matrix != null) {
-                colorFilter = android.graphics.ColorMatrixColorFilter(
-                    android.graphics.ColorMatrix(matrix),
-                )
-            }
-        }
+        val paint = createExportImagePaint(image)
 
         // V_NOW (2026-06-09 bug fix "导出画布图片尺寸不对 +
         // 不是原始分辨率"):

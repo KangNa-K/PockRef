@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.CanvasMarkupText
+import com.pockref.app.model.CropRect
 import com.pockref.app.model.ImageAlignment
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneImage
@@ -65,6 +66,52 @@ class PurSceneCodecCustomFormatTest {
         assertEquals(scene.defaultAlignment, restored.defaultAlignment)
         file.delete()
     }
+
+    @Test
+    fun customFormat_roundTripsCropRectAndDisplaySize() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-crop-round-trip", ".pur")
+        file.deleteOnExit()
+        val crop = CropRect(
+            left = 0.125f,
+            top = 0.2f,
+            right = 0.875f,
+            bottom = 0.8f,
+        )
+        val scene = PockRefScene(
+            name = "crop-round-trip",
+            images = listOf(
+                SceneImage(
+                    id = "cropped-image",
+                    name = "cropped.png",
+                    mimeType = "image/png",
+                    imageBytes = byteArrayOf(1, 2, 3),
+                    intrinsicWidth = 1600,
+                    intrinsicHeight = 1200,
+                    center = Offset(240f, 180f),
+                    displaySize = Size2D(720f, 432f),
+                    cropRect = crop,
+                ),
+            ),
+        )
+
+        file.outputStream().use { output -> codec.write(scene, output) }
+
+        val written = file.readBytes()
+        assertArrayEquals(
+            byteArrayOf('P'.code.toByte(), 'R'.code.toByte(), 'F'.code.toByte(), 'A'.code.toByte()),
+            written.copyOfRange(0, 4),
+        )
+
+        val restoredImage = codec.readFromFile(file).images.single()
+        assertEquals(crop.left, restoredImage.cropRect?.left ?: -1f, 0.0001f)
+        assertEquals(crop.top, restoredImage.cropRect?.top ?: -1f, 0.0001f)
+        assertEquals(crop.right, restoredImage.cropRect?.right ?: -1f, 0.0001f)
+        assertEquals(crop.bottom, restoredImage.cropRect?.bottom ?: -1f, 0.0001f)
+        assertEquals(720f, restoredImage.displaySize.width, 0.0001f)
+        assertEquals(432f, restoredImage.displaySize.height, 0.0001f)
+    }
+
     @Test
     fun desktopCompatibleWriteDoesNotUsePrfaHeader() {
         val codec = PurSceneCodec()

@@ -88,24 +88,18 @@ sealed interface PockRefAction {
     data object BeginRenameScene : PockRefAction
     data class ConfirmRenameScene(val newName: String) : PockRefAction
     data object CancelRenameScene : PockRefAction
-    /** Show the export chooser dialog (PNG / JPG). */
+    /** Show the lossless export-mode chooser for the current selection. */
     data object ExportSelected : PockRefAction
-    /** User picked a format and a save URI — render + write the image. */
+    /** Legacy single-file export action; implementation now copies original bytes. */
     data class ConfirmExport(val uri: Uri, val format: com.pockref.app.model.ExportFormat) : PockRefAction
-    /** User picked a save URI for a selected GIF — write the original animated bytes. */
+    /** Export a selected GIF by copying its original animated bytes. */
     data class ConfirmExportGif(val uri: Uri) : PockRefAction
     /**
-     * User picked a format and a destination FOLDER (an OpenDocumentTree
-     * tree URI). The VM iterates the currently selected images and writes
-     * each one as `<imageName>.<ext>` inside the tree, letting
-     * DocumentFile.createFile handle name collisions (it appends " (N)"
-     * to duplicates on the Storage Access Framework side). Triggered from
-     * the export chooser dialog when ≥2 images are selected.
+     * User picked a destination folder for lossless original-image export.
+     * The VM copies every selected image's original bytes into the folder,
+     * preserving its MIME type and source filename where available.
      */
-    data class ConfirmExportBatch(
-        val treeUri: Uri,
-        val format: com.pockref.app.model.ExportFormat,
-    ) : PockRefAction
+    data class ConfirmExportOriginals(val treeUri: Uri) : PockRefAction
     data object CancelExport : PockRefAction
     data object ExportCanvas : PockRefAction
  /**
@@ -162,20 +156,16 @@ sealed interface PockRefAction {
   */
   data object CancelExportCanvas : PockRefAction
   /**
-  * User picked a save URI from the SAF picker AND the dialog's
-  * background mode is now in [PockRefUiState.exportCanvasBackground].
-  * The [backgroundMode] is also passed explicitly so
-  * [com.pockref.app.ui.PureRefViewModelScene.exportCanvas] can
-  * pin to the value the user confirmed (instead of re-reading
-  * state that may have been mutated between the dialog's
-  * confirm-click and the SAF picker's return — the dialog and
-  * the picker both go through Compose recomposition, so
-  * passing the value explicitly avoids any re-entrancy on
-  * the [exportCanvasBackground] field).
-  */
+   * User picked a save URI for the canvas-export path. When [imageIds] is
+   * non-null, only that frozen selection is rendered with the high-quality
+   * PNG path; large source images may be decoded through bounded tiles. Null
+   * keeps the existing whole-scene canvas export behavior and its
+   * user-selected options.
+   */
   data class ConfirmExportCanvas(
       val uri: Uri,
       val backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode,
+      val imageIds: Set<String>? = null,
   ) : PockRefAction
     data class UpdateCanvasViewport(val width: Float, val height: Float) : PockRefAction
     data class ImportImages(val uris: List<Uri>) : PockRefAction
@@ -204,6 +194,9 @@ sealed interface PockRefAction {
      */
     data class ImportMixed(val uris: List<Uri>) : PockRefAction
     data class LoadScene(val uri: Uri) : PockRefAction
+    data object OpenBlankCanvas : PockRefAction
+    data object CloseBlankCanvas : PockRefAction
+    data class OpenSceneFromPicker(val uri: Uri) : PockRefAction
     data class SaveScene(val uri: Uri) : PockRefAction
     data class OpenRecentScene(val uri: String) : PockRefAction
     data class RemoveRecentScene(val uri: String) : PockRefAction
@@ -555,6 +548,10 @@ sealed interface PockRefAction {
     data class BatchScale(val scaleFactor: Float) : PockRefAction
     data object BatchFlipHorizontal : PockRefAction
     data object ConvertToGrayscale : PockRefAction
+    /** Toggle a transient posterize level for the current grayscale selection. */
+    data class TogglePosterizeLevel(val levels: Int) : PockRefAction
+    /** Clear transient posterize controls without touching image pixels. */
+    data object ClearPosterizePreview : PockRefAction
     /**
      * V_NOW (2026-06-11 "旋转图片角点缩放" fix):
      * single-image corner-drag that uses the

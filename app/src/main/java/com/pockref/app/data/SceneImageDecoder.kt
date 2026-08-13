@@ -3,13 +3,16 @@ package com.pockref.app.data
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
+import android.graphics.ImageDecoder
 import android.graphics.Rect
+import android.os.Build
 import android.util.Log
 import com.pockref.app.model.SceneImage
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -310,14 +313,16 @@ class SceneImageDecoder(
     }
 
     /**
-     * Decodes one bounded full-resolution source region for the HD tile layer.
-     * The returned bitmap never exceeds [ImageTilePlanner.TILE_EDGE_PX] on
-     * either axis, so it is safe for Compose's canvas even when the source
-     * image is far larger than the device's single-bitmap limit.
+     * Decodes one bounded full-resolution source region for the HD tile layer
+     * or canvas export. With [sourcePad] greater than zero, the decoded region
+     * includes that many extra source pixels on each side while [request] still
+     * describes the interior region; callers draw only the interior so adjacent
+     * export tiles share edge pixels instead of showing filtering seams.
      */
     internal fun decodeTile(
         image: SceneImage,
         request: ImageTileRequest,
+        sourcePad: Int = 0,
     ): Bitmap? {
         if (request.sourceWidth !in 1..ImageTilePlanner.TILE_EDGE_PX ||
             request.sourceHeight !in 1..ImageTilePlanner.TILE_EDGE_PX
@@ -335,6 +340,7 @@ class SceneImageDecoder(
         }
 
         return try {
+            val pad = sourcePad.coerceAtLeast(0)
             val sourceRight = request.sourceLeft + request.sourceWidth
             val sourceBottom = request.sourceTop + request.sourceHeight
             if (request.sourceLeft < 0 || request.sourceTop < 0 ||
@@ -342,8 +348,12 @@ class SceneImageDecoder(
             ) {
                 null
             } else {
+                val left = (request.sourceLeft - pad).coerceAtLeast(0)
+                val top = (request.sourceTop - pad).coerceAtLeast(0)
+                val right = (sourceRight + pad).coerceAtMost(decoder.width)
+                val bottom = (sourceBottom + pad).coerceAtMost(decoder.height)
                 decoder.decodeRegion(
-                    Rect(request.sourceLeft, request.sourceTop, sourceRight, sourceBottom),
+                    Rect(left, top, right, bottom),
                     BitmapFactory.Options().apply {
                         inPreferredConfig = Bitmap.Config.ARGB_8888
                         inMutable = false
@@ -585,7 +595,10 @@ class SceneImageDecoder(
     private fun decodeSampledBitmap(bytes: ByteArray, reqWidth: Int, reqHeight: Int): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val targetLongEdge = maxOf(reqWidth, reqHeight)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            return decodeWithImageDecoder(bytes, targetLongEdge)
+        }
         val sample = calculateSampleSize(bounds.outWidth, bounds.outHeight, reqWidth, reqHeight)
         val opts = BitmapFactory.Options().apply {
             inSampleSize = sample
@@ -605,9 +618,8 @@ class SceneImageDecoder(
             Log.w(TAG, "OOM decoding, retrying with 2x sample")
             opts.inSampleSize = sample * 2
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-        } ?: return null
+        } ?: return decodeWithImageDecoder(bytes, targetLongEdge)
 
-        val targetLongEdge = maxOf(reqWidth, reqHeight)
         val longSide = maxOf(decoded.width, decoded.height)
         return if (longSide > targetLongEdge) {
             val scale = targetLongEdge.toFloat() / longSide.toFloat()
@@ -618,6 +630,34 @@ class SceneImageDecoder(
             }
         } else {
             decoded
+        }
+    }
+
+    /**
+     * BitmapFactory and ImageDecoder share most codecs, but Android vendor
+     * builds can route them through different allocation paths. In particular,
+     * Xiaomi Android 16 devices can return null from BitmapFactory for an
+     * otherwise readable image and log `... image decoder ... unimplemented`.
+     */
+    private fun decodeWithImageDecoder(bytes: ByteArray, targetLongEdge: Int): Bitmap? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+        return try {
+            val source = ImageDecoder.createSource(ByteBuffer.wrap(bytes))
+            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                decoder.isMutableRequired = false
+                val sourceLongEdge = maxOf(info.size.width, info.size.height)
+                if (sourceLongEdge > targetLongEdge) {
+                    val scale = targetLongEdge.toDouble() / sourceLongEdge.toDouble()
+                    decoder.setTargetSize(
+                        (info.size.width * scale).toInt().coerceAtLeast(1),
+                        (info.size.height * scale).toInt().coerceAtLeast(1),
+                    )
+                }
+            }
+        } catch (error: Throwable) {
+            Log.w(TAG, "ImageDecoder fallback failed", error)
+            null
         }
     }
 

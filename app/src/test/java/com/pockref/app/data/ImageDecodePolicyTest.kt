@@ -21,8 +21,6 @@ class ImageDecodePolicyTest {
         val request = ImageDecodePolicy.requestFor(
             image = image,
             canvasScale = 0.2f,
-            viewportWidth = 2800f,
-            viewportHeight = 1752f,
             isFocusedImage = false,
         )
 
@@ -44,13 +42,11 @@ class ImageDecodePolicyTest {
         val request = ImageDecodePolicy.requestFor(
             image = image,
             canvasScale = 2f,
-            viewportWidth = 2800f,
-            viewportHeight = 1752f,
             isFocusedImage = false,
         )
 
-        assertEquals(2800, request.displayWidth)
-        assertEquals(1752, request.displayHeight)
+        assertEquals(3000, request.displayWidth)
+        assertEquals(1800, request.displayHeight)
         assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
     }
 
@@ -67,8 +63,6 @@ class ImageDecodePolicyTest {
         val request = ImageDecodePolicy.requestFor(
             image = image,
             canvasScale = 4f,
-            viewportWidth = 2800f,
-            viewportHeight = 1752f,
             isFocusedImage = false,
         )
 
@@ -90,13 +84,32 @@ class ImageDecodePolicyTest {
         val request = ImageDecodePolicy.requestFor(
             image = image,
             canvasScale = 0.1f,
-            viewportWidth = 2800f,
-            viewportHeight = 1752f,
             isFocusedImage = true,
         )
 
         assertEquals(10881, request.displayWidth)
         assertEquals(14073, request.displayHeight)
+        assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
+    }
+
+    @Test
+    fun smallViewport_preservesNormalImageScaleInsteadOfCappingToWindow() {
+        val image = testImage(
+            displayWidth = 720f,
+            displayHeight = 930f,
+            imageScale = 1f,
+            intrinsicWidth = 10881,
+            intrinsicHeight = 14073,
+        )
+
+        val request = ImageDecodePolicy.requestFor(
+            image = image,
+            canvasScale = 1f,
+            isFocusedImage = false,
+        )
+
+        assertEquals(900, request.displayWidth)
+        assertEquals(1163, request.displayHeight)
         assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
     }
 

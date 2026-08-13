@@ -100,6 +100,12 @@ internal fun isMissingDocumentFailure(error: Throwable): Boolean {
 // internal type across packages (MainActivity reads it from `com.pockref.app`).
 data class UiError(val message: String, val throwable: Throwable? = null)
 
+internal fun shouldOpenSceneFromImport(displayName: String?, mimeType: String?): Boolean {
+    if (displayName?.substringAfterLast('.', "").equals("pur", ignoreCase = true)) return true
+    if (mimeType == "application/x-pockref-scene" || mimeType == "application/octet-stream") return true
+    return !mimeType.orEmpty().startsWith("image/", ignoreCase = true)
+}
+
 class PockRefViewModel(application: Application) : AndroidViewModel(application) {
     internal val contentResolver = application.contentResolver
     internal val codec = PurSceneCodec().also { it.initCacheDir(application.cacheDir) }
@@ -139,6 +145,19 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     internal var pendingSaveTruncate: Boolean = false
     internal var backupDir: File? = null
     internal var untitledCounter: Int = 0
+    private var sceneOperationToken: Long = 0L
+
+    internal fun beginSceneOperation(): Long {
+        sceneOperationToken += 1L
+        return sceneOperationToken
+    }
+
+    internal fun invalidateSceneOperations() {
+        sceneOperationToken += 1L
+    }
+
+    internal fun isSceneOperationActive(token: Long): Boolean =
+        sceneOperationToken == token
 
     internal val _uiState = MutableStateFlow(
         PockRefUiState(
@@ -565,6 +584,9 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         // [uiState.hasUnsavedChanges] / [canDirectSave]
         // for the title bar's save indicator). That
         // contract is unchanged.
+        if (_uiState.value.blankCanvasOpen && _uiState.value.hasSceneContent) {
+            _uiState.update { it.copy(blankCanvasOpen = false) }
+        }
         syncDirectSaveState()
     }
 
@@ -581,6 +603,14 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    internal fun openPosterizeControlsForSelection(selectedIds: Set<String>) {
+        _uiState.update { state -> state.openPosterizeControls(selectedIds) }
+    }
+
+    internal fun clearPosterizePreview() {
+        _uiState.update { state -> state.clearPosterizePreview() }
+    }
+
     val hasUnsavedChanges: Boolean
         get() {
             val scene = _uiState.value.toScene()
@@ -593,6 +623,73 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
 
     val canDirectSave: Boolean
         get() = isImportedPurFile && currentSceneUri != null && hasUnsavedChanges
+
+    private fun openBlankCanvas() {
+        if (_uiState.value.hasSceneContent) return
+        invalidateSceneOperations()
+        undoStack.clear()
+        redoStack.clear()
+        markupHistory.clear()
+        sceneGestureActive = false
+        gestureUndoRecorded = false
+        currentSceneUri = null
+        isImportedPurFile = false
+        lastSaveSnapshotHash = ""
+        autoSaveManager.clearRecoveryBackups()
+        recoverySessionManager.resetSession()
+        _uiState.update {
+            it.openBlankCanvas().copy(
+                canUndo = false,
+                canRedo = false,
+                canDirectSave = false,
+                hasUnsavedChanges = false,
+                showUnsavedChangesDialog = false,
+                isBusy = false,
+            )
+        }
+        syncDirectSaveState()
+    }
+
+    private fun closeBlankCanvas() {
+        val current = _uiState.value
+        if (!current.blankCanvasOpen) return
+        invalidateSceneOperations()
+        if (current.hasSceneContent) {
+            _uiState.update { it.copy(blankCanvasOpen = false) }
+            sceneController.onCloseScene()
+            return
+        }
+        undoStack.clear()
+        redoStack.clear()
+        markupHistory.clear()
+        sceneGestureActive = false
+        gestureUndoRecorded = false
+        currentSceneUri = null
+        isImportedPurFile = false
+        lastSaveSnapshotHash = ""
+        autoSaveManager.clearRecoveryBackups()
+        recoverySessionManager.resetSession()
+        _uiState.update {
+            it.closeBlankCanvas().copy(
+                canUndo = false,
+                canRedo = false,
+                canDirectSave = false,
+                hasUnsavedChanges = false,
+                showUnsavedChangesDialog = false,
+                isBusy = false,
+            )
+        }
+        syncDirectSaveState()
+    }
+
+    private fun openSceneFromPicker(uri: Uri) {
+        val displayName = queryDisplayNameSync(uri)
+        if (!isPurSceneFileName(displayName)) {
+            reportError("只能打开 .pur 场景文件")
+            return
+        }
+        sceneController.loadScene(uri)
+    }
 
     fun onAction(action: PockRefAction) {
         when (action) {
@@ -607,6 +704,9 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             PockRefAction.ToggleMultiSelectMode -> selectionController.toggleMultiSelectMode()
             is PockRefAction.ImportImages -> sceneController.importImages(action.uris)
             is PockRefAction.LoadScene -> sceneController.loadScene(action.uri)
+            PockRefAction.OpenBlankCanvas -> openBlankCanvas()
+            PockRefAction.CloseBlankCanvas -> closeBlankCanvas()
+            is PockRefAction.OpenSceneFromPicker -> openSceneFromPicker(action.uri)
             is PockRefAction.SaveScene -> sceneController.saveScene(action.uri)
             is PockRefAction.OpenRecentScene -> sceneController.loadScene(
                 Uri.parse(action.uri),
@@ -633,7 +733,10 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             }
             is PockRefAction.BulkDeleteRecentScenes -> bulkDeleteRecentScenes(action.uris)
             is PockRefAction.ImportMixed -> importMixed(action.uris)
-            PockRefAction.CloseScene -> sceneController.onCloseScene()
+            PockRefAction.CloseScene -> {
+                if (_uiState.value.blankCanvasOpen) closeBlankCanvas()
+                else sceneController.onCloseScene()
+            }
             is PockRefAction.SelectImage -> transformController.selectImage(action.imageId)
             PockRefAction.Deselect -> transformController.deselect()
             is PockRefAction.FlashSelection -> _uiState.update {
@@ -1127,9 +1230,9 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 _uiState.update { it.copy(showExportDialog = false) }
                 sceneController.exportSelectedGif(action.uri)
             }
-            is PockRefAction.ConfirmExportBatch -> {
+            is PockRefAction.ConfirmExportOriginals -> {
                 _uiState.update { it.copy(showExportDialog = false) }
-                sceneController.exportBatchToTree(action.treeUri, action.format)
+                sceneController.exportOriginalsToTree(action.treeUri)
             }
             PockRefAction.ExportCanvas -> {
  _uiState.update { it.copy(showExportCanvasDialog = true) }
@@ -1190,7 +1293,11 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
   }
   is PockRefAction.ConfirmExportCanvas -> {
                 _uiState.update { it.copy(showExportCanvasDialog = false) }
-                sceneController.exportCanvas(action.uri, action.backgroundMode)
+                sceneController.exportCanvas(
+                    uri = action.uri,
+                    backgroundMode = action.backgroundMode,
+                    imageIds = action.imageIds,
+                )
             }
             is PockRefAction.UpdateCanvasViewport -> sceneController.updateCanvasViewport(action.width, action.height)
             is PockRefAction.SetSceneName -> sceneController.setSceneName(action.value)
@@ -1208,6 +1315,12 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.BatchScale -> batchController.batchScale(action.scaleFactor)
             PockRefAction.BatchFlipHorizontal -> batchController.batchFlipHorizontal()
             PockRefAction.ConvertToGrayscale -> transformController.convertToGrayscale()
+            is PockRefAction.TogglePosterizeLevel -> {
+                _uiState.update { state -> state.togglePosterizeLevel(action.levels) }
+            }
+            PockRefAction.ClearPosterizePreview -> {
+                _uiState.update { state -> state.clearPosterizePreview() }
+            }
             is PockRefAction.LassoSelect -> selectionController.lassoSelect(action.rect)
             PockRefAction.ToggleBoxSelectMode -> selectionController.toggleBoxSelectMode()
             is PockRefAction.SetSelectionMode -> selectionController.setSelectionMode(action.mode)
@@ -2925,19 +3038,17 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         return deleted to failed
     }
 
-    // V_NOW (L2 empty-canvas revamp 2026-06-10): the new
-    // single-launcher import path. Reads the URI's MIME
-    // via ContentResolver and routes the URI list to
-    // importImages for image MIME or to loadScene for
-    // the PockRef scene MIME / octet-stream / unknown. Empty
-    // lists are silently dropped.
+    // MIME types from OEM DocumentsProviders are not reliable for .pur
+    // files (Xiaomi may report a vendor or generic non-image type). The
+    // filename is authoritative when it has the .pur extension; unknown
+    // non-image types also belong to the scene loader, not image import.
     internal fun importMixed(uris: List<Uri>) {
         if (uris.isEmpty()) return
-        val firstMime = contentResolver.getType(uris.first())
-        val isSceneMime = firstMime == "application/x-pockref-scene" ||
-            firstMime == "application/octet-stream"
-        if (isSceneMime) {
-            sceneController.loadScene(uris.first())
+        val firstUri = uris.first()
+        val firstMime = contentResolver.getType(firstUri)
+        val firstName = queryDisplayNameSync(firstUri)
+        if (shouldOpenSceneFromImport(firstName, firstMime)) {
+            sceneController.loadScene(firstUri)
         } else {
             sceneController.importImages(uris)
         }

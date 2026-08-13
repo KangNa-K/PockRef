@@ -3,7 +3,7 @@ package com.pockref.app.data
 import com.pockref.app.model.SceneImage
 
 internal object ImageTilePolicy {
-    private const val HD_TILE_TRIGGER_LONG_EDGE_PX = 2048f
+    private const val NORMAL_DECODE_HEADROOM = 1.25f
 
     fun singleSelectedImageId(
         selectedImageIds: Set<String>,
@@ -60,6 +60,11 @@ internal object ImageTilePolicy {
         return hdImageIdIfEnabled(images, retainedImageId)
     }
 
+    /**
+     * HD must remain source-resolution based even when the window is small.
+     * Request visible source tiles whenever the normal bounded decode would
+     * lose source pixels; the tile cache still bounds memory use.
+     */
     fun shouldRequestTiles(
         image: SceneImage,
         canvasScale: Float,
@@ -67,12 +72,14 @@ internal object ImageTilePolicy {
     ): Boolean {
         if (!isHdDisplayActive) return false
         val intrinsicLongEdge = maxOf(image.intrinsicWidth, image.intrinsicHeight)
-        if (intrinsicLongEdge <= SceneImageDecoder.DECODE_LADDER.last()) return false
-
         val displayedLongEdge = maxOf(
             image.displaySize.width * image.scale * canvasScale,
             image.displaySize.height * image.scale * canvasScale,
         )
-        return displayedLongEdge > HD_TILE_TRIGGER_LONG_EDGE_PX
+        if (intrinsicLongEdge <= 0 || displayedLongEdge <= 0f) return false
+
+        val normalTargetLongEdge = displayedLongEdge * NORMAL_DECODE_HEADROOM
+        return intrinsicLongEdge > SceneImageDecoder.DECODE_LADDER.last() ||
+            intrinsicLongEdge.toFloat() > normalTargetLongEdge
     }
 }

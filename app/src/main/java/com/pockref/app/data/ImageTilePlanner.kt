@@ -36,6 +36,8 @@ internal object ImageTilePlanner {
         val firstRow = sourceBounds.top / TILE_EDGE_PX
         val lastRow = ((sourceBounds.bottom - 1) / TILE_EDGE_PX).coerceAtLeast(0)
 
+        val sourceCenterX = (sourceBounds.left + sourceBounds.right) / 2f
+        val sourceCenterY = (sourceBounds.top + sourceBounds.bottom) / 2f
         return buildList {
             for (row in firstRow..lastRow) {
                 for (column in firstColumn..lastColumn) {
@@ -52,6 +54,12 @@ internal object ImageTilePlanner {
                     )
                 }
             }
+        }.sortedBy { request ->
+            val tileCenterX = request.sourceLeft + request.sourceWidth / 2f
+            val tileCenterY = request.sourceTop + request.sourceHeight / 2f
+            val dx = tileCenterX - sourceCenterX
+            val dy = tileCenterY - sourceCenterY
+            dx * dx + dy * dy
         }
     }
 

@@ -24,14 +24,16 @@ class ImageTilePlannerTest {
         )
 
         assertEquals(
-            listOf(
+            setOf(
                 ImageTileKey("image", column = 0, row = 0),
                 ImageTileKey("image", column = 1, row = 0),
                 ImageTileKey("image", column = 0, row = 1),
                 ImageTileKey("image", column = 1, row = 1),
             ),
-            requests.map { it.key },
+            requests.map { it.key }.toSet(),
         )
+        assertEquals(4, requests.size)
+        assertEquals(ImageTileKey("image", column = 1, row = 0), requests.first().key)
     }
 
     @Test

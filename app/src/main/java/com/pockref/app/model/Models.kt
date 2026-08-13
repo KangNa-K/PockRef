@@ -818,6 +818,12 @@ data class PockRefUiState(
     val sceneDefaultAlignment: ImageAlignment = ImageAlignment.CENTER,
     val selectedImageId: String? = null,
     val selectedImageIds: Set<String> = emptySet(),
+    /** True while the selected grayscale images expose posterize controls. */
+    val posterizeControlsVisible: Boolean = false,
+    /** Null means ordinary grayscale; otherwise one of 2, 4, 8, or 16. */
+    val posterizeLevels: Int? = null,
+    /** Selection captured when the transient posterize controls were opened. */
+    val posterizeTargetImageIds: Set<String> = emptySet(),
     /**
      * V_NOW (L2 polish v6 2026-06-10): the user-chosen
      * cover image for the scene. Drives the single-select

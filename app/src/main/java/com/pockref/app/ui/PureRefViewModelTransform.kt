@@ -288,7 +288,7 @@ internal fun PockRefUiState.normalizeSelection(): PockRefUiState {
     return copy(
         selectedImageId = primary,
         selectedImageIds = normalizedIds,
-    )
+    ).clearPosterizeIfSelectionChanged(normalizedIds)
 }
 
 internal fun PockRefUiState.syncHistoryFlags(undoStackSize: Int, redoStackSize: Int): PockRefUiState =
@@ -713,7 +713,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     // a selected image collapses the
                     // right-bottom panel.
                     bottomRightPanelExpanded = false,
-                )
+                ).normalizeSelection()
             }
             if (!state.multiSelectMode) {
                 return@update state.copy(
@@ -733,7 +733,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     // inactivity timer. Tapping an image is
                     // the explicit user action to bring it
                     // back.
-                )
+                ).normalizeSelection()
             }
             val updated = state.selectedImageIds.toMutableSet().apply {
                 if (!add(imageId)) remove(imageId)
@@ -1867,7 +1867,8 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                         editingMarkupTextId = null,
                         transientDragImageIds = emptySet(),
                         transientDragDelta = Offset.Zero,
-                    ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
+                    ).normalizeSelection().clearPosterizePreview()
+                        .syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
                 }
             }
             is HistoryEntry.Diff -> applyDiffForward(entry.diff)
@@ -1928,7 +1929,8 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     selectedImageIds = diff.newSelectedImageIds,
                     multiSelectMode = diff.newMultiSelectMode,
                 )
-            }.normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
+            }.normalizeSelection().clearPosterizePreview()
+                .syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
         }
     }
 
@@ -2090,6 +2092,17 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     }
                 },
             )
+        }
+
+        val after = mainVm._uiState.value
+        val allSelectedGrayscale = selectedIds.all { id ->
+            after.images.firstOrNull { it.id == id }
+                ?.colorAdjust?.saturation?.let { it <= -0.9f } == true
+        }
+        if (allSelectedGrayscale && selectedIds == after.selectedImageIds) {
+            mainVm.openPosterizeControlsForSelection(selectedIds)
+        } else {
+            mainVm.clearPosterizePreview()
         }
     }
 

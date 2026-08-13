@@ -21,6 +21,13 @@ import org.junit.Test
 
 class BlankCanvasFlowTest {
     @Test
+    fun initialState_doesNotHaveAnOpenCanvas() {
+        val state = PockRefUiState()
+
+        assertFalse(state.isCanvasOpen)
+    }
+
+    @Test
     fun openBlankCanvas_preservesSettingsAndRecentScenes_clearsSceneAndTemporaryState() {
         val recentScenes = listOf(RecentSceneEntry(uri = "content://scene", label = "Scene", source = "test"))
         val image = SceneImage(
@@ -181,6 +188,14 @@ class BlankCanvasFlowTest {
         assertEquals(CropAspect.FREE, result.cropAspect)
         assertEquals(0f, result.cropRotation, 0f)
         assertNull(result.selectionFlash)
+    }
+
+    @Test
+    fun closeBlankCanvas_fromTrulyBlankState_closesCanvas() {
+        val result = PockRefUiState(blankCanvasOpen = true).closeBlankCanvas()
+
+        assertFalse(result.blankCanvasOpen)
+        assertFalse(result.isCanvasOpen)
     }
 
     @Test

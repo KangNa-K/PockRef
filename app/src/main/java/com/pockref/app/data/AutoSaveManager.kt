@@ -139,7 +139,7 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
                     val output = contentResolver.openOutputStream(currentSceneUri, "wt")
                         ?: error("Unable to open output stream for $currentSceneUri")
                     output.use {
-                        writeDesktopCompatible(scene, output)
+                        codec.write(scene, it)
                     }
                     originalSaved = true
                     Log.d(TAG, "autoSave: wrote to original URI $currentSceneUri")
@@ -185,10 +185,6 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
         }
 
         return backupFile
-    }
-
-    private fun writeDesktopCompatible(scene: PockRefScene, output: java.io.OutputStream) {
-        codec.writeDesktopCompatible(scene, output, appContext.cacheDir)
     }
 
     private fun cleanupOldBackups() {

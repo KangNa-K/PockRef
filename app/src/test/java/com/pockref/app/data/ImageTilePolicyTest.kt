@@ -129,12 +129,24 @@ class ImageTilePolicyTest {
     }
 
     @Test
-    fun requestsTilesWhenSingleSelectedImageExceedsHdTriggerOnScreen() {
+    fun requestsTilesForHdImageEvenAtSmallWindowScale() {
         val image = testImage()
 
-        assertFalse(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 0.14f, isHdDisplayActive = true))
+        assertTrue(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 0.14f, isHdDisplayActive = true))
         assertTrue(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 0.15f, isHdDisplayActive = true))
         assertFalse(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 1f, isHdDisplayActive = false))
+    }
+
+    @Test
+    fun requestsTilesForHdImageBelowBoundedLodWhenNormalDecodeWouldDownsample() {
+        val image = testImage().copy(
+            intrinsicWidth = 3000,
+            intrinsicHeight = 2000,
+            displaySize = Size2D(720f, 930f),
+        )
+
+        assertTrue(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 1f, isHdDisplayActive = true))
+        assertFalse(ImageTilePolicy.shouldRequestTiles(image, canvasScale = 3f, isHdDisplayActive = true))
     }
 
     @Test
