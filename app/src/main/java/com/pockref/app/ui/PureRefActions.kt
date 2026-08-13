@@ -548,7 +548,7 @@ sealed interface PockRefAction {
     data class BatchScale(val scaleFactor: Float) : PockRefAction
     data object BatchFlipHorizontal : PockRefAction
     data object ConvertToGrayscale : PockRefAction
-    /** Toggle a transient posterize level for the current grayscale selection. */
+    /** Toggle a persisted posterize level for the current grayscale selection. */
     data class TogglePosterizeLevel(val levels: Int) : PockRefAction
     /** Clear transient posterize controls without touching image pixels. */
     data object ClearPosterizePreview : PockRefAction

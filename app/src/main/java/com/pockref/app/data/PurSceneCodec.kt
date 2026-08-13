@@ -76,6 +76,7 @@ class PurSceneCodec {
                 output.writeFloatLe(crop.bottom)
             }
             output.writeBooleanByte(image.showsOriginalResolution)
+            output.writeIntLe(image.posterizeLevels?.toSupportedPosterizeLevel() ?: 0)
         }
         output.writeMarkupBlock(scene)
         output.writeSceneSettingsBlock(scene)
@@ -87,6 +88,24 @@ class PurSceneCodec {
             output = output,
             workDir = workDir,
             includePockRefExtensions = false,
+            includeSceneMetadata = scene.images.any { it.showsOriginalResolution },
+            includeImageState = false,
+        )
+    }
+
+    /**
+     * Write a PureRef 1.10-compatible scene while retaining PockRef-only
+     * per-image state in the legacy scene metadata area. Desktop PureRef
+     * ignores that area and reads the standard image/index records normally.
+     */
+    fun writePureRefCompatible(scene: PockRefScene, output: OutputStream, workDir: File) {
+        writeLegacyStreaming(
+            scene = scene,
+            output = output,
+            workDir = workDir,
+            includePockRefExtensions = false,
+            includeSceneMetadata = true,
+            includeImageState = true,
         )
     }
 
@@ -96,6 +115,23 @@ class PurSceneCodec {
         val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
         val markupTexts: List<CanvasMarkupText> = emptyList(),
         val originalResolutionImageIndexes: Set<Int> = emptySet(),
+        val imageStates: List<LegacyImageState> = emptyList(),
+    )
+
+    private data class LegacyImageState(
+        val legacyIndex: Int,
+        val center: Offset,
+        val displaySize: Size2D,
+        val colorAdjust: ColorAdjust,
+        val posterizeLevels: Int?,
+        val rotationDegrees: Float,
+        val scale: Float,
+        val flipX: Boolean,
+        val flipY: Boolean,
+        val zIndex: Int,
+        val locked: Boolean,
+        val cropRect: CropRect?,
+        val showsOriginalResolution: Boolean,
     )
 
     private data class DesktopMarkupOverlay(
@@ -187,6 +223,7 @@ class PurSceneCodec {
     private fun legacySceneMetadataPayload(
         scene: PockRefScene,
         images: List<SceneImage> = scene.images.sortedBy { it.zIndex },
+        includeImageState: Boolean = true,
     ): ByteArray =
         ByteArrayOutputStream().apply {
             writeDoubleBe(scene.defaultSpacing.width.toDouble())
@@ -194,16 +231,25 @@ class PurSceneCodec {
             writeIntBe(scene.defaultAlignment.ordinal)
             writeMarkupBlock(scene)
             writeOriginalResolutionBlock(images)
+            if (includeImageState) writeImageStateBlock(images)
         }.toByteArray()
 
-    private fun OutputStream.writeLegacySceneMetadata(scene: PockRefScene, images: List<SceneImage>) {
-        val metadataPayload = legacySceneMetadataPayload(scene, images)
+    private fun OutputStream.writeLegacySceneMetadata(
+        scene: PockRefScene,
+        images: List<SceneImage>,
+        includeImageState: Boolean = true,
+    ) {
+        val metadataPayload = legacySceneMetadataPayload(scene, images, includeImageState)
         writeIntBe(metadataPayload.size)
         write(metadataPayload)
     }
 
-    private fun RandomAccessFile.writeLegacySceneMetadata(scene: PockRefScene, images: List<SceneImage>) {
-        val metadataPayload = legacySceneMetadataPayload(scene, images)
+    private fun RandomAccessFile.writeLegacySceneMetadata(
+        scene: PockRefScene,
+        images: List<SceneImage>,
+        includeImageState: Boolean = true,
+    ) {
+        val metadataPayload = legacySceneMetadataPayload(scene, images, includeImageState)
         writeIntBe(metadataPayload.size)
         write(metadataPayload)
     }
@@ -213,6 +259,37 @@ class PurSceneCodec {
         writeIntBe(images.size)
         images.forEach { image ->
             write(if (image.showsOriginalResolution) 1 else 0)
+        }
+    }
+
+    private fun OutputStream.writeImageStateBlock(images: List<SceneImage>) {
+        write(IMAGE_STATE_MAGIC)
+        writeIntBe(images.size)
+        images.forEachIndexed { legacyIndex, image ->
+            writeIntLe(legacyIndex)
+            writeFloatLe(image.center.x)
+            writeFloatLe(image.center.y)
+            writeFloatLe(image.displaySize.width)
+            writeFloatLe(image.displaySize.height)
+            writeFloatLe(image.colorAdjust.brightness)
+            writeFloatLe(image.colorAdjust.contrast)
+            writeFloatLe(image.colorAdjust.saturation)
+            writeIntLe(image.posterizeLevels?.toSupportedPosterizeLevel() ?: 0)
+            writeFloatLe(image.rotationDegrees)
+            writeFloatLe(image.scale)
+            writeBooleanByte(image.flipX)
+            writeBooleanByte(image.flipY)
+            writeIntLe(image.zIndex)
+            writeBooleanByte(image.locked)
+            val crop = image.cropRect
+            writeBooleanByte(crop != null)
+            if (crop != null) {
+                writeFloatLe(crop.left)
+                writeFloatLe(crop.top)
+                writeFloatLe(crop.right)
+                writeFloatLe(crop.bottom)
+            }
+            writeBooleanByte(image.showsOriginalResolution)
         }
     }
 
@@ -409,7 +486,14 @@ class PurSceneCodec {
     }
 
     fun writeLegacyStreaming(scene: PockRefScene, output: OutputStream, workDir: File) {
-        writeLegacyStreaming(scene, output, workDir, includePockRefExtensions = true)
+        writeLegacyStreaming(
+            scene = scene,
+            output = output,
+            workDir = workDir,
+            includePockRefExtensions = true,
+            includeSceneMetadata = true,
+            includeImageState = true,
+        )
     }
 
     private fun writeLegacyStreaming(
@@ -417,6 +501,8 @@ class PurSceneCodec {
         output: OutputStream,
         workDir: File,
         includePockRefExtensions: Boolean,
+        includeSceneMetadata: Boolean,
+        includeImageState: Boolean,
     ) {
         val images = scene.images.sortedBy { it.zIndex }
         workDir.mkdirs()
@@ -471,8 +557,12 @@ class PurSceneCodec {
                 }
 
                 raf.writeStringUtf16Be(scene.name)
-                if (includePockRefExtensions || images.any { it.showsOriginalResolution }) {
-                    raf.writeLegacySceneMetadata(scene, images)
+                if (includeSceneMetadata) {
+                    raf.writeLegacySceneMetadata(
+                        scene = scene,
+                        images = images,
+                        includeImageState = includeImageState,
+                    )
                 }
 
                 val fileLength = raf.filePointer
@@ -729,12 +819,34 @@ class PurSceneCodec {
         val extension = readLegacySceneExtensionFromFile(file)
         val backgroundColor = readLegacyBackgroundColorFromFile(file)
         if (extension == null && backgroundColor == null) return scene
+        val imageStatesByLegacyIndex = extension?.imageStates
+            ?.associateBy { it.legacyIndex }
+            .orEmpty()
         return scene.copy(
-            images = extension?.let {
-                scene.images.mapIndexed { index, image ->
-                    image.copy(showsOriginalResolution = index in it.originalResolutionImageIndexes)
+            images = scene.images.mapIndexed { index, image ->
+                val legacyIndex = image.id.toIntOrNull() ?: index
+                val state = imageStatesByLegacyIndex[legacyIndex]
+                when {
+                    state != null -> image.copy(
+                        center = state.center,
+                        displaySize = state.displaySize,
+                        colorAdjust = state.colorAdjust,
+                        posterizeLevels = state.posterizeLevels,
+                        rotationDegrees = state.rotationDegrees,
+                        scale = state.scale,
+                        flipX = state.flipX,
+                        flipY = state.flipY,
+                        zIndex = state.zIndex,
+                        locked = state.locked,
+                        cropRect = state.cropRect,
+                        showsOriginalResolution = state.showsOriginalResolution,
+                    )
+                    extension != null -> image.copy(
+                        showsOriginalResolution = legacyIndex in extension.originalResolutionImageIndexes,
+                    )
+                    else -> image
                 }
-            } ?: scene.images,
+            },
             defaultSpacing = extension?.defaultSpacing ?: scene.defaultSpacing,
             defaultAlignment = extension?.defaultAlignment ?: scene.defaultAlignment,
             markupStrokes = extension?.markupStrokes ?: scene.markupStrokes,
@@ -870,6 +982,11 @@ class PurSceneCodec {
             payloadStart = payloadStart + SCENE_METADATA_PAYLOAD_SIZE,
             payloadEnd = payloadEnd,
         )
+        val imageStates = readLegacyImageStates(
+            bytes = bytes,
+            payloadStart = payloadStart + SCENE_METADATA_PAYLOAD_SIZE,
+            payloadEnd = payloadEnd,
+        )
 
         return LegacySceneExtension(
             defaultSpacing = defaultSpacing,
@@ -877,6 +994,7 @@ class PurSceneCodec {
             markupStrokes = markupStrokes,
             markupTexts = markupTexts,
             originalResolutionImageIndexes = originalResolutionImageIndexes,
+            imageStates = imageStates,
         ) to payloadEnd
     }
 
@@ -891,7 +1009,7 @@ class PurSceneCodec {
             if (!bytes.matchesAt(ORIGINAL_RESOLUTION_MAGIC, offset)) continue
             val imageCount = readIntBe(bytes, offset + ORIGINAL_RESOLUTION_MAGIC.size)
             val flagsStart = offset + headerSize
-            if (imageCount < 0 || flagsStart + imageCount != payloadEnd) return emptySet()
+            if (imageCount < 0 || flagsStart + imageCount > payloadEnd) return emptySet()
             return buildSet {
                 repeat(imageCount) { index ->
                     if (bytes[flagsStart + index].toInt() != 0) add(index)
@@ -899,6 +1017,89 @@ class PurSceneCodec {
             }
         }
         return emptySet()
+    }
+
+    private fun readLegacyImageStates(
+        bytes: ByteArray,
+        payloadStart: Int,
+        payloadEnd: Int,
+    ): List<LegacyImageState> {
+        val headerSize = IMAGE_STATE_MAGIC.size + Int.SIZE_BYTES
+        if (payloadEnd - payloadStart < headerSize) return emptyList()
+        for (offset in payloadStart..payloadEnd - headerSize) {
+            if (!bytes.matchesAt(IMAGE_STATE_MAGIC, offset)) continue
+            val states = runCatching {
+                DataInputStream(
+                    ByteArrayInputStream(
+                        bytes,
+                        offset + IMAGE_STATE_MAGIC.size,
+                        payloadEnd - offset - IMAGE_STATE_MAGIC.size,
+                    ),
+                ).use { data ->
+                    val imageCount = data.readInt()
+                    require(imageCount in 0..10_000) { "Invalid PockRef image-state count: $imageCount" }
+                    buildList(imageCount) {
+                        repeat(imageCount) {
+                            val legacyIndex = data.readIntLe()
+                            val center = Offset(data.readFloatLe(), data.readFloatLe())
+                            val displaySize = Size2D(data.readFloatLe(), data.readFloatLe())
+                            val colorAdjust = ColorAdjust(
+                                brightness = data.readFloatLe(),
+                                contrast = data.readFloatLe(),
+                                saturation = data.readFloatLe(),
+                            )
+                            val posterizeLevels = data.readIntLe().toSupportedPosterizeLevel()
+                            val rotationDegrees = data.readFloatLe()
+                            val scale = data.readFloatLe()
+                            val flipX = data.readBooleanByte()
+                            val flipY = data.readBooleanByte()
+                            val zIndex = data.readIntLe()
+                            val locked = data.readBooleanByte()
+                            val hasCrop = data.readBooleanByte()
+                            val cropRect = if (hasCrop) {
+                                CropRect(
+                                    left = data.readFloatLe(),
+                                    top = data.readFloatLe(),
+                                    right = data.readFloatLe(),
+                                    bottom = data.readFloatLe(),
+                                )
+                            } else {
+                                null
+                            }
+                            val showsOriginalResolution = data.readBooleanByte()
+                            require(
+                                legacyIndex >= 0 &&
+                                    center.x.isFinite() && center.y.isFinite() &&
+                                    displaySize.width.isFinite() && displaySize.height.isFinite() &&
+                                    displaySize.width > 0f && displaySize.height > 0f &&
+                                    rotationDegrees.isFinite() && scale.isFinite() && scale > 0f,
+                            ) { "Invalid PockRef image-state values" }
+                            add(
+                                LegacyImageState(
+                                    legacyIndex = legacyIndex,
+                                    center = center,
+                                    displaySize = displaySize,
+                                    colorAdjust = colorAdjust,
+                                    posterizeLevels = posterizeLevels,
+                                    rotationDegrees = rotationDegrees,
+                                    scale = scale,
+                                    flipX = flipX,
+                                    flipY = flipY,
+                                    zIndex = zIndex,
+                                    locked = locked,
+                                    cropRect = cropRect,
+                                    showsOriginalResolution = showsOriginalResolution,
+                                ),
+                            )
+                        }
+                    }.also {
+                        require(data.available() == 0) { "Trailing bytes after PockRef image-state block" }
+                    }
+                }
+            }.getOrNull()
+            if (states != null) return states
+        }
+        return emptyList()
     }
 
     private fun tryReadEmbeddedImagesFallback(file: File, fileLen: Long): PockRefScene? {
@@ -1003,6 +1204,11 @@ class PurSceneCodec {
                         locked = locked,
                         cropRect = cropRect,
                         showsOriginalResolution = if (version >= 3) data.readBooleanByte() else false,
+                        posterizeLevels = if (version >= 4) {
+                            data.readIntLe().toSupportedPosterizeLevel()
+                        } else {
+                            null
+                        },
                     )
                 } else {
                     base
@@ -1081,6 +1287,11 @@ class PurSceneCodec {
                         locked = locked,
                         cropRect = cropRect,
                         showsOriginalResolution = if (version >= 3) raf.readBooleanByte() else false,
+                        posterizeLevels = if (version >= 4) {
+                            raf.readIntLe().toSupportedPosterizeLevel()
+                        } else {
+                            null
+                        },
                     )
                 } else {
                     base
@@ -1836,6 +2047,11 @@ class PurSceneCodec {
 
     private fun DataInputStream.readBooleanByte(): Boolean = readUnsignedByte() == 1
 
+    private fun Int.toSupportedPosterizeLevel(): Int? = when (this) {
+        2, 4, 8, 16 -> this
+        else -> null
+    }
+
     private fun RandomAccessFile.readStringUtf8(): String {
         val size = readIntLe()
         if (size < 0) {
@@ -1944,7 +2160,7 @@ class PurSceneCodec {
 
     companion object {
         private const val TAG = "PurSceneCodec"
-        private const val CUSTOM_SCENE_VERSION = 3
+        private const val CUSTOM_SCENE_VERSION = 4
         private const val HEADER_MIN_SIZE = 0x6C
         private const val EMBEDDED_IMAGE_FALLBACK_MAX_BYTES = 64L * 1024L * 1024L
         private const val DESKTOP_MARKUP_OVERLAY_MAX_SIDE = 4096f
@@ -1960,6 +2176,7 @@ class PurSceneCodec {
         private val MARKUP_MAGIC = byteArrayOf('M'.code.toByte(), 'R'.code.toByte(), 'K'.code.toByte(), '1'.code.toByte())
         private val SCENE_SETTINGS_MAGIC = byteArrayOf('S'.code.toByte(), 'E'.code.toByte(), 'T'.code.toByte(), '1'.code.toByte())
         private val ORIGINAL_RESOLUTION_MAGIC = byteArrayOf('H'.code.toByte(), 'D'.code.toByte(), '0'.code.toByte(), '1'.code.toByte())
+        private val IMAGE_STATE_MAGIC = byteArrayOf('I'.code.toByte(), 'M'.code.toByte(), 'S'.code.toByte(), '1'.code.toByte())
         private val LEGACY_IDENTITY_MATRIX = listOf(1.0, 0.0, 0.0, 1.0)
         // ASCII "PRCA" (PockRef ColorAdjust) in big-endian is
         // declared at file scope (above the class) so the top-level

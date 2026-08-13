@@ -53,6 +53,7 @@ class AutoSaveContentHashTest {
         assertHashChanges(scene, scene.copy(images = listOf(image.copy(displaySize = Size2D(300f, 150f)))))
         assertHashChanges(scene, scene.copy(images = listOf(image.copy(locked = true))))
         assertHashChanges(scene, scene.copy(images = listOf(image.copy(cropRect = CropRect(0.1f, 0.2f, 0.8f, 0.9f)))))
+        assertHashChanges(scene, scene.copy(images = listOf(image.copy(posterizeLevels = 2))))
     }
 
     private fun assertHashChanges(before: PockRefScene, after: PockRefScene) {

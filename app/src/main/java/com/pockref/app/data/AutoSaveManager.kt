@@ -139,7 +139,7 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
                     val output = contentResolver.openOutputStream(currentSceneUri, "wt")
                         ?: error("Unable to open output stream for $currentSceneUri")
                     output.use {
-                        codec.write(scene, it)
+                        codec.writePureRefCompatible(scene, it, appContext.cacheDir)
                     }
                     originalSaved = true
                     Log.d(TAG, "autoSave: wrote to original URI $currentSceneUri")

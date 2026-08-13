@@ -20,6 +20,8 @@ data class SceneImage(
     val center: Offset,
     val displaySize: Size2D,
     val colorAdjust: ColorAdjust = ColorAdjust(),
+    /** PockRef-only non-destructive posterize level: 2, 4, 8, or 16. */
+    val posterizeLevels: Int? = null,
     val rotationDegrees: Float = 0f,
     val scale: Float = 1f,
     val flipX: Boolean = false,
@@ -1653,7 +1655,7 @@ data class BatchOptimizeState(
 }
 
 fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
-    version = 3,
+    version = 4,
     name = sceneName,
     backgroundColor = backgroundColor,
     backgroundColorIsPersisted = true,

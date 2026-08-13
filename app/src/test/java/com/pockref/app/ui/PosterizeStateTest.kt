@@ -35,7 +35,7 @@ class PosterizeStateTest {
     }
 
     @Test
-    fun togglePosterizeLevel_repeatedClickClosesPreview() {
+    fun togglePosterizeLevel_repeatedClickClearsPersistedLevel() {
         val opened = PockRefUiState(
             images = listOf(imageA),
             selectedImageId = "a",
@@ -47,6 +47,8 @@ class PosterizeStateTest {
 
         assertEquals(2, enabled.posterizeLevels)
         assertEquals(null, disabled.posterizeLevels)
+        assertEquals(2, enabled.images.single().posterizeLevels)
+        assertEquals(null, disabled.images.single().posterizeLevels)
         assertTrue(disabled.posterizeControlsVisible)
     }
 
@@ -58,7 +60,10 @@ class PosterizeStateTest {
             selectedImageIds = setOf("a"),
         ).openPosterizeControls(setOf("a"))
 
-        assertEquals(8, state.togglePosterizeLevel(2).togglePosterizeLevel(8).posterizeLevels)
+        val result = state.togglePosterizeLevel(2).togglePosterizeLevel(8)
+
+        assertEquals(8, result.posterizeLevels)
+        assertEquals(8, result.images.single().posterizeLevels)
     }
 
     @Test
@@ -89,5 +94,21 @@ class PosterizeStateTest {
         assertFalse(result.posterizeControlsVisible)
         assertEquals(null, result.posterizeLevels)
         assertTrue(result.posterizeTargetImageIds.isEmpty())
+        assertEquals(4, result.posterizeLevelsFor("a"))
+    }
+
+    @Test
+    fun openPosterizeControls_restoresCommonPersistedLevel() {
+        val result = PockRefUiState(
+            images = listOf(
+                imageA.copy(posterizeLevels = 8),
+                imageB.copy(posterizeLevels = 8),
+            ),
+            selectedImageId = "a",
+            selectedImageIds = setOf("a", "b"),
+        ).openPosterizeControls(setOf("a", "b"))
+
+        assertTrue(result.posterizeControlsVisible)
+        assertEquals(8, result.posterizeLevels)
     }
 }

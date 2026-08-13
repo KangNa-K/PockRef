@@ -1042,7 +1042,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 try {
                     val bufferedOut = java.io.BufferedOutputStream(FileOutputStream(tempOutput), 256 * 1024)
                     bufferedOut.use { tempFileOutput ->
-                        mainVm.codec.write(scene, tempFileOutput)
+                        mainVm.codec.writePureRefCompatible(scene, tempFileOutput, cacheDir)
                     }
 
                     val t1 = System.nanoTime()

@@ -50,6 +50,109 @@ class PurSceneCodecCustomFormatTest {
     }
 
     @Test
+    fun customFormat_roundTripsPosterizeLevel() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-posterize", ".pur")
+        file.deleteOnExit()
+        val scene = PockRefScene(
+            images = listOf(
+                SceneImage(
+                    id = "posterized-image",
+                    name = "posterized.png",
+                    mimeType = "image/png",
+                    imageBytes = byteArrayOf(1, 2, 3),
+                    intrinsicWidth = 10,
+                    intrinsicHeight = 10,
+                    center = Offset.Zero,
+                    displaySize = Size2D(10f, 10f),
+                    posterizeLevels = 8,
+                ),
+            ),
+        )
+
+        file.outputStream().use { codec.write(scene, it) }
+
+        assertEquals(8, codec.readFromFile(file).images.single().posterizeLevels)
+    }
+
+    @Test
+    fun pureRefCompatibleWrite_roundTripsPockRefImageStateWithoutTransformExtensions() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-pureref-compatible", ".pur")
+        file.deleteOnExit()
+        val png = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL+XQAAAABJRU5ErkJggg==",
+        )
+        val crop = CropRect(0.1f, 0.2f, 0.9f, 0.8f)
+        val scene = PockRefScene(
+            name = "desktop-compatible-state",
+            images = listOf(
+                SceneImage(
+                    id = "front-uuid",
+                    name = "front.png",
+                    mimeType = "image/png",
+                    imageBytes = png,
+                    intrinsicWidth = 1,
+                    intrinsicHeight = 1,
+                    center = Offset(120f, -40f),
+                    displaySize = Size2D(80f, 60f),
+                    colorAdjust = com.pockref.app.model.ColorAdjust(
+                        brightness = 0.1f,
+                        contrast = -0.2f,
+                        saturation = -1f,
+                    ),
+                    posterizeLevels = 2,
+                    rotationDegrees = 15f,
+                    scale = 1.25f,
+                    flipX = true,
+                    zIndex = 9,
+                    locked = true,
+                    cropRect = crop,
+                    showsOriginalResolution = true,
+                ),
+                SceneImage(
+                    id = "back-uuid",
+                    name = "back.png",
+                    mimeType = "image/png",
+                    imageBytes = png,
+                    intrinsicWidth = 1,
+                    intrinsicHeight = 1,
+                    center = Offset(-50f, 30f),
+                    displaySize = Size2D(32f, 24f),
+                    posterizeLevels = 16,
+                    zIndex = 1,
+                ),
+            ),
+        )
+
+        file.outputStream().use { output ->
+            codec.writePureRefCompatible(scene, output, File("build/tmp"))
+        }
+
+        val written = file.readBytes()
+        assertEquals(8, ByteBuffer.wrap(written, 0, 4).order(ByteOrder.BIG_ENDIAN).int)
+        assertArrayEquals("1.10".toByteArray(Charsets.UTF_16BE), written.copyOfRange(4, 12))
+        assertEquals(-1, written.indexOfPattern(byteArrayOf('P'.code.toByte(), 'R'.code.toByte(), 'C'.code.toByte(), 'A'.code.toByte())))
+
+        val restored = codec.readFromFile(file).images.associateBy { it.name }
+        val front = restored.getValue("front.png")
+        val back = restored.getValue("back.png")
+        assertEquals(2, front.posterizeLevels)
+        assertEquals(16, back.posterizeLevels)
+        assertEquals(-1f, front.colorAdjust.saturation, 0.0001f)
+        assertEquals(120f, front.center.x, 0.0001f)
+        assertEquals(-40f, front.center.y, 0.0001f)
+        assertEquals(80f, front.displaySize.width, 0.0001f)
+        assertEquals(60f, front.displaySize.height, 0.0001f)
+        assertEquals(15f, front.rotationDegrees, 0.0001f)
+        assertEquals(1.25f, front.scale, 0.0001f)
+        assertTrue(front.flipX)
+        assertTrue(front.locked)
+        assertTrue(front.showsOriginalResolution)
+        assertEquals(crop, front.cropRect)
+    }
+
+    @Test
     fun customFormat_restoresSceneDefaults() {
         val codec = PurSceneCodec()
         val file = Files.createTempFile("pockref-scene-defaults", ".pur").toFile()

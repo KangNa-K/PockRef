@@ -38,6 +38,41 @@ internal data class PosterizeCacheKey(
     val saturationBits: Int,
 )
 
+internal data class PosterizeSourceMapping(
+    val scaleX: Float,
+    val scaleY: Float,
+    val translateX: Float,
+    val translateY: Float,
+)
+
+/**
+ * Return the forward source-to-destination transform used by BitmapShader's
+ * local matrix. Skia inverts a shader local matrix while sampling, so passing
+ * the inverse transform here would make a full image sample only a cropped
+ * portion of the source bitmap.
+ */
+internal fun posterizeSourceToCanvasMapping(
+    sourceLeft: Float,
+    sourceTop: Float,
+    sourceWidth: Float,
+    sourceHeight: Float,
+    destinationLeft: Float,
+    destinationTop: Float,
+    destinationWidth: Float,
+    destinationHeight: Float,
+): PosterizeSourceMapping {
+    require(sourceWidth > 0f && sourceHeight > 0f)
+    require(destinationWidth > 0f && destinationHeight > 0f)
+    val scaleX = destinationWidth / sourceWidth
+    val scaleY = destinationHeight / sourceHeight
+    return PosterizeSourceMapping(
+        scaleX = scaleX,
+        scaleY = scaleY,
+        translateX = destinationLeft - sourceLeft * scaleX,
+        translateY = destinationTop - sourceTop * scaleY,
+    )
+}
+
 internal fun posterizeSourceToken(image: SceneImage): String =
     if (image.imageBytes.isNotEmpty()) {
         "inline:${image.imageBytes.contentHashCode()}:${image.imageBytes.size}:${image.intrinsicWidth}x${image.intrinsicHeight}"
@@ -301,14 +336,15 @@ internal object PosterizeRenderer {
         destinationRect: RectF,
         request: PosterizeRequest,
     ) {
-        // The local matrix maps canvas coordinates in destinationRect back to
-        // source coordinates in sourceRect without cropping or mutating source.
+        // Skia inverts a Shader local matrix before sampling. Pass the forward
+        // source-to-destination transform here; passing destination-to-source
+        // would invert it again and crop the visible image.
         val bitmapShader = BitmapShader(
             source,
             Shader.TileMode.CLAMP,
             Shader.TileMode.CLAMP,
         ).apply {
-            setLocalMatrix(sourceToBitmapMatrix(sourceRect, destinationRect))
+            setLocalMatrix(sourceToCanvasMatrix(sourceRect, destinationRect))
         }
         val shader = RuntimeShader(AGSL).apply {
             setInputShader("inputImage", bitmapShader)
@@ -332,15 +368,22 @@ internal object PosterizeRenderer {
         canvas.drawRect(destinationRect, paint)
     }
 
-    private fun sourceToBitmapMatrix(
+    private fun sourceToCanvasMatrix(
         sourceRect: Rect,
         destinationRect: RectF,
     ): Matrix = Matrix().apply {
-        setRectToRect(
-            destinationRect,
-            RectF(sourceRect),
-            Matrix.ScaleToFit.FILL,
+        val mapping = posterizeSourceToCanvasMapping(
+            sourceLeft = sourceRect.left.toFloat(),
+            sourceTop = sourceRect.top.toFloat(),
+            sourceWidth = sourceRect.width().toFloat(),
+            sourceHeight = sourceRect.height().toFloat(),
+            destinationLeft = destinationRect.left,
+            destinationTop = destinationRect.top,
+            destinationWidth = destinationRect.width(),
+            destinationHeight = destinationRect.height(),
         )
+        setScale(mapping.scaleX, mapping.scaleY)
+        postTranslate(mapping.translateX, mapping.translateY)
     }
 }
 

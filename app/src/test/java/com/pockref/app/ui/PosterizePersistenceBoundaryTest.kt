@@ -8,6 +8,7 @@ import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import com.pockref.app.model.toScene
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -30,24 +31,29 @@ class PosterizePersistenceBoundaryTest {
     )
 
     @Test
-    fun posterizePreviewFields_areExcludedFromSceneSerialization() {
+    fun posterizeLevelIsPersisted_butControlsAreExcludedFromSceneSerialization() {
         val previewState = ordinaryState
             .openPosterizeControls(setOf(image.id))
             .togglePosterizeLevel(2)
 
         assertTrue(previewState.posterizeControlsVisible)
         assertEquals(2, previewState.posterizeLevels)
-        assertEquals(ordinaryState.toScene(), previewState.toScene())
+        assertEquals(2, previewState.toScene().images.single().posterizeLevels)
+        assertNotEquals(ordinaryState.toScene(), previewState.toScene())
+        assertEquals(
+            previewState.toScene(),
+            previewState.clearPosterizePreview().toScene(),
+        )
     }
 
     @Test
-    fun posterizePreviewFields_doNotChangeAutoSaveHash() {
+    fun posterizeLevelChangesAutoSaveHash() {
         val previewState = ordinaryState
             .openPosterizeControls(setOf(image.id))
             .togglePosterizeLevel(16)
         val codec = PurSceneCodec()
 
-        assertEquals(
+        assertNotEquals(
             AutoSaveHash.compute(codec, ordinaryState.toScene()),
             AutoSaveHash.compute(codec, previewState.toScene()),
         )

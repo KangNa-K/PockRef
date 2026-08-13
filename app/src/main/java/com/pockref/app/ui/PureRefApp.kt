@@ -103,7 +103,6 @@ import androidx.compose.material.icons.rounded.Flip
 import androidx.compose.material.icons.rounded.FlipToBack
 import androidx.compose.material.icons.rounded.FlipToFront
 import androidx.compose.material.icons.rounded.Image
-import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Layers
@@ -163,8 +162,6 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
@@ -312,8 +309,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
@@ -340,7 +335,6 @@ import com.pockref.app.ui.theme.Dimens
 import com.pockref.app.model.CropAspect
 import com.pockref.app.model.CropRect
 import com.pockref.app.model.PockRefUiState
-import com.pockref.app.model.RecentSceneEntry
 import com.pockref.app.ui.logs.LogExportFab
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.SceneNaming
@@ -746,68 +740,6 @@ fun PockRefApp(
     val editingSceneValue = remember { mutableStateOf(TextFieldValue("")) }
     val titleFocusRequester = remember { FocusRequester() }
     val editSessionStartMs = remember { mutableLongStateOf(0L) }
-    // V6: top toolbar's recent-files menu state. Lifted out
-    // of [TopToolbar] for the same reason as
-    // [isEditingSceneName] — the parent Box renders a
-    // tap-outside scrim that dismisses the menu. The menu is
-    // now an inline child of the toolbar's chrome Surface
-    // (no longer a separate Popup window), so we have to
-    // dismiss it manually on outside taps; the scrim lives
-    // at this scope because it needs to cover the rest of
-    // the screen, which the toolbar's align(TopStart) can't.
-    var menuExpanded by remember { mutableStateOf(false) }
-    // V_NOW: window-blur snapshot + restore for the
-    // recent-files dropdown. [menuExpanded] is a local
-    // Composable state (not in PockRefUiState — there's
-    // no other reader and no reason to push it to the VM
-    // just for this), so the blur / focus reducers can't
-    // reach it directly. The blur reducer DOES flip
-    // [PockRefUiState.topToolbarExpanded] to false, which
-    // hides the toolbar Surface and the dropdown along
-    // with it — but the dropdown's `true` state would
-    // leak through to the next time the user re-expands
-    // the toolbar (because the local state is persisted
-    // in the remember).
-    //
-    // V_NOW (focus-restore follow-up): the user spec is
-    // "窗口重新聚焦后,菜单栏应恢复为失焦前用户设定的
-    // 状态" — so on focus we must RESTORE [menuExpanded]
-    // to its pre-blur value, not just leave it closed.
-    // We use a second [remember] [savedMenuExpanded] to
-    // hold the value-at-time-of-blur, then the same
-    // LaunchedEffect handles both directions of the
-    // [state.menuBarsCollapsed] transition:
-    //
-    //   false→true (blur):  save [menuExpanded] to
-    //                       [savedMenuExpanded],
-    //                       force [menuExpanded]=false
-    //   true →false (focus): restore [menuExpanded] from
-    //                        [savedMenuExpanded] (could
-    //                        be true or false depending
-    //                        on what the user had open)
-    //
-    // Initial composition: [state.menuBarsCollapsed] is
-    // false → the effect runs once with the "focus" branch
-    // and copies [savedMenuExpanded] (=false) to
-    // [menuExpanded] (=false) — a no-op.
-    //
-    // Double-blur guard: a second blur while
-    // [state.menuBarsCollapsed] is already true won't
-    // re-fire this effect (LaunchedEffect keys on the
-    // state value, and a true→true transition doesn't
-    // re-launch), so [savedMenuExpanded] preserves its
-    // original first-blur value. On focus restore we
-    // pull the pre-first-blur value, not a stale
-    // post-blur value.
-    var savedMenuExpanded by remember { mutableStateOf(false) }
-    LaunchedEffect(state.menuBarsCollapsed) {
-        if (state.menuBarsCollapsed) {
-            savedMenuExpanded = menuExpanded
-            menuExpanded = false
-        } else {
-            menuExpanded = savedMenuExpanded
-        }
-    }
     // Back-press handling.
     //
     // V6: dismissed the recent-files menu (replaces the
@@ -820,22 +752,18 @@ fun PockRefApp(
     // the system back button (or the gesture / a hardware
     // back key) follows this priority chain:
     //
-    //   1. The recent-files menu is open → close the menu
-    //      first (it's a transient overlay on top of the
-    //      toolbar; closing the scene underneath would be
-    //      surprising).
-    //   2. The unsaved-changes dialog is showing → the
+    //   1. The unsaved-changes dialog is showing → the
     //      dialog's own [AlertDialog.onDismissRequest]
     //      handles back (fires [PockRefAction.UnsavedDialogCancel]).
     //      We disable our handler in that branch so we don't
     //      double-fire CloseScene on top of the dialog.
-    //   3. A scene is "open" (has images OR can direct-save
+    //   2. A scene is "open" (has images OR can direct-save
     //      to a saved file) → fire [PockRefAction.CloseScene].
     //      The reducer's [onCloseScene] shows the 3-option
     //      "保存 / 不保存 / 取消" dialog when there are
     //      unsaved changes, so the user's "优先关闭文件
     //      而非整个软件" requirement is satisfied.
-    //   4. None of the above (empty / main screen) → the
+    //   3. None of the above (empty / main screen) → the
     //      handler is disabled, so back falls through to the
     //      system and the Activity finishes (Android: returns
     //      to the home screen, satisfying "无文件打开状态
@@ -847,8 +775,8 @@ fun PockRefApp(
     // when the start page is in multi-select mode, the
     // system back button exits multi-select first. This
     // is a new top-priority branch in the back-press
-    // chain that ranks ABOVE [menuExpanded] and
-    // [sceneIsOpen] — pressing back while in multi-select
+    // chain that ranks ABOVE [sceneIsOpen] — pressing back
+    // while in multi-select
     // is the standard Android "I'm done with this
     // ephemeral mode" gesture, and routing it to
     // [CloseScene] (which only makes sense for an open
@@ -870,7 +798,6 @@ fun PockRefApp(
     BackHandler(
         enabled = state.pendingMarkupTextPosition != null ||
             state.markupModeActive ||
-            menuExpanded ||
             state.importSourceMenuOpen ||
             recentMultiSelectActive ||
             state.bulkDeleteConfirmOpen ||
@@ -888,7 +815,6 @@ fun PockRefApp(
                 onAction(PockRefAction.ExitRecentMultiSelect)
             state.importSourceMenuOpen ->
                 onAction(PockRefAction.SetImportSourceMenuOpen(false))
-            menuExpanded -> menuExpanded = false
             blankCanvasActive -> onAction(PockRefAction.CloseBlankCanvas)
             else -> onAction(PockRefAction.CloseScene)
         }
@@ -1508,11 +1434,10 @@ fun PockRefApp(
                 onImport = onImport,
                 onOpenScene = onOpenScene,
                 onSaveScene = onSaveScene,
-                // [BottomRightActionPanel] is now rendered as a
+                // [BottomRightActionPanel] is rendered as a
                 // separate sibling of this [BoxWithConstraints]
-                // (below), so the chrome-mutex dismiss callback is
-                // wired there directly. [CanvasPanel] no longer
-                // needs the [onMenuDismiss] param.
+                // below, so [CanvasPanel] stays focused on canvas
+                // content and gestures.
                  imageLazyLoader = imageLazyLoader,
                 imageDecoder = imageDecoder,
                  gifPlaybackSources = gifPlaybackSources,
@@ -1645,54 +1570,13 @@ fun PockRefApp(
                         // [exportCanvasLauncher] above).
                         onAction(PockRefAction.ExportCanvas)
                     },
-                    // V_NOW: chrome-mutex — any click in the
-                    // right-bottom panel (FAB tap / long-press
-                    // or any of the 4 list items) collapses
-                    // the top toolbar's 3-dots menu so it
-                    // stops competing for visual room with
-                    // whatever the user is now tapping.
-                    // Idempotent setter (already-collapsed is
-                    // a no-op).
-                    onMenuDismiss = { menuExpanded = false },
-                )
-            }
-            // V6: tap-outside scrim for the top toolbar's
-            // recent-files menu. Same pattern as the
-            // scene-name editor scrim above — the menu is
-            // now an inline Surface child (no longer a
-            // separate Popup window), so we dismiss it
-            // manually on taps below the toolbar. Drawn
-            // BEFORE [TopToolbar] below so the toolbar
-            // sibling renders on top in the Box z-order.
-            // Without that ordering, the scrim would sit
-            // on top of the title and the user's tap on
-            // "PockRef Import" would never reach the
-            // chevron's clickable.
-            if (menuExpanded) {
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .clickable(
-                            interactionSource = remember {
-                                androidx.compose.foundation.interaction.MutableInteractionSource()
-                            },
-                            indication = null,
-                        ) {
-                            menuExpanded = false
-                        },
                 )
             }
             // V_NOW (2026-06-10 unified popup parity):
-            // tap-outside scrim for the import popup
-            // — mirrors the recent-files scrim above
-            // (same `matchParentSize` + `clickable
-            // (indication=null)` pattern, same
-            // z-order before [TopToolbar] so the
-            // toolbar sibling renders on top). The
-            // import popup is a sibling
+            // tap-outside scrim for the import popup.
+            // The popup is an inline
             // [AnimatedVisibility] inside the toolbar
-            // Surface (just like the recent-files
-            // popup), so it has no built-in
+            // Surface, so it has no built-in
             // [Popup.onDismissRequest] — the scrim is
             // the only way to dismiss it via tap-
             // outside. The dispatch goes through
@@ -1809,35 +1693,10 @@ fun PockRefApp(
                     onAction(action)
                     onAction(PockRefAction.DismissBottomRightPanel)
                 },
-                isEditingSceneName = isEditingSceneName,
-                editingSceneValueVar = editingSceneValue,
-                titleFocusRequester = titleFocusRequester,
-                editSessionStartMsVar = editSessionStartMs,
-                onEditModeChanged = { editing, value ->
-                    isEditingSceneName = editing
-                    editingSceneValue.value = value
-                },
-                onSceneNameCommitted = { newName ->
-                    isEditingSceneName = false
-                    if (newName.isNotBlank() && newName != state.sceneName) {
-                        onAction(PockRefAction.ConfirmRenameScene(newName))
-                    }
-                },
-                onEditDismiss = dismissSceneNameEdit,
-                // V6: menu state hoisted so the parent
-                // scrim can dismiss it. The toolbar itself
-                // only opens/closes the menu and never owns
-                // the state.
-                menuExpanded = menuExpanded,
-                onMenuExpandedChange = { menuExpanded = it },
                 // V_NOW (2026-06-10 unified popup parity):
                 // import popup state hoisted to [PockRefApp]
-                // mirroring the recent-files popup's
-                // [menuExpanded] / [onMenuExpandedChange]
                 // pattern. Drives (a) the parent scrim
-                // tap-outside dismiss, (b) the chrome-mutex
-                // (opening one popup closes the other) at
-                // the [TopToolbar] call site, and (c) the
+                // tap-outside dismiss and (b) the
                 // [ToolbarIconButton.active] highlight on
                 // the import button itself. State is sourced
                 // from [PockRefUiState.importSourceMenuOpen]
@@ -1884,9 +1743,6 @@ fun PockRefApp(
                 onPickFiles = onImport,
                 onOpenScene = onOpenScene,
                 onEnterFloatingWindow = onEnterFloatingWindow,
-                onChooseDefaultSaveDirectory = {
-                    saveDirectoryPickerLauncher.launch(selectedSaveTreeUri)
-                },
                 showFloatingWindowButton = showFloatingWindowButton,
                 onTakePhoto = {
                     try {
@@ -1959,6 +1815,15 @@ fun PockRefApp(
                     ),
             )
             }
+            SettingsPanel(
+                open = state.settingsSheetOpen,
+                onDismiss = { onAction(PockRefAction.SetSettingsSheetOpen(false)) },
+                state = state,
+                onAction = onAction,
+                onChooseDefaultSaveDirectory = {
+                    saveDirectoryPickerLauncher.launch(selectedSaveTreeUri)
+                },
+            )
 
             // V_NOW (2026-06-08 "global image lock" feature):
             // top-right lock toggle. Anchored at
@@ -2865,6 +2730,165 @@ fun PockRefApp(
     }
 }
 
+@Composable
+private fun TopToolbar(
+    state: PockRefUiState,
+    onAction: (PockRefAction) -> Unit,
+    importSourceMenuOpen: Boolean,
+    onImportSourceMenuOpenChange: (Boolean) -> Unit,
+    onPickGallery: () -> Unit,
+    onPickClipboard: () -> Unit,
+    onPickFiles: () -> Unit,
+    onOpenScene: () -> Unit,
+    onEnterFloatingWindow: () -> Unit,
+    showFloatingWindowButton: Boolean,
+    onTakePhoto: () -> Unit,
+    parentMaxWidth: Dp = Dp.Infinity,
+    modifier: Modifier = Modifier,
+) {
+    val toolbarModifier = if (parentMaxWidth != Dp.Infinity && parentMaxWidth > 0.dp) {
+        modifier.widthIn(
+            max = (parentMaxWidth - Dimens.CornerInset * 2).coerceAtLeast(0.dp),
+        )
+    } else {
+        modifier
+    }
+
+    Surface(
+        modifier = toolbarModifier,
+        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
+        tonalElevation = 0.dp,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+        ),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .height(Dimens.TopToolbarHeight)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                ToolbarIconButton(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "关闭",
+                    enabled = state.isCanvasOpen,
+                    onClick = { onAction(PockRefAction.CloseScene) },
+                )
+                ToolbarIconButton(
+                    imageVector = Icons.Rounded.Add,
+                    contentDescription = "导入图像",
+                    active = importSourceMenuOpen,
+                    onClick = {
+                        onImportSourceMenuOpenChange(!importSourceMenuOpen)
+                    },
+                )
+                HighFreqActions(
+                    canUndo = state.canUndo,
+                    canRedo = state.canRedo,
+                    onAction = onAction,
+                )
+                if (showFloatingWindowButton) {
+                    ToolbarIconButton(
+                        imageVector = Icons.Rounded.PictureInPictureAlt,
+                        contentDescription = "悬浮窗",
+                        onClick = onEnterFloatingWindow,
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = importSourceMenuOpen,
+                enter = expandVertically(
+                    animationSpec = tween(200, easing = FastOutSlowInEasing),
+                ),
+                exit = shrinkVertically(
+                    animationSpec = tween(200, easing = FastOutSlowInEasing),
+                ),
+            ) {
+                Column(
+                    modifier = Modifier.width(
+                        if (showFloatingWindowButton) 224.dp else 180.dp,
+                    ),
+                ) {
+                    ImportSourceMenuItem(
+                        icon = Icons.Rounded.PhotoLibrary,
+                        label = "从相册选择",
+                    ) {
+                        onImportSourceMenuOpenChange(false)
+                        onPickGallery()
+                    }
+                    ImportSourceMenuItem(
+                        icon = Icons.Rounded.ContentPaste,
+                        label = "从剪贴板粘贴",
+                    ) {
+                        onImportSourceMenuOpenChange(false)
+                        onPickClipboard()
+                    }
+                    ImportSourceMenuItem(
+                        icon = Icons.Rounded.FileOpen,
+                        label = "载入图片",
+                    ) {
+                        onImportSourceMenuOpenChange(false)
+                        onPickFiles()
+                    }
+                    ImportSourceMenuItem(
+                        icon = Icons.Rounded.FileOpen,
+                        label = "打开文件",
+                    ) {
+                        onImportSourceMenuOpenChange(false)
+                        onOpenScene()
+                    }
+                    ImportSourceMenuItem(
+                        icon = Icons.Rounded.PhotoCamera,
+                        label = "拍照",
+                    ) {
+                        onImportSourceMenuOpenChange(false)
+                        onTakePhoto()
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportSourceMenuItem(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
 /**
  * V_NOW (user feedback "P2-C1 SelectionFloatingToolbar 改成
  * bottom sheet"): the previous SelectionFloatingToolbar
@@ -2994,13 +3018,11 @@ private fun SelectionBottomSheet(
                         )
                     }
                 }
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = "选择模式",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.width(8.dp))
+                if (posterizeControlsVisible) {
+                    Spacer(Modifier.width(8.dp))
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
                 SheetModeToggle(
                     singleSelected = !state.multiSelectMode,
                     boxSelectMode = state.boxSelectMode,
@@ -3596,55 +3618,21 @@ private fun SheetActionButton(
     onMulti: () -> Unit,
     onBox: () -> Unit,
 ) {
-    // V_NOW (2026-06-08, M3 motion): the previous toggle
-    // had 3 chips with a static background-color flip on
-    // selection — no indicator, no transition. The user
-    // spec ("M3 流畅的过渡动效") wants a moving indicator
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(3.dp),
-    ) {
-        SheetModeChip(
-            text = "单选",
-            selected = singleSelected && !boxSelectMode,
-            onClick = { if (!singleSelected || boxSelectMode) onSingle() },
-        )
-        SheetModeChip(
-            text = "多选",
-            selected = !singleSelected && !boxSelectMode,
-            onClick = { if (singleSelected || boxSelectMode) onMulti() },
-        )
-        SheetModeChip(
-            text = "框选",
-            selected = boxSelectMode,
-            onClick = { if (!boxSelectMode) onBox() },
-        )
-    }
-}
-
-@Composable
-private fun SheetModeChip(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    val bg = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent
-    val fg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 5.dp),
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
-            color = fg,
-        )
-    }
+    CompactSegmentedControl(
+        options = listOf("单选", "多选", "框选"),
+        selectedIndex = when {
+            boxSelectMode -> 2
+            singleSelected -> 0
+            else -> 1
+        },
+        onOptionClick = { index ->
+            when (index) {
+                0 -> if (!singleSelected || boxSelectMode) onSingle()
+                1 -> if (singleSelected || boxSelectMode) onMulti()
+                2 -> if (!boxSelectMode) onBox()
+            }
+        },
+    )
 }
 
 
@@ -6174,1219 +6162,6 @@ private fun AutoShrinkTitle(
             // of an awkwardly small font.
             overflow = TextOverflow.Ellipsis,
         )
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun TopToolbar(
-    state: PockRefUiState,
-    onAction: (PockRefAction) -> Unit,
-    isEditingSceneName: Boolean,
-    editingSceneValueVar: androidx.compose.runtime.MutableState<TextFieldValue>,
-    titleFocusRequester: FocusRequester,
-    editSessionStartMsVar: androidx.compose.runtime.MutableLongState,
-    onEditModeChanged: (Boolean, TextFieldValue) -> Unit,
-    onSceneNameCommitted: (String) -> Unit,
-    onEditDismiss: () -> Unit,
-    // V6: menu state hoisted to [PockRefApp] so the parent
-    // Box can render a tap-outside scrim. The toolbar only
-    // owns the open/close transition (the [AnimatedVisibility]
-    // for the popup content); the actual state lives in
-    // [PockRefApp.menuExpanded] and is mutated via
-    // [onMenuExpandedChange].
-    menuExpanded: Boolean,
-    onMenuExpandedChange: (Boolean) -> Unit,
-    // V_NOW (2026-06-10 unified popup parity user spec
-    // "import popup 跟最近文件 popup 样式、位置、动画一致"):
-    // the [+] import button now opens a transient
-    // [AnimatedVisibility] in the toolbar Surface itself
-    // (sibling of the recent-files popup, sharing the
-    // same Column), with the same expandVertically /
-    // shrinkVertically tween 200ms animation. To
-    // match the recent-files popup's chrome-mutex contract
-    // (tap-outside scrim, dismiss via parent), this state
-    // is hoisted to [PockRefApp] just like
-    // [menuExpanded] / [onMenuExpandedChange] — the
-    // scrim for tap-outside lives at the parent call
-    // site, and the parent also wires the action dispatch
-    // (e.g. [PockRefAction.SetImportSourceMenuOpen]) so
-    // the visibility survives recomposition consistently.
-    importSourceMenuOpen: Boolean,
-    onImportSourceMenuOpenChange: (Boolean) -> Unit,
-    // V_NOW (2026-06-10 #2 import popup user spec
-    // "顶栏 import 按钮 tap 后弹 3 选项 popup:
-    // 相册 / 剪贴板 / 文件"): the [+] import button
-    // now opens a transient in-toolbar popup with
-    // three items — gallery, clipboard, files. The
-    // popup itself lives in [TopToolbar] (so it
-    // anchors to the toolbar's Column and shares
-    // the Surface), but the launchers themselves
-    // live in [PockRefApp] (they need the
-    // [rememberLauncherForActivityResult] handles +
-    // LocalContext for ClipboardManager). The toolbar
-    // just receives three no-arg callbacks wired to
-    // those launchers at the [PockRefApp] call site.
-    onPickGallery: () -> Unit = {},
-    onPickClipboard: () -> Unit = {},
-    onPickFiles: () -> Unit = {},
-    onOpenScene: () -> Unit = {},
-    onEnterFloatingWindow: () -> Unit = {},
-    onChooseDefaultSaveDirectory: () -> Unit = {},
-    showFloatingWindowButton: Boolean = true,
-    onTakePhoto: () -> Unit = {},
-    // V_NOW: parent container's max width, captured by the
-    // [BoxWithConstraints] wrapper at the [PockRefApp] call
-    // site. The toolbar uses this to cap its Surface width
-    // so its right edge can never sit closer than
-    // [Dimens.CornerInset] (24dp) from the window's right
-    // edge — even if the title + action row would otherwise
-    // force the toolbar to grow past the safe area or wrap
-    // to a second line. Default [Dp.Infinity] means "no cap"
-    // (preview / standalone tests).
-    parentMaxWidth: Dp = Dp.Infinity,
-    modifier: Modifier = Modifier,
-) {
-    // V6: [menuExpanded] is now a parameter (hoisted to
-    // [PockRefApp]) so the parent can render a tap-outside
-    // scrim. The toolbar's chrome Surface itself no longer
-    // needs popup-position bookkeeping ([toolbarSizePx],
-    // [toolbarBoundsInWindow], [titleBarBounds],
-    // [titleTextLeftPx], [titleTextWidthPx] all removed —
-    // they only existed to anchor the now-deleted Popup to
-    // the right pixel).
-    // V_NOW: [moreExpanded] (3-dots MoreMenuButton 的 state)
-    // 已下线 — 整个 MoreMenuButton 删除,顶栏不再有
-    // "更多" 入口(主题切换 + 导入 pur 都下线)。顶栏 sub-panel
-    // 现在只有 [menuExpanded] (最近文件下拉) 和
-    // [settingsSheetOpen] (gear → settings 面板)。
-    // V_NOW (user bug report — "top bar doesn't auto-collapse
-    // even after 3s"): the old [isInteracting] boolean-based
-    // design had the auto-collapse timer re-launching on
-    // every Enter/Exit hover event. S Pen crossing the
-    // toolbar boundary (extremely common while drawing on
-    // a tablet canvas) fired Enter (isInteracting = true,
-    // LaunchedEffect re-launched → in-flight 3s delay
-    // cancelled) then Exit (isInteracting = false,
-    // LaunchedEffect re-launched → 3s delay restarted from
-    // 0). As long as the user kept crossing the toolbar
-    // boundary every <3s — exactly the natural rhythm of
-    // drawing — the timer never accumulated, and the
-    // toolbar stayed open until they left the canvas idle
-    // for >3s of continuous no-crossing. Most users hit
-    // this bug at least once per session.
-    //
-    // New design: track the wall-clock timestamp of the
-    // last REAL interaction (Press / Move-with-pressed /
-    // drag-out Exit-with-pressed / Release-no-pressed —
-    // NOT Enter / not Exit-with-no-pressed, which is the
-    // "stylus just flew over the toolbar" case). The
-    // LaunchedEffect polls this timestamp instead of being
-    // re-launched on it, so hover noise can't keep
-    // resetting the countdown.
-    var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    // V7 (re-applied): live width of the toolbar Row,
-    // captured via [onSizeChanged]. The popup Column
-    // below reads this and sets its own width to match —
-    // so the popup tracks the toolbar's current "displayed
-    // width" instead of filling the Surface. When the
-    // toolbar is collapsed (title only) the popup is
-    // narrow; when expanded (title + action icons) the
-    // popup widens. Starts at 0 because the Row has not
-    // been laid out yet on the first composition; the
-    // very next layout pass writes the real value (the
-    // toolbar is always visible, so this happens before
-    // the user can open the menu).
-    var toolbarRowWidth by remember { mutableStateOf(0) }
-    // V_NOW (2026-06-10 unified popup parity): the import
-    // popup's visibility is now hoisted to [PockRefApp]
-    // (received as [importSourceMenuOpen] / mutated via
-    // [onImportSourceMenuOpenChange]) — the same pattern
-    // as [menuExpanded]. This lets the parent render a
-    // tap-outside scrim for the import popup, mirroring
-    // the recent-files scrim, and keeps the chrome-mutex
-    // contract (opening one popup closes the other)
-    // expressible at the call site in [PockRefApp]. The
-    // old local-var design only worked with
-    // [DropdownMenu]'s built-in onDismissRequest (a
-    // separate Popup window), but the unified in-Surface
-    // popup has no built-in dismiss — only the
-    // item-tap + chrome-mutex + scrim paths.
-
-    // V_NOW: SoftwareKeyboardController for explicit IM show
-    // when entering the title's rename mode. Compose's TextField
-    // usually pops the keyboard on focus, but on the SM-X810
-    // (Samsung fork) the auto-show is suppressed under certain
-    // input-method states — having the handle lets us force
-    // `show()` after `requestFocus()` in the LaunchedEffect
-    // below.
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    val hasOpenSubPanel = menuExpanded || state.settingsSheetOpen
-    // V_NOW (2026-06-10 user request "禁用顶栏的自动收起功能"):
-    // The previous design had a 3s inactivity timer that auto-
-    // collapsed the top toolbar after the user stopped
-    // interacting with it. The user has explicitly disabled
-    // that behavior — the top toolbar must stay expanded and
-    // visible for the entire app session. We replace the
-    // `while (true) { delay(…) }` auto-collapse loop with a
-    // one-shot guard that flips
-    // [PockRefUiState.topToolbarExpanded] back to true if
-    // anything else (blur-restore, an old reducer call) set
-    // it to false. The effect's key is just `hasOpenSubPanel`
-    // so it doesn't re-launch on every interaction event.
-    LaunchedEffect(hasOpenSubPanel) {
-        if (!state.topToolbarExpanded) {
-            onAction(PockRefAction.SetTopToolbarExpanded(true))
-        }
-    }
-
-    // V_NOW (user request): when the recent-files menu is
-    // open and the user has been idle for a while, auto-
-    // close the menu. Without this, opening the chevron to
-    // peek at the list (then not picking anything) leaves
-    // the popup lingering on top of the canvas until the
-    // user manually taps a row or tap-outside — visually
-    // noisy and blocks the top-toolbar auto-collapse below
-    // (which sees [hasOpenSubPanel = true] and waits
-    // forever).
-    //
-    // Reset semantics: shares the same [lastInteractionMs]
-    // state the top-toolbar 3s auto-collapse reads from.
-    // The user scrolling through a long list keeps
-    // [lastInteractionMs] continuously fresh (Press +
-    // Move-with-pressed keep updating it) and the popup
-    // stays open for as long as they hold and move. The
-    // 5s timer only starts ticking after the user
-    // releases AND the menu is still open. Matches the
-    // top-toolbar's 3s collapse by feeling (similar order
-    // of magnitude) but gives the user a bit more time
-    // to scan a longer list of recent scenes on a
-    // tablet-sized screen.
-    //
-    // The polling loop reads [lastInteractionMs] via
-    // snapshot, so hover noise that doesn't touch the
-    // timestamp can't keep resetting the timer (same
-    // fix as the 3s auto-collapse above).
-    LaunchedEffect(menuExpanded) {
-        if (menuExpanded) {
-            while (true) {
-                val elapsed = System.currentTimeMillis() - lastInteractionMs
-                if (elapsed >= 5000L) {
-                    onMenuExpandedChange(false)
-                    break
-                }
-                val waitMs = (5000L - elapsed).coerceIn(100L, 1000L)
-                delay(waitMs)
-            }
-        }
-    }
-
-    // When the title enters edit mode, focus the text field and
-    // request the soft keyboard. Triggered on the [isEditingSceneName]
-    // edge: re-arms every time the user re-enters edit mode.
-    // [editSessionStartMs] is the wall-clock at which the latest
-    // edit session began; the focus-loss commit path ignores
-    // any focus loss within the first 200ms of the session,
-    // because Compose's focus system has a brief settling
-    // period after the TextField is first composed where the
-    // focus state can flicker false→true→false. Without the
-    // grace window, the TextField pops up for one frame and
-    // then disappears as the focus-loss callback fires
-    // synchronously with the initial focus request.
-    LaunchedEffect(isEditingSceneName) {
-        if (isEditingSceneName) {
-            editSessionStartMsVar.longValue = System.currentTimeMillis()
-            // V_NOW (user bug report): 长按顶栏标题进入重命名后,软键盘
-            // 不会自动弹出。`requestFocus()` 立即调用时 OutlinedTextField
-            // 的焦点 modifier 可能还没完全挂上(在 `if/else` 分支切换
-            // 同一帧内刚刚被首次 compose),焦点请求会被静默丢弃,IM 也
-            // 就收不到 `showSoftInput` 信号。
-            //
-            // 修法:
-            //   1. 等一帧再 requestFocus — 等焦点 modifier attach 完毕。
-            //   2. 拿到 `LocalSoftwareKeyboardController` 显式 `show()` —
-            //      Compose 的 TextField 焦点逻辑在某些 Samsung fork
-            //      (SM-X810) 上不会自动弹 IM,需要显式触发。
-            withFrameNanos { }
-            titleFocusRequester.requestFocus()
-            keyboardController?.show()
-        }
-    }
-
-    Surface(
-        modifier = modifier
-            // V_NOW: cap the toolbar's max width so its right
-            // edge stays [Dimens.CornerInset] (24dp) from the
-            // window right at all times, even when the title +
-            // action row would otherwise overflow. Available
-            // width = parentMaxWidth - 2·CornerInset (one
-            // CornerInset for the left start-padding applied at
-            // the call site, one for the right margin the cap
-            // enforces here). When [parentMaxWidth] is
-            // [Dp.Infinity] (preview / standalone tests) the
-            // cap is skipped so the toolbar is free to size
-            // to its content.
-            .let { base ->
-                if (parentMaxWidth != Dp.Infinity && parentMaxWidth > 0.dp) {
-                    base.widthIn(max = (parentMaxWidth - Dimens.CornerInset * 2).coerceAtLeast(0.dp))
-                } else {
-                    base
-                }
-            }
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        // V_NOW: only REAL interactions refresh
-                        // [lastInteractionMs]. The hover-only
-                        // events (Enter with no buttons, Exit
-                        // with no buttons) used to flip
-                        // [isInteracting] which re-launched the
-                        // auto-collapse effect and cancelled
-                        // the in-flight delay. S Pen crossing
-                        // the toolbar boundary while drawing
-                        // on the canvas was the dominant
-                        // trigger. The new wall-clock polling
-                        // pattern survives those flickers
-                        // because the timer reads
-                        // [lastInteractionMs] instead of
-                        // re-launching on every change.
-                        when (event.type) {
-                            PointerEventType.Press -> {
-                                lastInteractionMs = System.currentTimeMillis()
-                            }
-                            PointerEventType.Move -> {
-                                if (event.changes.any { it.pressed }) {
-                                    lastInteractionMs = System.currentTimeMillis()
-                                }
-                            }
-                            PointerEventType.Exit -> {
-                                // Pointer left the toolbar
-                                // bounds. If they were
-                                // pressing (drag in progress,
-                                // e.g. dragging a chip from
-                                // the toolbar onto the
-                                // canvas), keep the countdown
-                                // paused so the toolbar
-                                // doesn't collapse mid-drag.
-                                // If they were NOT pressing
-                                // (just an unhover), this is
-                                // hover noise — ignore.
-                                if (event.changes.any { it.pressed }) {
-                                    lastInteractionMs = System.currentTimeMillis()
-                                }
-                            }
-                            else -> {
-                                // Release and any other
-                                // event. If all pointers are
-                                // up, the user has finished
-                                // their gesture — mark the
-                                // start of the idle countdown
-                                // so the polling loop sees a
-                                // fresh "now".
-                                if (!event.changes.any { it.pressed }) {
-                                    lastInteractionMs = System.currentTimeMillis()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // V6: removed the [onSizeChanged] / [onGloballyPositioned]
-            // pair that captured toolbar / title bounds for the
-            // (now-deleted) Popup anchor math. The popup is an
-            // inline Surface child instead of a separate window,
-            // so it doesn't need window-coordinate bounds — it
-            // just lays out below the toolbar Row inside the
-            // shared Surface.
-            ,
-        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-        // V_NOW (2026-06-09 chrome unify): tonalElevation 从
-        // ToolbarElevation (3.dp) 改成 0.dp. 之前 Surface 在
-        // 3dp elevation 下会自动叠 ~8% primary tint overlay
-        // (M3 surfaceTint),light theme 下渲染色偏浅青,跟用户
-        // 期望的"纯白 frosted"不符.
-        tonalElevation = 0.dp,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-        // V_NOW (2026-06-08): 1dp outlineVariant@40% border
-        // matching [BottomSheetPanel]'s chrome so the toolbar
-        // reads as the same family of "outlined chrome surface"
-        // as the bottom sheet. Without the border, the toolbar
-        // is a flat surface tint (ChromeSurfaceAlpha) on top of
-        // a canvas background that may be a light preset (e.g.
-        // #FFFFFF) — the toolbar then visually disappears into
-        // the canvas and the user can't tell where the
-        // interactive region starts and the canvas ends.
-        border = androidx.compose.foundation.BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant
-                .copy(alpha = 0.4f),
-        ),
-    ) {
-        // V6: wrap the toolbar Row + the (now-inline) popup
-        // AnimatedVisibility in a single Column. The Surface
-        // gets to keep its single set of rounded outer
-        // corners, and the popup expands downward from the
-        // toolbar's bottom edge with no shadow seam between
-        // the two — the user's "连续区块" requirement.
-        Column {
-            Row(
-                modifier = Modifier
-                    // V7: capture the toolbar Row's actual
-                    // width so the popup below can match it.
-                    // The popup is supposed to follow the
-                    // toolbar's "displayed width" (narrow when
-                    // the toolbar is collapsed — title only;
-                    // wider when expanded — title + action
-                    // icons), not the Surface's max width.
-                    // [onSizeChanged] fires after every layout
-                    // pass that changes the Row's size, so
-                    // state.topToolbarExpanded toggles
-                    // (which animates the action icons in/out
-                    // via the inner [AnimatedVisibility])
-                    // naturally propagate to the popup's
-                    // width through this state.
-                    .onSizeChanged { toolbarRowWidth = it.width }
-                    .height(Dimens.TopToolbarHeight)
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-            // Title-as-menu: replaces the old hamburger IconButton.
-            // The user sees the scene name; tapping it shows the
-            // recent files dropdown (or expands the toolbar if it's
-            // currently collapsed, mirroring the previous button's
-            // contract). Long-press swaps the title in place for
-            // a borderless text field with the name pre-selected —
-            // the user can just start typing to replace it. The
-            // Box wrapper is now a no-op (its only previous use
-            // was the [onGloballyPositioned] that captured
-            // `titleBarBounds` for the deleted Popup anchor math)
-            // but is kept here as a stable layout slot so the
-            // if/else below still aligns with the rest of the
-            // toolbar Row.
-            Box {
-                val displaySceneName = remember(state.sceneName, state.hasUnsavedChanges) {
-                    SceneNaming.displayName(state.sceneName, isDirty = state.hasUnsavedChanges)
-                }
-                if (isEditingSceneName) {
-                    // Inline edit: BORDERLESS text input that
-                    // replaces the title in place. Same width
-                    // cap and rounded shape as the title row so
-                    // the visual transition is invisible — the
-                    // title "becomes" a text field, no popup.
-                    //
-                    // V_NOW (bug fix v3 — "typed text STILL
-                    // invisible after three rounds of
-                    // OutlinedTextField color pin"):
-                    //
-                    // The first three rounds stayed inside M3's
-                    // [OutlinedTextField]:
-                    //
-                    //   v1: relied on default `colors.textColor`
-                    //       resolution (M3 1.2.1 token chain)
-                    //   v2: pinned `textStyle.color` +
-                    //       `colors.{focused,unfocused}TextColor`
-                    //       to `onSurface`
-                    //   v3: pinned everything to hardcoded
-                    //       `Color.Black` + wrapped in a
-                    //       [CompositionLocalProvider] setting
-                    //       [LocalContentColor] = Black + dropped
-                    //       the translucent container
-                    //
-                    // v3 should have worked, but the user
-                    // re-tested on SM-X810 and reported "title
-                    // still can't see the input characters" with
-                    // a fresh screenshot showing the field at
-                    // top-left as a translucent white block with
-                    // only a faint cursor mark visible. Whatever
-                    // M3 1.2.1's [OutlinedTextField] does
-                    // internally — possibly the `BasicTextField`
-                    // inside, possibly some
-                    // [Surface]/[Box] z-order interaction with
-                    // the parent [Surface] — is either ignoring
-                    // the color pins or layering the text
-                    // somewhere it doesn't render.
-                    //
-                    // v4: stop using [OutlinedTextField] entirely.
-                    // Drop straight to
-                    // [androidx.compose.foundation.text.BasicTextField]
-                    // — the foundation primitive that
-                    // [OutlinedTextField] is a thin M3 wrapper
-                    // around. [BasicTextField] takes a
-                    // [TextStyle] (with explicit color) and a
-                    // [Brush] for the cursor, and that's it —
-                    // no decoration box, no indicator line, no
-                    // container Surface, no token chain, no
-                    // MaterialTheme indirection. We add the
-                    // rounded background + clickable hit area +
-                    // selection highlight manually.
-                    //
-                    // Visual contract: same as the old
-                    // [OutlinedTextField] for the user — a
-                    // rounded rectangle at the title's position,
-                    // typed glyphs in black on the toolbar's
-                    // [surface]. No M3 chrome to fight with.
-                    //
-                    // The text color is hardcoded [Color.Black]
-                    // to match the non-edit-mode
-                    // [AutoShrinkTitle]'s black text in the
-                    // user's screenshots (line ~2633) — we
-                    // know THAT path renders, and we know
-                    // black-on-light is readable. The
-                    // toolbar's `surface` is light in the
-                    // user's light-mode theme, so this works.
-                    // (Dark mode would be a separate fix; the
-                    // user is testing in light.)
-                    Box(
-                        modifier = Modifier
-                            .widthIn(max = 480.dp)
-                            .height(36.dp)
-                            .background(
-                                color = Color.Transparent,
-                                shape = RoundedCornerShape(8.dp),
-                            )
-                            .focusRequester(titleFocusRequester)
-                            .onFocusChanged { focusState ->
-                                // Tap on canvas / focus loss = CANCEL.
-                                // The [state.sceneName] stays as-is, so
-                                // any unsaved typing is discarded when
-                                // the editor closes. The 200ms grace
-                                // window after session start absorbs
-                                // the focus-settling race in the
-                                // requestFocus path — without it, the
-                                // first focus-change callback (reported
-                                // as lost-focus before the request
-                                // completes) would immediately close
-                                // the editor on a fresh long-press.
-                                //
-                                // Note: [editSessionStartMs] is still
-                                // local-state at the call site here,
-                                // but reads through [Long] parameter
-                                // — passes the wall-clock correctly.
-                                if (!focusState.isFocused && isEditingSceneName) {
-                                    val sessionAge = System.currentTimeMillis() - editSessionStartMsVar.longValue
-                                    if (sessionAge >= 200L) {
-                                        onEditDismiss()
-                                    }
-                                }
-                            },
-                    ) {
-                        BasicTextField(
-                            value = editingSceneValueVar.value,
-                            onValueChange = { editingSceneValueVar.value = it },
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.titleMedium.copy(
-                                color = Color.Black,
-                            ),
-                            cursorBrush = SolidColor(Color.Black),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                            keyboardActions = KeyboardActions(
-                                onDone = {
-                                    onSceneNameCommitted(editingSceneValueVar.value.text.trim())
-                                },
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                        )
-                    }
-                    } else {
-                        // [rememberUpdatedState] is critical here. The
-                        // [pointerInput] block is keyed on [state.sceneName],
-                        // so it only re-launches when the name changes.
-                        // The toolbar's auto-collapse timer flips
-                        // [state.topToolbarExpanded] without changing the
-                        // name — without [rememberUpdatedState], the
-                        // lambda below would see a stale
-                        // [topToolbarExpanded] = true and always go to
-                        // the "show recent files" branch, never the
-                        // "expand toolbar" branch. (This was the bug the
-                        // user reported — click title when collapsed
-                        // showed the dropdown instead of expanding.)
-                        val currentState by rememberUpdatedState(state)
-                        val currentOnAction by rememberUpdatedState(onAction)
-                        // V2: the title's clickable is now on
-                        // the WHOLE Row (not just the Text),
-                        // and the chevron is wrapped in a
-                        // 40×40dp touch box (not the raw
-                        // 18dp icon). The user's reported
-                        // issue was that tapping the padded
-                        // area next to the title text was a
-                        // dead zone (the Row has padding
-                        // 10/6 but the clickable only
-                        // covered the Text's content box),
-                        // and the chevron's hit target was
-                        // 18dp = ~25px on the SM-X810 — too
-                        // small to reliably tap. Putting the
-                        // combinedClickable on the Row and
-                        // bumping the chevron's touch box to
-                        // 40dp brings both up to the
-                        // standard Material tap-target size.
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            modifier = Modifier
-                                // V5: removed the widthIn cap.
-                                // The user's V4 spec was "make
-                                // the title fit", and the 480dp
-                                // cap did that for most names,
-                                // but the user's V5 spec is
-                                // stricter: "宽度不固定,根据标题
-                                // 文字内容长度自动适配,确保标题
-                                // 完整显示" — width is not fixed,
-                                // auto-fits to content. With the
-                                // cap removed, the title group
-                                // Row takes its natural width
-                                // (the AutoShrinkTitle inside
-                                // already shrinks the font to
-                                // fit whatever width the parent
-                                // gives it via BoxWithConstraints).
-                                // For very long names, the
-                                // shrink-to-fit cascades: shrink
-                                // the font first, then if the
-                                // smallest size still doesn't
-                                // fit the available space, wrap
-                                // to 2 lines (maxLines = 2 on
-                                // the AutoShrinkTitle's Text).
-                                // "高度调整:增加高度限制以完整显
-                                // 示标题内容" — the toolbar Row
-                                // is no longer pinned to 44dp
-                                // (that was already removed in
-                                // the rename-blank fix above), so
-                                // a 2-line title naturally
-                                // makes the toolbar taller.
-                                .clip(RoundedCornerShape(8.dp))
-                                .combinedClickable(
-                                    // V_NOW: `indication = null` to
-                                    // suppress the M3 default hover
-                                    // state-layer (Indication.ringtap).
-                                    // The user reported that on S Pen
-                                    // hover, a faint gray rectangle
-                                    // appeared wrapping the chevron +
-                                    // add button pair. Root cause:
-                                    // this [combinedClickable] sits
-                                    // ABOVE the two child
-                                    // [ToolbarIconButton]s, and M3's
-                                    // default `Indication.ringtap`
-                                    // paints a hover overlay across
-                                    // the entire Row's bounds (clipped
-                                    // to RoundedCornerShape(8.dp)) on
-                                    // stylus `HoverInteraction.Enter`.
-                                    // Finger touch never shows it
-                                    // because the `PressInteraction`
-                                    // supersedes hover on contact.
-                                    // Mirrors the `indication = null`
-                                    // pattern used by
-                                    // [ToolbarIconButton] (line ~6458),
-                                    // the Lock button (line ~11075), and
-                                    // every other `clickable` in the
-                                    // toolbar (lines 1183, 1285, 1318,
-                                    // 6155, 6278, 6327, 6375).
-                                    interactionSource = remember {
-                                        MutableInteractionSource()
-                                    },
-                                    indication = null,
-                                    onClick = {
-                                        if (!currentState.topToolbarExpanded) {
-                                            currentOnAction(
-                                                PockRefAction.SetTopToolbarExpanded(true)
-                                            )
-                                        }
-                                        // Else: no-op (toolbar
-                                        // already expanded; user
-                                        // uses chevron to open the
-                                        // dropdown).
-                                    },
-                                    onLongClick = {
-                                        // Set the session-start
-                                        // timestamp synchronously
-                                        // here, BEFORE the state
-                                        // change, so the first
-                                        // onFocusChanged callback
-                                        // (which fires before any
-                                        // LaunchedEffect coroutine
-                                        // runs) sees a non-zero
-                                        // sessionAge. Without this,
-                                        // sessionAge = currentTime
-                                        // - 0 is huge and the
-                                        // editor's 200ms grace
-                                        // window check instantly
-                                        // closes it.
-                                        editSessionStartMsVar.longValue =
-                                            System.currentTimeMillis()
-                                        onEditModeChanged(
-                                            true,
-                                            TextFieldValue(
-                                                text = state.sceneName,
-                                                selection = TextRange(
-                                                    0,
-                                                    state.sceneName.length,
-                                                ),
-                                            ),
-                                        )
-                                    },
-                                )
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                        ) {
-                            // [Title text] — visual only now;
-                            // the Row's combinedClickable above
-                            // handles tap/long-press for the
-                            // whole title region (text +
-                            // padding). Before V2 this Text
-                            // carried its own clickable, which
-                            // left a dead zone in the Row's
-                            // padding.
-                            //
-                            // V4: replaced the plain Text with
-                            // [AutoShrinkTitle] (defined later in
-                            // this file) because a 480dp cap
-                            // wasn't enough for users' actual
-                            // scene names. "Brand identity 2024"
-                            // / "PockRef Import" fit, but
-                            // "双击空白 = reset zoom 逻辑?
-                            // PockRef Import" (a 30-char
-                            // Chinese+ASCII mix) was still being
-                            // ellipsized. Compose 1.7's BasicText
-                            // doesn't expose autoSize (that's a
-                            // 1.8 feature), so we implement
-                            // shrink-to-fit by sampling a few
-                            // font sizes in [16, 18, 20, 22, 24]
-                            // and picking the largest that fits
-                            // one line. Falls back to ellipsis at
-                            // 16sp if nothing smaller fits (the
-                            // user then knows the title is too
-                            // long to fully display, instead of
-                            // silently seeing a one-line version
-                            // that doesn't match what they typed).
-                            // V_NOW (2026-06-09 user spec "顶栏
-                            // 取消自动折叠, 默认全部展示, 去掉
-                            // 显示标题"): the [AutoShrinkTitle]
-                            // call is REMOVED. The toolbar no
-                            // longer renders the scene name —
-                            // only the action icons (chevron,
-                            // import, undo, redo, close) are
-                            // visible. The displaySceneName
-                            // Composable local above is still
-                            // computed (so the remember slot
-                            // remains allocated for any future
-                            // re-enable of the title display),
-                            // but nothing reads it inside
-                            // [TopToolbar] anymore.
-                            //
-                            // Future polish: if the rename
-                            // path (long-press on the title
-                            // region) needs to come back, do
-                            // it through the right-bottom
-                            // action panel's rename entry
-                            // (out of scope for this change
-                            // set).
-                            // [Chevron] — separate clickable so the
-                            // title text and the chevron are two
-                            // independent hit targets. Tap = show
-                            // recent files. The dropdown is independent
-                            // of the toolbar's expanded/collapsed state
-                            // (per user request): tapping the chevron
-                            // always opens the menu, regardless of
-                            // whether the toolbar is expanded.
-                            // V6: [menuExpanded] state lives
-                            // in [PockRefApp], not in this
-                            // composable. The chevron's tap
-                            // just dispatches a "set true" via
-                            // [onMenuExpandedChange]; the
-                            // back press and tap-outside
-                            // scrim in [PockRefApp] own the
-                            // "set false" path.
-                            //
-                            // V2: the clickable is now on a 40dp
-                            // Box (not the raw 18dp icon). The
-                            // 18dp icon was the hit target
-                            // before, which on the SM-X810
-                            // (340dpi) is only ~25px — too
-                            // small to reliably tap. Bumping to
-                            // 40dp (~136px) brings it up to the
-                            // standard Material tap-target
-                            // minimum.
-// [Chevron] — recent files menu.
-// V_NOW (2026-06-10 unified popup parity):
-// tap toggles [menuExpanded] — opens the
-// recent files popup if closed, closes
-// it if open.
-ToolbarIconButton(
-    imageVector = Icons.Rounded.KeyboardArrowDown,
-    contentDescription = "最近文件",
-    onClick = {
-        val willOpen = !menuExpanded
-        if (willOpen) {
-            onImportSourceMenuOpenChange(false)
-        }
-        onMenuExpandedChange(willOpen)
-    },
-    active = menuExpanded,
-)
-                            // V_NOW (2026-06-09 user spec "在最近
-                            // 列表按钮右边新增导入图像按钮"):
-                            // [Import] — sibling to the chevron.
-                            // V_NOW (2026-06-10 unified popup parity):
-                            // tap toggles [importSourceMenuOpen] —
-                            // identical to the chevron's toggle
-                            // behavior. The popup itself lives in
-                            // [TopToolbar]'s Column directly below
-                            // the toolbar Row, sharing the toolbar
-                            // Surface (so the chrome expands as
-                            // one continuous block — see the
-                            // [AnimatedVisibility] for
-                            // [importSourceMenuOpen] below, mirrors
-                            // the recent-files popup). Three items
-                            // dispatch one of the three launchers
-                            // ([onPickGallery] / [onPickClipboard]
-                            // / [onPickFiles]) received from
-                            // [PockRefApp].
-                            ToolbarIconButton(
-                                imageVector = Icons.Rounded.Add,
-                                contentDescription = "导入图像",
-                                onClick = {
-                                    // V_NOW (chrome-mutex):
-                                    // symmetric to the
-                                    // chevron onClick above —
-                                    // when opening the import
-                                    // popup (closed→open), force-
-                                    // close the recent files
-                                    // popup so the two popups
-                                    // are never visible at the
-                                    // same time. Closing the
-                                    // import popup is a no-op
-                                    // for [menuExpanded].
-                                    val willOpen = !importSourceMenuOpen
-                                    if (willOpen) {
-                                        onMenuExpandedChange(false)
-                                    }
-                                    onImportSourceMenuOpenChange(willOpen)
-                                },
-                                active = importSourceMenuOpen,
-                            )
-                            if (showFloatingWindowButton) {
-                                ToolbarIconButton(
-                                    imageVector = Icons.Rounded.PictureInPictureAlt,
-                                    contentDescription = "悬浮窗",
-                                    onClick = onEnterFloatingWindow,
-                                )
-                            }
-
-        // V_NOW: settings sheet rendered at [PockRefApp] level
-        // (was inside [TopToolbar] before). Reads
-        // [PockRefUiState.settingsSheetOpen] so multiple chrome
-        // entry points can drive the same sheet — the top
-        // toolbar's gear button (when restored) AND the bottom-
-        // right action panel's "Settings" ListItem both
-        // dispatch [PockRefAction.SetSettingsSheetOpen]. The
-        // sheet's onDismissRequest also dispatches `false` to
-        // close. [ModalBottomSheet] is its own window so it
-        // doesn't need a BoxScope — placing it here as a
-        // sibling of [BoxWithConstraints] inside the [Scaffold]
-        // content lambda is the cleanest spot.
-        SettingsPanel(
-            open = state.settingsSheetOpen,
-            onDismiss = { onAction(PockRefAction.SetSettingsSheetOpen(false)) },
-            state = state,
-            onAction = onAction,
-            onChooseDefaultSaveDirectory = onChooseDefaultSaveDirectory,
-        )
-    }
-}
-            }
-            AnimatedVisibility(
-                // V_NOW (2026-06-10 user request "禁用顶栏的自动收起功能"):
-                // Hard-coded `true` so the top toolbar never
-                // collapses regardless of what the reducer /
-                // blur-restore / focus handlers do with
-                // [PockRefUiState.topToolbarExpanded]. The
-                // [LaunchedEffect] above is a belt-and-suspenders
-                // backstop in case other code paths still set the
-                // flag, but the renderer itself now ignores the
-                // flag. This is the single source of truth for
-                // "the top toolbar is always visible".
-                visible = true,
-                enter = expandHorizontally(animationSpec = tween(200, easing = FastOutSlowInEasing)),
-                exit = shrinkHorizontally(animationSpec = tween(200, easing = FastOutSlowInEasing)),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    // V_NOW: 顶栏只保留 标题 / 撤回 / 重做 / 关闭
-                    // 这几个按钮(用户决定)。Save / Import /
-                    // gear(Settings) / 3-dots(MoreMenuButton) /
-                    // BoxSelectToggleButton 全部下线。
-                    //
-                    // 撤回 / 重做:这是历史最强健的 IconButton
-                    // 写法 ([HighFreqActions] 现在只剩这两个)。
-                    // 关闭:从原 [SecondaryActions] 内联过来,
-                    // [hasImages] 仍控制 enabled (空画布时
-                    // 不能"关闭"一个不存在的 scene)。
-                    HighFreqActions(
-                        canUndo = state.canUndo,
-                        canRedo = state.canRedo,
-                        onAction = onAction,
-                    )
-                    // V_NOW (2026-06-09 chrome unify): close 按钮
-                    // 从 IconButton (36dp + 48dp
-                    // minimumInteractiveComponentSize) 改成
-                    // ToolbarIconButton 模板 (40dp + 20dp),跟
-                    // 其他 4 个按钮视觉一致.
-                    ToolbarIconButton(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = "关闭",
-                        enabled = state.isCanvasOpen,
-                        onClick = { onAction(PockRefAction.CloseScene) },
-                    )
-                }
-            }
-            }
-            // V6: popup content inline, sharing the toolbar
-            // Surface. The AnimatedVisibility expands the
-            // Surface's height downward when the user opens
-            // the menu; the Surface's rounded bottom corners
-            // now wrap both the toolbar Row and the popup
-            // (read as one continuous block).
-            //
-            // The 200ms tween mirrors the action-icons
-            // AnimatedVisibility above so the two expand /
-            // collapse in the same time feel — no jarring
-            // asymmetry when the user opens the recent-files
-            // menu while the action icons are also expanding.
-            val popupWidthDp = with(LocalDensity.current) {
-                toolbarRowWidth.toDp()
-            }
-            AnimatedVisibility(
-                visible = menuExpanded,
-                enter = expandVertically(animationSpec = tween(200, easing = FastOutSlowInEasing)),
-                exit = shrinkVertically(animationSpec = tween(200, easing = FastOutSlowInEasing)),
-            ) {
-                Column(
-                    modifier = Modifier.width(popupWidthDp),
-                ) {
-                    // V11 (item 2): section header. The
-                    // "最近" label sits above the list as a
-                    // non-interactive anchor — M3 menus with
-                    // grouped content (Drive, Files) all do
-                    // this. Padded so it has visual breathing
-                    // room from the items below and the
-                    // menu's top edge.
-                    Text(
-                        text = "最近",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(
-                            start = 16.dp,
-                            end = 16.dp,
-                            top = 10.dp,
-                            bottom = 4.dp,
-                        ),
-                    )
-                    if (state.recentScenes.isEmpty()) {
-                        Text(
-                            text = "无最近文件",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(
-                                horizontal = 16.dp,
-                                vertical = 16.dp,
-                            ),
-                        )
-                    } else {
-                        state.recentScenes.forEach { entry ->
-                            // V12: removed the trailing X
-                            // IconButton (per user spec —
-                            // "don't need the X on each
-                            // item"). The row is just leading
-                            // icon + 2-line text, clickable
-                            // for open.
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    // V11 (item 5): tighter
-                                    // contentPadding. M3
-                                    // default is 16h/8v — we
-                                    // tighten to 12h/10v for
-                                    // a denser feel that
-                                    // matches the chrome
-                                    // rhythm.
-                                    .clickable(
-                                        interactionSource = remember {
-                                            MutableInteractionSource()
-                                        },
-                                        indication = null,
-                                    ) {
-                                        // V6: state is
-                                        // hoisted; the
-                                        // click on an item
-                                        // both dispatches
-                                        // the open action
-                                        // and asks the
-                                        // parent to close
-                                        // the menu.
-                                        onMenuExpandedChange(false)
-                                        onAction(
-                                            PockRefAction.OpenRecentScene(entry.uri)
-                                        )
-                                    }
-                                    .padding(
-                                        horizontal = 12.dp,
-                                        vertical = 10.dp,
-                                    ),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                // Leading icon (item 1):
-                                // file / image affordance.
-                                Icon(
-                                    imageVector = Icons.Rounded.Image,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                // Text column: label
-                                // (bodyMedium) + timestamp
-                                // (labelSmall). No
-                                // .weight(1f) needed since
-                                // there's no trailing close
-                                // button — the text
-                                // naturally fills the row's
-                                // remaining horizontal
-                                // space.
-                                Column(
-                                    modifier = Modifier.weight(1f),
-                                ) {
-                                    Text(
-                                        text = entry.label,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    Text(
-                                        text = formatTimestamp(entry.timestamp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                }
-            }
-        }
-    }
-                }  // closes popup Column
-            }  // closes AnimatedVisibility(menuExpanded)
-            // V_NOW (2026-06-10 unified popup parity):
-            // import popup — sibling of the recent-files
-            // popup above. Same animation tokens
-            // (expandVertically / shrinkVertically tween
-            // 200ms with FastOutSlowInEasing) so the two
-            // expand / collapse in the same time feel,
-            // and the toolbar's Surface height changes
-            // as a single coherent unit. Width also
-            // bound to [toolbarRowWidth] (captured via
-            // [onSizeChanged] on the toolbar Row), so a
-            // collapsed toolbar (title only) yields a
-            // narrow popup and an expanded toolbar (with
-            // action icons visible) yields a wider one —
-            // identical to the recent-files popup's
-            // behavior. Visibility driven by
-            // [importSourceMenuOpen] (hoisted to
-            // [PockRefApp] mirroring [menuExpanded]) so
-            // the parent can render a tap-outside scrim
-            // and the [TopToolbar]'s chrome-mutex (one
-            // popup open closes the other) lives at the
-            // onClick body.
-            AnimatedVisibility(
-                visible = importSourceMenuOpen,
-                enter = expandVertically(animationSpec = tween(200, easing = FastOutSlowInEasing)),
-                exit = shrinkVertically(animationSpec = tween(200, easing = FastOutSlowInEasing)),
-            ) {
-                Column(
-                    modifier = Modifier.width(popupWidthDp),
-                ) {
-                    // [相册] — gallery.
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(
-                                interactionSource = remember {
-                                    MutableInteractionSource()
-                                },
-                                indication = null,
-                            ) {
-                                onImportSourceMenuOpenChange(false)
-                                onPickGallery()
-                            }
-                            .padding(
-                                horizontal = 12.dp,
-                                vertical = 10.dp,
-                            ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PhotoLibrary,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = "从相册选择",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    // [剪贴板] — clipboard.
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(
-                                interactionSource = remember {
-                                    MutableInteractionSource()
-                                },
-                                indication = null,
-                            ) {
-                                onImportSourceMenuOpenChange(false)
-                                onPickClipboard()
-                            }
-                            .padding(
-                                horizontal = 12.dp,
-                                vertical = 10.dp,
-                            ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ContentPaste,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = "从剪贴板粘贴",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    // [载入图片] — image files.
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(
-                                interactionSource = remember {
-                                    MutableInteractionSource()
-                                },
-                                indication = null,
-                            ) {
-                                onImportSourceMenuOpenChange(false)
-                                onPickFiles()
-                            }
-                            .padding(
-                                horizontal = 12.dp,
-                                vertical = 10.dp,
-                            ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.FileOpen,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = "载入图片",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    // [打开文件] — PockRef scene files.
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(
-                                interactionSource = remember {
-                                    MutableInteractionSource()
-                                },
-                                indication = null,
-                            ) {
-                                onImportSourceMenuOpenChange(false)
-                                onOpenScene()
-                            }
-                            .padding(
-                                horizontal = 12.dp,
-                                vertical = 10.dp,
-                            ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.FileOpen,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = "打开文件",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    // [拍照] — camera capture.
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable(
-                                interactionSource = remember {
-                                    MutableInteractionSource()
-                                },
-                                indication = null,
-                            ) {
-                                onImportSourceMenuOpenChange(false)
-                                onTakePhoto()
-                            }
-                            .padding(
-                                horizontal = 12.dp,
-                                vertical = 10.dp,
-                            ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PhotoCamera,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = "拍照",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-
-    // V_NOW: settings sheet rendering moved to [PockRefApp]
-    // (was previously rendered here). The sheet now reads
-    // [PockRefUiState.settingsSheetOpen] directly so any
-    // chrome element that has [onAction] can open it without
-    // threading a separate `settingsSheetOpen` remember
-    // through the call graph. See the [SettingsPanel] call
-    // in [PockRefApp].
-        }
     }
 }
 
@@ -13469,18 +12244,6 @@ private fun BoxScope.BottomRightActionPanel(
     onAction: (PockRefAction) -> Unit,
     onSaveScene: () -> Unit,
     onExportCanvas: () -> Unit,
-    // V_NOW: chrome-mutex inverse counterpart of
-    // [TopToolbar]'s onAction wrap at the call site.
-    // When the top toolbar's 3-dots menu ([menuExpanded])
-    // is open and the user starts interacting with the
-    // right-bottom panel (FAB tap / long-press / any
-    // list item), the top toolbar's menu must collapse
-    // so the user can see what they're tapping. The
-    // parent passes a setter for the local [menuExpanded]
-    // state (the toolbar deliberately doesn't own this
-    // state — see [TopToolbar]'s KDoc). Idempotent:
-    // calling when the menu is already closed is a no-op.
-    onMenuDismiss: () -> Unit,
 ) {
     // V_NOW: same wall-clock polling pattern as the top toolbar.
     // [lastInteractionMs] tracks the wall-clock timestamp of the
@@ -13595,7 +12358,6 @@ private fun BoxScope.BottomRightActionPanel(
                         icon = Icons.Rounded.Brush,
                         contentDescription = "标记",
                         onClick = {
-                            onMenuDismiss()
                             onAction(PockRefAction.SetMarkupModeActive(true))
                         },
                     )
@@ -13603,7 +12365,6 @@ private fun BoxScope.BottomRightActionPanel(
                         icon = Icons.Rounded.TextFields,
                         contentDescription = "添加文本",
                         onClick = {
-                            onMenuDismiss()
                             onAction(PockRefAction.RequestMarkupText)
                         },
                     )
@@ -13621,8 +12382,6 @@ private fun BoxScope.BottomRightActionPanel(
                         icon = Icons.Rounded.Settings,
                         contentDescription = "Settings",
                         onClick = {
-                            // V_NOW: chrome-mutex.
-                            onMenuDismiss()
                             onAction(PockRefAction.SetSettingsSheetOpen(true))
                         },
                     )
@@ -13633,7 +12392,6 @@ private fun BoxScope.BottomRightActionPanel(
                         icon = Icons.Rounded.Image,
                         contentDescription = "Export canvas",
                         onClick = {
-                            onMenuDismiss()
                             onExportCanvas()
                         },
                     )
@@ -13643,8 +12401,6 @@ private fun BoxScope.BottomRightActionPanel(
                         icon = Icons.Rounded.Save,
                         contentDescription = "Save scene",
                         onClick = {
-                            // V_NOW: chrome-mutex.
-                            onMenuDismiss()
                             onSaveScene()
                         },
                     )
@@ -13741,15 +12497,9 @@ private fun BoxScope.BottomRightActionPanel(
                         interactionSource = fabInteractionSource,
                         indication = LocalIndication.current,
                         onClick = {
-                            // V_NOW: chrome-mutex — both FAB
-                            // tap (run auto-layout) and long-
-                            // press (toggle the panel) close
-                            // the top toolbar's 3-dots menu.
-                            onMenuDismiss()
                             onAction(PockRefAction.ExecuteAutoLayout)
                         },
                         onLongClick = {
-                            onMenuDismiss()
                             onAction(
                                 PockRefAction.SetBottomRightPanelExpanded(
                                     !state.bottomRightPanelExpanded,

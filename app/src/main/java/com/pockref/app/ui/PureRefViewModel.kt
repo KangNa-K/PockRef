@@ -607,6 +607,10 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { state -> state.openPosterizeControls(selectedIds) }
     }
 
+    internal fun togglePosterizeLevel(levels: Int) {
+        mutateScene { this.togglePosterizeLevel(levels) }
+    }
+
     internal fun clearPosterizePreview() {
         _uiState.update { state -> state.clearPosterizePreview() }
     }
@@ -1316,7 +1320,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.BatchFlipHorizontal -> batchController.batchFlipHorizontal()
             PockRefAction.ConvertToGrayscale -> transformController.convertToGrayscale()
             is PockRefAction.TogglePosterizeLevel -> {
-                _uiState.update { state -> state.togglePosterizeLevel(action.levels) }
+                togglePosterizeLevel(action.levels)
             }
             PockRefAction.ClearPosterizePreview -> {
                 _uiState.update { state -> state.clearPosterizePreview() }

@@ -423,7 +423,7 @@ internal fun computeSceneDiff(oldState: PockRefUiState, newState: PockRefUiState
 private fun buildImageUpdate(oldImg: SceneImage, newImg: SceneImage): SceneDiff.UpdateImage? {
     // V_NOW: pixel-level fields (imageBytes, intrinsicWidth/Height,
     // imageByteOffset/Length, mimeType, name, locked, zIndex) AND the
-    // non-destructive cropRect are NOT tracked by UpdateImage. If any
+    // non-destructive cropRect and posterizeLevels are NOT tracked by UpdateImage. If any
     // of them changed (e.g. after a crop operation), the field-level
     // diff would lose those changes on undo — the user would see a
     // stretched image because displaySize reverts but the cropRect
@@ -438,7 +438,8 @@ private fun buildImageUpdate(oldImg: SceneImage, newImg: SceneImage): SceneDiff.
         oldImg.mimeType != newImg.mimeType ||
         oldImg.locked != newImg.locked ||
         oldImg.zIndex != newImg.zIndex ||
-        oldImg.cropRect != newImg.cropRect
+        oldImg.cropRect != newImg.cropRect ||
+        oldImg.posterizeLevels != newImg.posterizeLevels
     ) {
         return null
     }
@@ -2088,7 +2089,12 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     else {
                         val currentSat = img.colorAdjust.saturation
                         val newSat = if (currentSat <= -0.9f) 0f else -1f
-                        img.copy(colorAdjust = img.colorAdjust.copy(saturation = newSat))
+                        img.copy(
+                            colorAdjust = img.colorAdjust.copy(saturation = newSat),
+                            // Posterize is a grayscale-only operation. Switching back to
+                            // color also clears the persisted posterize setting.
+                            posterizeLevels = if (newSat <= -0.9f) img.posterizeLevels else null,
+                        )
                     }
                 },
             )
