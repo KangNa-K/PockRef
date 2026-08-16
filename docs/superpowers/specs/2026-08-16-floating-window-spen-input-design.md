@@ -28,14 +28,14 @@ Activity 改为把两个 dispatch hook 转交给此桥接器。S Pen action 到 
 
 ### 悬浮窗接入
 
-`FloatingWindowService` 创建 `ComposeView` 时，为该 View 注册：
+`FloatingWindowService` 以一个轻量 `FrameLayout` 作为 WindowManager 根 View，并将 `ComposeView` 作为其唯一的满尺寸子 View。根 View 重写：
 
-- `OnTouchListener`：覆盖笔尖接触屏幕时的 `ACTION_DOWN`、`ACTION_MOVE`、`ACTION_UP`；
-- `OnGenericMotionListener`：覆盖笔悬停时的 `ACTION_HOVER_*` 等事件。
+- `dispatchTouchEvent()`：覆盖笔尖接触屏幕时的 `ACTION_DOWN`、`ACTION_MOVE`、`ACTION_UP`；
+- `dispatchGenericMotionEvent()`：覆盖笔悬停时的 `ACTION_HOVER_*` 等事件。
 
-两个监听器都先交给输入桥，再返回 `false`。因此 Compose 仍可处理画布拖拽、缩放、浮窗移动、尺寸调整和按钮点击；输入桥只观察原始事件，不消费它们。
+两个方法都先交给输入桥，再调用 `super` 把原始事件继续交给 `ComposeView`。因此 Compose 仍可处理画布拖拽、缩放、浮窗移动、尺寸调整和按钮点击；输入桥只观察原始事件，不消费它们。使用根 View 而非给 `ComposeView` 再装 listener，可以避免与画布现有的原始事件诊断 listener 互相覆盖。
 
-浮窗销毁、恢复全屏或关闭时重置桥接器并清除 listener，防止按住笔身切换窗口后产生遗留的“已按下”状态。
+浮窗销毁、恢复全屏或关闭时重置桥接器，防止按住笔身切换窗口后产生遗留的“已按下”状态。
 
 ### 生命周期与并发
 
