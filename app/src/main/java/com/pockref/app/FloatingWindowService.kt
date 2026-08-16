@@ -1,6 +1,7 @@
 package com.pockref.app
 
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
@@ -8,7 +9,11 @@ import android.os.IBinder
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import androidx.activity.setViewTreeOnBackPressedDispatcherOwner
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
@@ -63,6 +68,7 @@ import com.pockref.app.ui.PockRefApp
 import com.pockref.app.ui.PockRefViewModel
 import com.pockref.app.ui.theme.PockRefTheme
 import com.pockref.app.spen.SpenButtonDetector
+import com.pockref.app.spen.SpenMotionEventBridge
 import com.pockref.app.spen.SpenMode
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -134,6 +140,22 @@ private class FloatingWindowLifecycleOwner : LifecycleOwner {
     }
 }
 
+/** Observes overlay-window input before forwarding it unchanged to Compose. */
+private class SpenInputFrameLayout(
+    context: Context,
+    private val onMotionEvent: (MotionEvent) -> Unit,
+) : FrameLayout(context) {
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        onMotionEvent(event)
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        onMotionEvent(event)
+        return super.dispatchGenericMotionEvent(event)
+    }
+}
+
 /**
  * A focusable [WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY] host for
  * PockRef's existing Compose application. Unlike Android PiP, this window
@@ -142,9 +164,10 @@ private class FloatingWindowLifecycleOwner : LifecycleOwner {
 class FloatingWindowService : Service() {
 
     private lateinit var windowManager: WindowManager
-    private var overlayView: ComposeView? = null
+    private var overlayView: View? = null
     private var overlayOwner: FloatingWindowLifecycleOwner? = null
     private var layoutParams: WindowManager.LayoutParams? = null
+    private var spenInputBridge: SpenMotionEventBridge? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -154,6 +177,8 @@ class FloatingWindowService : Service() {
     }
 
     override fun onDestroy() {
+        spenInputBridge?.reset()
+        spenInputBridge = null
         overlayView?.let { view ->
             runCatching { windowManager.removeViewImmediate(view) }
         }
@@ -179,28 +204,45 @@ class FloatingWindowService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val owner = FloatingWindowLifecycleOwner()
         val params = createLayoutParams()
-        val view = ComposeView(host.activity).apply {
+        val inputBridge = SpenMotionEventBridge(
+            SpenButtonDetector(
+                mode = host.spenMode,
+                onEvent = host.onSpenEvent,
+            ),
+        )
+        val view = SpenInputFrameLayout(host.activity) { event ->
+            inputBridge.onButtonState(event.buttonState)
+        }.apply {
             // The Activity supplies file pickers and back dispatch; this owner
             // keeps composition and gesture handling alive after it is hidden.
             setViewTreeLifecycleOwner(owner)
             setViewTreeViewModelStoreOwner(host.activity)
             setViewTreeSavedStateRegistryOwner(host.activity)
             setViewTreeOnBackPressedDispatcherOwner(host.activity)
-            setContent {
-                val state by host.viewModel.uiState.collectAsState()
-                PockRefTheme(themeMode = state.themeMode) {
-                    FloatingWindowFrame(
-                        viewModel = host.viewModel,
-                        state = state,
-                        onMove = ::moveWindow,
-                        onResize = ::resizeWindow,
-                        onRestoreFullScreen = ::restoreFullScreen,
-                        onCloseFloatingWindow = ::closeFloatingWindow,
+            addView(
+                ComposeView(host.activity).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
                     )
-                }
-            }
+                    setContent {
+                        val state by host.viewModel.uiState.collectAsState()
+                        PockRefTheme(themeMode = state.themeMode) {
+                            FloatingWindowFrame(
+                                viewModel = host.viewModel,
+                                state = state,
+                                onMove = ::moveWindow,
+                                onResize = ::resizeWindow,
+                                onRestoreFullScreen = ::restoreFullScreen,
+                                onCloseFloatingWindow = ::closeFloatingWindow,
+                            )
+                        }
+                    }
+                },
+            )
         }
 
+        spenInputBridge = inputBridge
         overlayOwner = owner
         overlayView = view
         layoutParams = params
