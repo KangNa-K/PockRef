@@ -20,6 +20,7 @@ import com.pockref.app.data.RecoverySessionManager
 import com.pockref.app.data.shouldRestoreBackup
 import com.pockref.app.model.SelectionMode
 import com.pockref.app.spen.SpenButtonDetector
+import com.pockref.app.spen.SpenMotionEventBridge
 import com.pockref.app.ui.PockRefAction
 import com.pockref.app.ui.PockRefApp
 import com.pockref.app.ui.PockRefViewModel
@@ -31,58 +32,22 @@ class MainActivity : ComponentActivity() {
     private lateinit var recoverySessionManager: RecoverySessionManager
 
     /**
-     * S Pen side-button state machine. Maps rising / falling
-     * edges of the stylus button bits in [MotionEvent.getButtonState]
-     * to one of [SpenButtonDetector.ButtonEvent]s (BoxStart / BoxEnd /
-     * Multi / Single), and [dispatchSpenEvent] turns those into
-     * PockRefActions (SetSelectionMode(BOX) / SetSelectionMode(SINGLE)
-     * etc.).
-     *
-     * **No permission required.** The detection runs entirely in
-     * the Activity's two dispatch hooks — [dispatchTouchEvent]
-     * (for pen-tip-on-screen) and [dispatchGenericMotionEvent]
-     * (for pen-hovering-near-screen). Both are framework-level
-     * event paths that Samsung's fork does NOT strip, so the
-     * SM-X810 stylus button bit survives into the app even
-     * though the OEM-private paths (a11y services, certain
-     * overlay windows) see it zeroed. This is the same
-     * technique the SpenButtonMapper reference app uses in
-     * `MainActivity.detectStylusButtonState` (which it combines
-     * with a TYPE_APPLICATION_OVERLAY for cross-app coverage,
-     * but the cross-app overlay needs a11y to start — see
-     * SpenButtonMapper's `SPenMapperService.onServiceConnected`).
-     *
-     * The previous implementation in this app used an
-     * SYSTEM_ALERT_WINDOW overlay (started from MainActivity
-     * itself, NOT a11y) for the same purpose, and was
-     * confirmed not to fire on SM-X810 — see commit history
-     * before this one. The dispatch-hook approach is what
-     * unblocks the device.
+     * Full-screen S Pen input bridge. The floating window owns
+     * a separate bridge because it receives a separate window's
+     * events, but both hosts dispatch through [dispatchSpenEvent].
      */
-    private lateinit var spenDetector: SpenButtonDetector
-
-    /**
-     * Previous frame's stylus button bitmask, used to detect
-     * rising / falling edges. Cleared on [onPause] so a
-     * backgrounded app doesn't fire a stale edge when it
-     * resumes mid-press.
-     */
-    private var lastStylusButtonBits: Int = 0
+    private lateinit var spenInputBridge: SpenMotionEventBridge
     private var awaitingOverlayPermission: Boolean = false
 
     /**
      * S Pen side-button touch hook. The system dispatches
      * `ACTION_DOWN` / `ACTION_MOVE` / `ACTION_UP` to this
-     * Activity's [dispatchTouchEvent] whether or not there's
-     * an overlay on top — the overlay (if any) sits above
-     * but doesn't consume touch. We read
-     * [MotionEvent.getButtonState] and feed the edge into
-     * [spenDetector]. The event then flows through to the
-     * Compose `pointerInput` chain unchanged.
+     * Activity while its full-screen window owns the input.
+     * The event then flows through to Compose unchanged.
      */
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (::spenDetector.isInitialized) {
-            handleMotionEvent(event)
+        if (::spenInputBridge.isInitialized) {
+            spenInputBridge.onButtonState(event.buttonState)
         }
         return super.dispatchTouchEvent(event)
     }
@@ -109,40 +74,10 @@ class MainActivity : ComponentActivity() {
      * magnifier overlay).
      */
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (::spenDetector.isInitialized) {
-            handleMotionEvent(event)
+        if (::spenInputBridge.isInitialized) {
+            spenInputBridge.onButtonState(event.buttonState)
         }
         return super.dispatchGenericMotionEvent(event)
-    }
-
-    /**
-     * Read [MotionEvent.getButtonState] and feed
-     * rising / falling edges of the S Pen stylus bits
-     * (PRIMARY | SECONDARY | TERTIARY) to [spenDetector].
-     *
-     * The three bits are OR'd together: a Samsung fork
-     * may map the side button to any of them depending on
-     * the device tree, and the detector only cares about
-     * "any stylus button is currently held" vs "none". The
-     * actual button identity (PRIMARY vs SECONDARY) is
-     * dropped here — the user's spec is "press-and-hold
-     * to enter box-select, release to exit", and a single
-     * boolean is enough for that.
-     */
-    private fun handleMotionEvent(event: MotionEvent) {
-        val buttonState = event.buttonState
-        val stylusBits = buttonState and (
-            MotionEvent.BUTTON_STYLUS_PRIMARY or
-                MotionEvent.BUTTON_STYLUS_SECONDARY or
-                MotionEvent.BUTTON_TERTIARY
-            )
-        if (stylusBits == 0 && lastStylusButtonBits == 0) return
-        if (stylusBits != 0 && lastStylusButtonBits == 0) {
-            spenDetector.onDown()
-        } else if (stylusBits == 0 && lastStylusButtonBits != 0) {
-            spenDetector.onUp()
-        }
-        lastStylusButtonBits = stylusBits
     }
 
     /**
@@ -229,19 +164,21 @@ class MainActivity : ComponentActivity() {
         val previousSessionActive = recoverySessionManager.beginSession()
         enableEdgeToEdge()
 
-        spenDetector = SpenButtonDetector(
-            // V_NOW: gesture mode is read from
-            // AppPreferences (default PRESS_AND_HOLD) on
-            // every MainActivity onCreate. Changing the mode
-            // in the settings panel takes effect on the next
-            // MainActivity recreation — not mid-gesture —
-            // because the detector is a state machine, not a
-            // hot-swappable policy layer. In-flight gestures
-            // from the previous mode finish in the old state
-            // machine before the swap, which is the safe
-            // behavior (no half-state from a hot-swap race).
-            mode = AppPreferences(this).spenMode,
-            onEvent = ::dispatchSpenEvent,
+        spenInputBridge = SpenMotionEventBridge(
+            SpenButtonDetector(
+                // V_NOW: gesture mode is read from
+                // AppPreferences (default PRESS_AND_HOLD) on
+                // every MainActivity onCreate. Changing the mode
+                // in the settings panel takes effect on the next
+                // MainActivity recreation — not mid-gesture —
+                // because the detector is a state machine, not a
+                // hot-swappable policy layer. In-flight gestures
+                // from the previous mode finish in the old state
+                // machine before the swap, which is the safe
+                // behavior (no half-state from a hot-swap race).
+                mode = AppPreferences(this).spenMode,
+                onEvent = ::dispatchSpenEvent,
+            ),
         )
 
         setContent {
@@ -287,7 +224,12 @@ class MainActivity : ComponentActivity() {
             )
             return
         }
-        FloatingWindowService.launch(this, viewModel)
+        FloatingWindowService.launch(
+            activity = this,
+            viewModel = viewModel,
+            spenMode = spenInputBridge.mode,
+            onSpenEvent = ::dispatchSpenEvent,
+        )
         moveTaskToBack(true)
     }
 
@@ -296,7 +238,12 @@ class MainActivity : ComponentActivity() {
         if (!awaitingOverlayPermission) return
         awaitingOverlayPermission = false
         if (Settings.canDrawOverlays(this)) {
-            FloatingWindowService.launch(this, viewModel)
+            FloatingWindowService.launch(
+                activity = this,
+                viewModel = viewModel,
+                spenMode = spenInputBridge.mode,
+                onSpenEvent = ::dispatchSpenEvent,
+            )
             moveTaskToBack(true)
         }
     }
@@ -313,9 +260,8 @@ class MainActivity : ComponentActivity() {
         // DOWN" and skip it, but the state machine
         // would also still be in FIRST_DOWN from the
         // pre-background press, which is wrong).
-        lastStylusButtonBits = 0
-        if (::spenDetector.isInitialized) {
-            spenDetector.reset()
+        if (::spenInputBridge.isInitialized) {
+            spenInputBridge.reset()
         }
     }
 

@@ -62,6 +62,8 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.pockref.app.ui.PockRefApp
 import com.pockref.app.ui.PockRefViewModel
 import com.pockref.app.ui.theme.PockRefTheme
+import com.pockref.app.spen.SpenButtonDetector
+import com.pockref.app.spen.SpenMode
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -75,26 +77,46 @@ import kotlin.math.roundToInt
 private object FloatingWindowSession {
     private var activity: MainActivity? = null
     private var viewModel: PockRefViewModel? = null
+    private var spenMode: SpenMode? = null
+    private var onSpenEvent: ((SpenButtonDetector.ButtonEvent) -> Unit)? = null
 
-    fun attach(hostActivity: MainActivity, hostViewModel: PockRefViewModel) {
+    fun attach(
+        hostActivity: MainActivity,
+        hostViewModel: PockRefViewModel,
+        hostSpenMode: SpenMode,
+        hostOnSpenEvent: (SpenButtonDetector.ButtonEvent) -> Unit,
+    ) {
         activity = hostActivity
         viewModel = hostViewModel
+        spenMode = hostSpenMode
+        onSpenEvent = hostOnSpenEvent
     }
 
     fun current(): Host? {
         val currentActivity = activity ?: return null
         val currentViewModel = viewModel ?: return null
-        return Host(currentActivity, currentViewModel)
+        val currentSpenMode = spenMode ?: return null
+        val currentOnSpenEvent = onSpenEvent ?: return null
+        return Host(
+            activity = currentActivity,
+            viewModel = currentViewModel,
+            spenMode = currentSpenMode,
+            onSpenEvent = currentOnSpenEvent,
+        )
     }
 
     fun clear() {
         activity = null
         viewModel = null
+        spenMode = null
+        onSpenEvent = null
     }
 
     data class Host(
         val activity: MainActivity,
         val viewModel: PockRefViewModel,
+        val spenMode: SpenMode,
+        val onSpenEvent: (SpenButtonDetector.ButtonEvent) -> Unit,
     )
 }
 
@@ -296,8 +318,13 @@ class FloatingWindowService : Service() {
         private const val DEFAULT_WINDOW_WIDTH_FRACTION = 0.68f
         private const val DEFAULT_WINDOW_HEIGHT_FRACTION = 0.62f
 
-        fun launch(activity: MainActivity, viewModel: PockRefViewModel) {
-            FloatingWindowSession.attach(activity, viewModel)
+        fun launch(
+            activity: MainActivity,
+            viewModel: PockRefViewModel,
+            spenMode: SpenMode,
+            onSpenEvent: (SpenButtonDetector.ButtonEvent) -> Unit,
+        ) {
+            FloatingWindowSession.attach(activity, viewModel, spenMode, onSpenEvent)
             activity.startService(Intent(activity, FloatingWindowService::class.java))
         }
     }
