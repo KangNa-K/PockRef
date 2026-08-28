@@ -157,9 +157,10 @@ private class SpenInputFrameLayout(
 }
 
 /**
- * A focusable [WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY] host for
- * PockRef's existing Compose application. Unlike Android PiP, this window
- * receives normal touch input from the canvas and every existing control.
+ * A non-focusable [WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY] host
+ * for PockRef's existing Compose application. Unlike Android PiP, this window
+ * receives normal touch input from the canvas and every existing control while
+ * leaving hardware-key focus with the app underneath.
  */
 class FloatingWindowService : Service() {
 
@@ -277,10 +278,14 @@ class FloatingWindowService : Service() {
                 @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE
             },
-            // Deliberately do not set FLAG_NOT_FOCUSABLE: a focusable overlay
-            // receives normal touch and keyboard input. NOT_TOUCH_MODAL lets
-            // the underlying app receive taps outside this window.
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            // Keep the overlay touchable for its canvas and chrome, but do not
+            // let it become the system input-focus window. Without
+            // FLAG_NOT_FOCUSABLE, hardware keyboards and other key devices are
+            // routed to this overlay; unhandled keys do not fall through to
+            // the app underneath. NOT_TOUCH_MODAL still lets the underlying
+            // app receive taps outside this window.
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
