@@ -3,6 +3,7 @@ package com.pockref.app
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Outline
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
@@ -13,7 +14,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
+import android.widget.ImageView
 import androidx.activity.setViewTreeOnBackPressedDispatcherOwner
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
@@ -34,7 +37,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.Minimize
+import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -169,6 +173,8 @@ class FloatingWindowService : Service() {
     private var overlayOwner: FloatingWindowLifecycleOwner? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var spenInputBridge: SpenMotionEventBridge? = null
+    private var bubbleView: View? = null
+    private var bubbleLayoutParams: WindowManager.LayoutParams? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -183,10 +189,15 @@ class FloatingWindowService : Service() {
         overlayView?.let { view ->
             runCatching { windowManager.removeViewImmediate(view) }
         }
+        bubbleView?.let { view ->
+            runCatching { windowManager.removeViewImmediate(view) }
+        }
         overlayView = null
+        bubbleView = null
         overlayOwner?.destroy()
         overlayOwner = null
         layoutParams = null
+        bubbleLayoutParams = null
         FloatingWindowSession.clear()
         super.onDestroy()
     }
@@ -235,6 +246,7 @@ class FloatingWindowService : Service() {
                                 onMove = ::moveWindow,
                                 onResize = ::resizeWindow,
                                 onRestoreFullScreen = ::restoreFullScreen,
+                                onMinimize = ::minimizeToBubble,
                                 onCloseFloatingWindow = ::closeFloatingWindow,
                             )
                         }
@@ -252,6 +264,9 @@ class FloatingWindowService : Service() {
 
     private fun createLayoutParams(): WindowManager.LayoutParams {
         val metrics = resources.displayMetrics
+        val topInset = statusBarInsetPx()
+        val usableHeight = (metrics.heightPixels - topInset - dp(WINDOW_MARGIN_DP))
+            .coerceAtLeast(dp(MIN_WINDOW_HEIGHT_DP))
         val width = savedDimension(
             key = KEY_WIDTH,
             fallback = (metrics.widthPixels * DEFAULT_WINDOW_WIDTH_FRACTION).roundToInt(),
@@ -262,12 +277,12 @@ class FloatingWindowService : Service() {
             key = KEY_HEIGHT,
             fallback = (metrics.heightPixels * DEFAULT_WINDOW_HEIGHT_FRACTION).roundToInt(),
             min = dp(MIN_WINDOW_HEIGHT_DP),
-            max = (metrics.heightPixels - dp(WINDOW_MARGIN_DP)).coerceAtLeast(dp(MIN_WINDOW_HEIGHT_DP)),
+            max = usableHeight,
         )
         val x = preferences().getInt(KEY_X, (metrics.widthPixels - width) / 2)
             .coerceIn(0, (metrics.widthPixels - width).coerceAtLeast(0))
-        val y = preferences().getInt(KEY_Y, (metrics.heightPixels - height) / 4)
-            .coerceIn(0, (metrics.heightPixels - height).coerceAtLeast(0))
+        val y = preferences().getInt(KEY_Y, topInset + (usableHeight - height) / 4)
+            .coerceIn(topInset, (metrics.heightPixels - height).coerceAtLeast(topInset))
 
         return WindowManager.LayoutParams(
             width,
@@ -298,23 +313,27 @@ class FloatingWindowService : Service() {
 
     private fun moveWindow(deltaX: Float, deltaY: Float) {
         updateLayout { params, metrics ->
+            val topInset = statusBarInsetPx()
             params.x = (params.x + deltaX.roundToInt())
                 .coerceIn(0, (metrics.widthPixels - params.width).coerceAtLeast(0))
             params.y = (params.y + deltaY.roundToInt())
-                .coerceIn(0, (metrics.heightPixels - params.height).coerceAtLeast(0))
+                .coerceIn(topInset, (metrics.heightPixels - params.height).coerceAtLeast(topInset))
         }
     }
 
     private fun resizeWindow(deltaX: Float, deltaY: Float) {
         updateLayout { params, metrics ->
+            val topInset = statusBarInsetPx()
             params.width = (params.width + deltaX.roundToInt()).coerceIn(
                 dp(MIN_WINDOW_WIDTH_DP),
                 (metrics.widthPixels - params.x).coerceAtLeast(dp(MIN_WINDOW_WIDTH_DP)),
             )
             params.height = (params.height + deltaY.roundToInt()).coerceIn(
                 dp(MIN_WINDOW_HEIGHT_DP),
-                (metrics.heightPixels - params.y).coerceAtLeast(dp(MIN_WINDOW_HEIGHT_DP)),
+                (metrics.heightPixels - params.y - dp(WINDOW_MARGIN_DP))
+                    .coerceAtLeast(dp(MIN_WINDOW_HEIGHT_DP)),
             )
+            params.y = params.y.coerceAtLeast(topInset)
         }
     }
 
@@ -332,6 +351,7 @@ class FloatingWindowService : Service() {
     }
 
     private fun restoreFullScreen() {
+        removeBubble()
         startActivity(
             Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
@@ -343,6 +363,154 @@ class FloatingWindowService : Service() {
     private fun closeFloatingWindow() {
         FloatingWindowSession.current()?.activity?.moveTaskToBack(true)
         stopSelf()
+    }
+
+    private fun minimizeToBubble() {
+        val view = overlayView ?: return
+        val params = layoutParams ?: return
+        preferences().edit().putInt(KEY_X, params.x).putInt(KEY_Y, params.y).apply()
+        windowManager.removeViewImmediate(view)
+        overlayView = null
+        overlayOwner?.destroy()
+        overlayOwner = null
+        spenInputBridge?.reset()
+        spenInputBridge = null
+        layoutParams = null
+        showBubble()
+    }
+
+    private fun showBubble() {
+        if (bubbleView != null) return
+        val metrics = resources.displayMetrics
+        val size = dp(BUBBLE_SIZE_DP)
+        val topInset = statusBarInsetPx()
+        val params = WindowManager.LayoutParams(
+            size,
+            size,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            },
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = preferences().getInt(
+                KEY_BUBBLE_X,
+                metrics.widthPixels - size - dp(WINDOW_MARGIN_DP),
+            ).coerceIn(0, (metrics.widthPixels - size).coerceAtLeast(0))
+            y = preferences().getInt(KEY_BUBBLE_Y, topInset + dp(WINDOW_MARGIN_DP))
+                .coerceIn(topInset, (metrics.heightPixels - size).coerceAtLeast(topInset))
+        }
+        val bubble = ImageView(this).apply {
+            setImageDrawable(applicationInfo.loadIcon(packageManager))
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = null
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setOval(0, 0, view.width, view.height)
+                }
+            }
+            elevation = dp(6).toFloat()
+            contentDescription = getString(R.string.app_name)
+            setOnTouchListener(BubbleTouchListener(params))
+        }
+        bubbleView = bubble
+        bubbleLayoutParams = params
+        windowManager.addView(bubble, params)
+    }
+
+    private fun removeBubble() {
+        bubbleView?.let { view -> runCatching { windowManager.removeViewImmediate(view) } }
+        bubbleView = null
+        bubbleLayoutParams = null
+    }
+
+    private fun restoreFromBubble() {
+        removeBubble()
+        showFloatingWindow()
+    }
+
+    private inner class BubbleTouchListener(
+        private val params: WindowManager.LayoutParams,
+    ) : View.OnTouchListener {
+        private var downX = 0f
+        private var downY = 0f
+        private var startX = 0
+        private var startY = 0
+        private var dragged = false
+
+        override fun onTouch(view: View, event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    startX = params.x
+                    startY = params.y
+                    dragged = false
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downX
+                    val dy = event.rawY - downY
+                    if (!dragged && hypot(dx.toDouble(), dy.toDouble()) > dp(6)) dragged = true
+                    if (dragged) {
+                        val metrics = resources.displayMetrics
+                        val topInset = statusBarInsetPx()
+                        params.x = (startX + dx.roundToInt())
+                            .coerceIn(0, (metrics.widthPixels - params.width).coerceAtLeast(0))
+                        params.y = (startY + dy.roundToInt())
+                            .coerceIn(topInset, (metrics.heightPixels - params.height).coerceAtLeast(topInset))
+                        windowManager.updateViewLayout(view, params)
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!dragged && event.actionMasked == MotionEvent.ACTION_UP) {
+                        restoreFromBubble()
+                    } else {
+                        snapBubbleToNearestEdge(view)
+                    }
+                    return true
+                }
+            }
+            return true
+        }
+    }
+
+    private fun snapBubbleToNearestEdge(view: View) {
+        val params = bubbleLayoutParams ?: return
+        val metrics = resources.displayMetrics
+        params.x = if (params.x + params.width / 2 < metrics.widthPixels / 2) {
+            0
+        } else {
+            (metrics.widthPixels - params.width).coerceAtLeast(0)
+        }
+        val topInset = statusBarInsetPx()
+        params.y = params.y.coerceIn(topInset, (metrics.heightPixels - params.height).coerceAtLeast(topInset))
+        windowManager.updateViewLayout(view, params)
+        preferences().edit().putInt(KEY_BUBBLE_X, params.x).putInt(KEY_BUBBLE_Y, params.y).apply()
+    }
+
+    private fun statusBarInsetPx(): Int {
+        val metricsInset = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            windowManager.currentWindowMetrics.windowInsets
+                .getInsets(android.view.WindowInsets.Type.statusBars()).top
+        } else {
+            0
+        }
+        val resourceId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        val resourceInset = if (resourceId > 0) {
+            resources.getDimensionPixelSize(resourceId)
+        } else {
+            0
+        }
+        return maxOf(metricsInset, resourceInset)
     }
 
     private fun savedDimension(key: String, fallback: Int, min: Int, max: Int): Int {
@@ -359,6 +527,9 @@ class FloatingWindowService : Service() {
         private const val KEY_HEIGHT = "height"
         private const val KEY_X = "x"
         private const val KEY_Y = "y"
+        private const val KEY_BUBBLE_X = "bubble_x"
+        private const val KEY_BUBBLE_Y = "bubble_y"
+        private const val BUBBLE_SIZE_DP = 56
         private const val MIN_WINDOW_WIDTH_DP = 180
         private const val MIN_WINDOW_HEIGHT_DP = 220
         private const val WINDOW_MARGIN_DP = 16
@@ -415,6 +586,7 @@ private fun FloatingWindowFrame(
     onMove: (Float, Float) -> Unit,
     onResize: (Float, Float) -> Unit,
     onRestoreFullScreen: () -> Unit,
+    onMinimize: () -> Unit,
     onCloseFloatingWindow: () -> Unit,
 ) {
     var controlsExpanded by remember { mutableStateOf(false) }
@@ -506,7 +678,7 @@ private fun FloatingWindowFrame(
                 shape = RoundedCornerShape(28.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
                 tonalElevation = 0.dp,
-                shadowElevation = 10.dp,
+                shadowElevation = 1.dp,
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -514,18 +686,24 @@ private fun FloatingWindowFrame(
                 ) {
                     IconButton(
                         modifier = Modifier.size(46.dp),
+                        onClick = onMinimize,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Minimize,
+                            contentDescription = "最小化悬浮窗",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    IconButton(
+                        modifier = Modifier.size(46.dp),
                         onClick = onRestoreFullScreen,
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Fullscreen,
+                            imageVector = Icons.Rounded.OpenInFull,
                             contentDescription = "恢复全屏",
                             tint = MaterialTheme.colorScheme.onSurface,
                         )
                     }
-                    VerticalDivider(
-                        modifier = Modifier.height(28.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
-                    )
                     IconButton(
                         modifier = Modifier.size(46.dp),
                         onClick = onCloseFloatingWindow,
