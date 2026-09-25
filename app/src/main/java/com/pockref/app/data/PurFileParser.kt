@@ -6,7 +6,6 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
-import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -78,6 +77,9 @@ class PurFileParser {
     @Volatile
     private var dbTempFile: File? = null
 
+    @Volatile
+    private var imageTempFile: File? = null
+
     /**
      * Bind a RandomAccessFile to this parser for lazy byte reading.
      * Called by the scene-loading code after parseFromFile succeeds.
@@ -88,7 +90,6 @@ class PurFileParser {
         // Close previous binding if any
         try { dbFile?.close() } catch (_: Exception) {}
         dbFile = RandomAccessFile(file, "r")
-        dbTempFile = null
     }
 
     fun parse(input: InputStream): PockRefScene {
@@ -154,10 +155,10 @@ class PurFileParser {
             dbFile?.close()
         } catch (_: Exception) {}
         dbFile = null
-        try {
-            dbTempFile?.delete()
-        } catch (_: Exception) {}
+        try { dbTempFile?.delete() } catch (_: Exception) {}
         dbTempFile = null
+        try { imageTempFile?.delete() } catch (_: Exception) {}
+        imageTempFile = null
     }
 
     /**
@@ -165,6 +166,9 @@ class PurFileParser {
      * use the same file handle for BitmapRegionDecoder creation.
      */
     val sourceRaf: RandomAccessFile? get() = dbFile
+
+    /** The rotated SQLite file used by V2 lazy image records, if any. */
+    val lazySourceFile: File? get() = imageTempFile ?: dbTempFile
 
     fun parseHeader(bytes: ByteArray, fileLength: Long = 0): PurHeader {
         require(bytes.size >= 8) {
@@ -307,6 +311,10 @@ class PurFileParser {
         val sqliteOffset = findV2SQLiteHeaderOffset(raf, file.length(), header.sqliteOffset)
             ?: error("PureRef v2 SQLite header not found")
         val dbFile = prepareV2SQLiteDatabase(file, sqliteOffset)
+        dbTempFile = dbFile
+        val imageFile = File.createTempFile("pockref_v2_images_", ".bin")
+        imageFile.deleteOnExit()
+        imageTempFile = imageFile
         try {
             val db = SQLiteDatabase.openDatabase(
                 dbFile.absolutePath,
@@ -314,7 +322,9 @@ class PurFileParser {
                 SQLiteDatabase.OPEN_READONLY,
             )
             try {
-                val images = readV2SceneImages(db)
+                val images = FileOutputStream(imageFile).use { output ->
+                    readV2SceneImages(db, output)
+                }
                 val notes = readV2Notes(db)
                 val drawings = readV2DrawingImages(db)
                 val name = readV2DisplayName(db)
@@ -328,8 +338,12 @@ class PurFileParser {
             } finally {
                 db.close()
             }
-        } finally {
+        } catch (error: Throwable) {
+            dbTempFile = null
             try { dbFile.delete() } catch (_: Exception) {}
+            imageTempFile = null
+            try { imageFile.delete() } catch (_: Exception) {}
+            throw error
         }
     }
 
@@ -388,7 +402,7 @@ class PurFileParser {
         }
     }
 
-    private fun readV2SceneImages(db: SQLiteDatabase): List<SceneImage> {
+    private fun readV2SceneImages(db: SQLiteDatabase, imageOutput: FileOutputStream): List<SceneImage> {
         val sql = """
             SELECT ii.id, ii.image, im.width, im.height, im.format, it.opacity, it.z, it.locked,
                    it.transform, ii.image_transform
@@ -412,7 +426,7 @@ class PurFileParser {
                 val itemTransform = v2TransformFrom(sqliteTextPayload(cursor, 8)) ?: V2Transform()
                 val imageTransform = v2TransformFrom(sqliteTextPayload(cursor, 9))
                     ?: centeredImageTransform(width, height)
-                val bytes = readV2ImageBlob(db, imageId) ?: continue
+                val blob = copyV2ImageBlob(db, imageId, imageOutput) ?: continue
                 val combined = itemTransform.applying(imageTransform)
                 val center = combined.applyingTo(width / 2.0, height / 2.0)
                 val displayWidth = maxOf(1.0, hypot(combined.m11, combined.m12) * width)
@@ -420,8 +434,10 @@ class PurFileParser {
                 images += SceneImage(
                     id = "pur-v2-image-$itemId",
                     name = "image_$itemId",
-                    mimeType = v2MimeType(format, bytes),
-                    imageBytes = bytes,
+                    mimeType = formatMimeType(format),
+                    imageBytes = ByteArray(0),
+                    imageByteOffset = blob.offset.toInt(),
+                    imageByteLength = blob.length,
                     intrinsicWidth = width,
                     intrinsicHeight = height,
                     center = center,
@@ -508,25 +524,46 @@ class PurFileParser {
         }.getOrDefault("")
     }
 
-    private fun readV2ImageBlob(db: SQLiteDatabase, imageId: Long): ByteArray? {
-        runCatching {
-            db.compileStatement("SELECT data FROM images WHERE id = ?").use { statement ->
-                statement.bindLong(1, imageId)
-                statement.simpleQueryForBlobFileDescriptor()?.use { pfd ->
-                    return ParcelFileDescriptor.AutoCloseInputStream(pfd).use { it.readBytes() }
-                }
-            }
-        }.onFailure {
-            Log.w(TAG, "V2 blob FD read failed for image $imageId; falling back to Cursor", it)
-        }
+    private data class V2BlobReference(val offset: Long, val length: Int)
 
-        return runCatching {
-            db.rawQuery("SELECT data FROM images WHERE id = ?", arrayOf(imageId.toString())).use { cursor ->
-                if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getBlob(0) else null
+    /** Copy one blob at a time using bounded SQLite substr reads. */
+    private fun copyV2ImageBlob(
+        db: SQLiteDatabase,
+        imageId: Long,
+        output: FileOutputStream,
+    ): V2BlobReference? = runCatching {
+            val length = db.rawQuery(
+                "SELECT length(data) FROM images WHERE id = ?",
+                arrayOf(imageId.toString()),
+            ).use { cursor ->
+                if (!cursor.moveToFirst() || cursor.isNull(0)) return@runCatching null
+                cursor.getLong(0)
             }
-        }.onFailure {
-            Log.w(TAG, "V2 blob Cursor read failed for image $imageId", it)
-        }.getOrNull()
+            if (length <= 0L || length > Int.MAX_VALUE) return@runCatching null
+            val offset = output.channel.position()
+            var copied = 0L
+            while (copied < length) {
+                val requested = minOf(V2_BLOB_CHUNK_SIZE.toLong(), length - copied).toInt()
+                val chunk = db.rawQuery(
+                    "SELECT substr(data, ?, ?) FROM images WHERE id = ?",
+                    arrayOf((copied + 1L).toString(), requested.toString(), imageId.toString()),
+                ).use { cursor ->
+                    if (!cursor.moveToFirst() || cursor.isNull(0)) return@runCatching null
+                    cursor.getBlob(0)
+                }
+                if (chunk.isEmpty()) return@runCatching null
+                output.write(chunk)
+                copied += chunk.size
+            }
+            if (copied == length) V2BlobReference(offset, copied.toInt()) else null
+        }.onFailure { Log.w(TAG, "V2 blob copy failed for image $imageId", it) }.getOrNull()
+
+    private fun formatMimeType(format: String): String = when (format.trim().lowercase()) {
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "gif" -> "image/gif"
+        "webp" -> "image/webp"
+        else -> "image/jpeg"
     }
 
     private fun v2TransformFrom(payload: ByteArray?): V2Transform? {
@@ -570,21 +607,6 @@ class PurFileParser {
                 .mapNotNull { ch -> ch.code.takeIf { it <= 0xFF }?.toByte() }
                 .toByteArray()
         }.getOrNull()
-    }
-
-    private fun v2MimeType(format: String, bytes: ByteArray): String {
-        val normalized = format.trim().lowercase()
-        return when {
-            normalized == "png" -> "image/png"
-            normalized == "jpg" || normalized == "jpeg" -> "image/jpeg"
-            normalized == "gif" -> "image/gif"
-            normalized == "webp" -> "image/webp"
-            bytes.size >= 6 && (String(bytes, 0, 6) == "GIF87a" || String(bytes, 0, 6) == "GIF89a") -> "image/gif"
-            bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> "image/jpeg"
-            bytes.size >= 4 && bytes[0] == 0x89.toByte() && String(bytes, 1, 3) == "PNG" -> "image/png"
-            bytes.size >= 12 && String(bytes, 0, 4) == "RIFF" && String(bytes, 8, 4) == "WEBP" -> "image/webp"
-            else -> "application/octet-stream"
-        }
     }
 
     private fun renderV2DrawingPng(payload: ByteArray, transform: V2Transform): V2RenderedDrawing? {
@@ -1116,6 +1138,7 @@ class PurFileParser {
 
     companion object {
         private const val TAG = "PurFileParser"
+        private const val V2_BLOB_CHUNK_SIZE = 256 * 1024
         private val V2_SQLITE_HEADER = "SQLite format 3\u0000".toByteArray(Charsets.UTF_8)
         private const val MAX_V2_GENERATED_RASTER_LONG_SIDE = 4096.0
         private const val MAX_V2_GENERATED_RASTER_PIXELS = 8_000_000.0

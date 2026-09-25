@@ -844,6 +844,7 @@ fun PockRefApp(
     // decode pipeline (LaunchedEffects) flow through to
     // the overlay's read on the next recomposition.
     val canvasBitmapCache = remember { mutableStateMapOf<String, Pair<Int, ImageBitmap>>() }
+    val canvasBitmapWorkingSet = remember { CanvasBitmapWorkingSet() }
     val canvasTileCache = remember {
         mutableStateMapOf<com.pockref.app.data.ImageTileKey, ImageBitmap>()
     }
@@ -1448,8 +1449,9 @@ fun PockRefApp(
                  onStartLogExport = onStartLogExport,
                  modifier = Modifier
                      .fillMaxSize(),
-                 hoverProgress = hoverProgress,
+                hoverProgress = hoverProgress,
                 canvasBitmapCache = canvasBitmapCache,
+                canvasBitmapWorkingSet = canvasBitmapWorkingSet,
                 canvasTileCache = canvasTileCache,
                 posterizeCache = posterizeCache,
                 gifFrameBitmapCache = gifFrameBitmapCache,
@@ -2118,6 +2120,7 @@ fun PockRefApp(
     // so the magnifier image sits ABOVE the chrome).
     hoverProgress: Float = 0f,
     canvasBitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    canvasBitmapWorkingSet: CanvasBitmapWorkingSet,
     canvasTileCache: androidx.compose.runtime.snapshots.SnapshotStateMap<com.pockref.app.data.ImageTileKey, ImageBitmap>,
     posterizeCache: PosterizeBitmapCache,
     gifFrameBitmapCache: GifFrameBitmapCache,
@@ -2172,6 +2175,7 @@ fun PockRefApp(
             imageDecoder = imageDecoder,
             hoverProgress = hoverProgress,
             bitmapCache = canvasBitmapCache,
+            bitmapWorkingSet = canvasBitmapWorkingSet,
             tileCache = canvasTileCache,
             posterizeCache = posterizeCache,
             gifFrameBitmapCache = gifFrameBitmapCache,
@@ -3761,7 +3765,6 @@ private fun BoxScope.CropOverlay(
 ) {
     val cropImage = state.images.find { it.id == state.cropImageId } ?: return
     val viewport = state.canvasViewportSize
-    if (viewport.width <= 0f || viewport.height <= 0f) return
 
     // V_NOW: the floating crop layer used to render only a
     // neutral surface color (a gray rectangle) with the
@@ -3946,8 +3949,16 @@ private fun BoxScope.CropOverlay(
     // [Modifier.size] receives plain dp values (no more
     // `toDp()` round-trip). The math below is unitless
     // ratio math, but the inputs and outputs are dp.
-    val viewportDpW: Dp = with(density) { viewport.width.toFloat().toDp() }
-    val viewportDpH: Dp = with(density) { viewport.height.toFloat().toDp() }
+    // The crop mode can be entered in the same frame in which the canvas
+    // reports its size. Do not make the whole editor disappear just because
+    // the state mirror is still 0x0; the composable itself already has a
+    // valid window size to use as a fallback.
+    val viewportWidthPx = viewport.width.takeIf { it > 0f }
+        ?: with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
+    val viewportHeightPx = viewport.height.takeIf { it > 0f }
+        ?: with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val viewportDpW: Dp = with(density) { viewportWidthPx.toDp() }
+    val viewportDpH: Dp = with(density) { viewportHeightPx.toDp() }
     val statusBarPx: Int = WindowInsets.statusBars.getTop(density)
     val navBarPx: Int = WindowInsets.navigationBars.getBottom(density)
     val statusBarDp: Dp = with(density) { statusBarPx.toFloat().toDp() }
@@ -6431,6 +6442,7 @@ private fun PockRefCanvas(
     // in [PockRefApp] for the cache-eviction effect that
     // used to live here.
     bitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    bitmapWorkingSet: CanvasBitmapWorkingSet,
     tileCache: androidx.compose.runtime.snapshots.SnapshotStateMap<com.pockref.app.data.ImageTileKey, ImageBitmap>,
     posterizeCache: PosterizeBitmapCache,
     gifFrameBitmapCache: GifFrameBitmapCache,
@@ -6577,6 +6589,7 @@ private fun PockRefCanvas(
         }
     }
 
+    val currentState by rememberUpdatedState(state)
     DisposableEffect(pipeline) {
         pipeline.onBitmapReady = { imageId, level, bitmap ->
             val current = bitmapCache[imageId]
@@ -6588,22 +6601,10 @@ private fun PockRefCanvas(
         onDispose {
             pipeline.onBitmapReady = null
             pipeline.onBatchComplete = null
+            pipeline.close()
         }
     }
 
-    // Cache eviction: when over 300 entries, evict lowest-level first
-    DisposableEffect(bitmapCache.size) {
-        if (bitmapCache.size > 300) {
-            val toRemove = bitmapCache.entries
-                .sortedBy { it.value.first }
-                .take(bitmapCache.size - 250)
-                .map { it.key }
-            toRemove.forEach { bitmapCache.remove(it) }
-        }
-        onDispose { }
-    }
-
-    val currentState by rememberUpdatedState(state)
     val currentOnAction by rememberUpdatedState(onAction)
     val panCoalescer = remember { CanvasPanFrameCoalescer() }
     val panFrameRequests = remember { Channel<Unit>(Channel.CONFLATED) }
@@ -6783,9 +6784,18 @@ private fun PockRefCanvas(
         }
     }
 
-    // Scene-changed effect: load all images that aren't cached
+    // Decode only the viewport and its prefetch ring; distant images wait
+    // until a pan brings them close enough to render.
     LaunchedEffect(
-        state.images.map { Triple(it.id, it.imageBytes.size, it.mimeType) },
+        state.images.map {
+            listOf(
+                it.id,
+                it.imageBytes.size,
+                it.imageByteOffset,
+                it.imageByteLength,
+                it.mimeType,
+            )
+        },
         renderViewportSize,
         focusedHighResImageId,
     ) {
@@ -6818,6 +6828,12 @@ private fun PockRefCanvas(
             viewportHeight = renderViewportSize.height,
         )
         if (viewport.width <= 0f || viewport.height <= 0f) return
+        evictCanvasBitmaps(
+            bitmapCache = bitmapCache,
+            workingSet = bitmapWorkingSet,
+            state = s,
+            viewportSize = renderViewportSize,
+        )
         val cachedLevels = bitmapCache.mapValues { it.value.first }
         pipeline.onViewportChanged(
             images = s.images,
@@ -11371,6 +11387,53 @@ internal fun imageWorldAabb(image: SceneImage): Rect {
         right = image.center.x + halfW,
         bottom = image.center.y + halfH,
     )
+}
+
+private fun evictCanvasBitmaps(
+    bitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
+    workingSet: CanvasBitmapWorkingSet,
+    state: PockRefUiState,
+    viewportSize: Size,
+) {
+    val viewport = worldViewportRect(
+        canvasOffset = state.canvasOffset,
+        canvasScale = state.canvasScale,
+        viewportWidth = viewportSize.width,
+        viewportHeight = viewportSize.height,
+        // Match the draw cull buffer and include the prefetch ring. An image
+        // that is about to enter the viewport must not be evicted while the
+        // pan presentation offset is settling.
+        bufferPx = VIEWPORT_BUFFER_PX,
+    )
+    val protectedIds = buildSet {
+        addAll(state.selectedImageIds)
+        addAll(state.boxSelectPreviewIds)
+        addAll(state.transientDragImageIds)
+        if (viewport.width > 0f && viewport.height > 0f) {
+            state.images.forEach { image ->
+                val bounds = imageWorldAabb(image)
+                if (
+                    bounds.left < viewport.right &&
+                    bounds.right > viewport.left &&
+                    bounds.top < viewport.bottom &&
+                    bounds.bottom > viewport.top
+                ) {
+                    add(image.id)
+                }
+            }
+        }
+    }
+    val evicted = workingSet.update(
+        cached = bitmapCache.mapValues { (_, entry) ->
+            CanvasBitmapWorkingSet.BitmapInfo(
+                level = entry.first,
+                width = entry.second.width,
+                height = entry.second.height,
+            )
+        },
+        protectedIds = protectedIds,
+    )
+    evicted.forEach(bitmapCache::remove)
 }
 
 /**

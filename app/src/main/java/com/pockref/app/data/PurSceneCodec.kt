@@ -707,6 +707,10 @@ class PurSceneCodec {
     fun readFromFile(file: File): PockRefScene = readFromFile(file, customImagesDiskBacked = true)
 
     private fun readFromFile(file: File, customImagesDiskBacked: Boolean): PockRefScene {
+        // A V2 parse may have installed a rotated SQLite temp file as the
+        // previous scene's lazy source. It must not survive into the next
+        // open, especially when the next file is a legacy PUR.
+        purFileParser.release()
         val raf = RandomAccessFile(file, "r")
         try {
             val fileLen = raf.length()
@@ -719,8 +723,7 @@ class PurSceneCodec {
                 return if (customImagesDiskBacked) {
                     raf.seek(MAGIC.size.toLong())
                     readCustomSceneFromFile(raf, fileLen).also {
-                        purFileParser.bindSourceFile(file)
-                        imageDecoder.setSourceFile(file)
+                        bindLazySource(file)
                     }
                 } else {
                     raf.seek(0)
@@ -733,8 +736,7 @@ class PurSceneCodec {
                 try {
                     val scene = purFileParser.parseFromFile(file)
                     val extendedScene = applyLegacySceneExtension(file, scene)
-                    purFileParser.bindSourceFile(file)
-                    imageDecoder.setSourceFile(file)
+                    bindLazySource(file)
                     return extendedScene
                 } catch (e: Exception) {
                     Log.w(TAG, "Structured desktop .pur parser failed, trying embedded image fallback", e)
@@ -750,8 +752,7 @@ class PurSceneCodec {
                     Log.i(TAG, "Large legacy file ($fileLen bytes), using streaming parser")
                     return try {
                         val scene = purFileParser.parseFromFile(file)
-                        purFileParser.bindSourceFile(file)
-                        imageDecoder.setSourceFile(file)
+                        bindLazySource(file)
                         applyLegacySceneExtension(file, scene)
                     } catch (e2: Exception) {
                         Log.w(TAG, "Desktop parser failed for large legacy file", e2)
@@ -766,8 +767,7 @@ class PurSceneCodec {
                     Log.w(TAG, "OOM reading $fileLen bytes for legacy parser; falling back", oom)
                     return try {
                         val scene = purFileParser.parseFromFile(file)
-                        purFileParser.bindSourceFile(file)
-                        imageDecoder.setSourceFile(file)
+                        bindLazySource(file)
                         applyLegacySceneExtension(file, scene)
                     } catch (e2: Exception) {
                         Log.w(TAG, "Desktop parser also failed for large file", e2)
@@ -780,8 +780,7 @@ class PurSceneCodec {
                     Log.w(TAG, "Legacy parser failed, trying desktop parser", e)
                     try {
                         val scene = purFileParser.parseFromFile(file)
-                        purFileParser.bindSourceFile(file)
-                        imageDecoder.setSourceFile(file)
+                        bindLazySource(file)
                         return applyLegacySceneExtension(file, scene)
                     } catch (e2: Exception) {
                         Log.w(TAG, "Desktop parser also failed", e2)
@@ -793,8 +792,7 @@ class PurSceneCodec {
             Log.w(TAG, "All format detection methods failed, trying parseFromFile fallback")
             try {
                 val scene = purFileParser.parseFromFile(file)
-                purFileParser.bindSourceFile(file)
-                imageDecoder.setSourceFile(file)
+                bindLazySource(file)
                 return applyLegacySceneExtension(file, scene)
             } catch (e: Exception) {
                 Log.e(TAG, "parseFromFile fallback also failed", e)
@@ -805,6 +803,12 @@ class PurSceneCodec {
         } finally {
             raf.close()
         }
+    }
+
+    private fun bindLazySource(originalFile: File) {
+        val source = purFileParser.lazySourceFile ?: originalFile
+        purFileParser.bindSourceFile(source)
+        imageDecoder.setSourceFile(source)
     }
 
     private fun readAllBytes(raf: RandomAccessFile, fileLen: Long): ByteArray {

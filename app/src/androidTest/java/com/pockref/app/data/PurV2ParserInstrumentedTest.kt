@@ -31,6 +31,11 @@ class PurV2ParserInstrumentedTest {
 
         assertEquals(2, scene.version)
         assertTrue("v2 sample should load images", scene.images.size >= 143)
+        assertTrue(
+            "v2 source images must remain file-backed to avoid loading the whole PUR into RAM",
+            scene.images.filter { it.id.startsWith("pur-v2-image-") }
+                .all { it.imageBytes.isEmpty() && it.imageByteOffset >= 0 && it.imageByteLength > 0 },
+        )
         assertTrue("v2 notes should be imported as editable markup text", scene.markupTexts.any { it.id.startsWith("pur-v2-note-") })
         assertTrue("v2 transforms should produce non-origin positions", scene.images.any { it.center != Offset.Zero })
         assertTrue("v2 transforms should preserve display sizes", scene.images.any { it.displaySize.width > 1f && it.displaySize.height > 1f })

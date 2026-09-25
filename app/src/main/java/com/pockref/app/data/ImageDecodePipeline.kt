@@ -3,10 +3,15 @@ package com.pockref.app.data
 import android.graphics.Bitmap
 import android.util.Log
 import com.pockref.app.model.SceneImage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -63,12 +68,10 @@ class ImageDecodePipeline(
         // small pans).
         private const val PREFETCH_MARGIN = 0.25f
 
-        // Delay before decoding images that are off-viewport. Shorter than
-        // the old 500ms because the disk cache makes most of these free.
-        private const val OFF_VIEWPORT_DELAY_MS = 200L
     }
 
     private val decodePermits = Semaphore(maxConcurrentDecodes)
+    private val decodeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // Currently-loading image IDs. Shared across all decode calls so
     // parallel triggers (scene change + viewport change) don't duplicate work.
@@ -91,6 +94,10 @@ class ImageDecodePipeline(
      * Useful for clearing busy indicators.
      */
     var onBatchComplete: (() -> Unit)? = null
+
+    fun close() {
+        decodeScope.cancel()
+    }
 
     // ── Public API ─────────────────────────────────────────────────
 
@@ -126,48 +133,33 @@ class ImageDecodePipeline(
         val prefetch = offView.filter { image ->
             rectsOverlap(imageWorldAabb(image), prefetchRect)
         }
-        val farOffView = offView.filter { it !in prefetch }
+        decodeScope.launch {
+            coroutineScope {
+                // Phase 1: in-viewport thumbnails.
+                inView.map { image ->
+                    async { decodeAndNotify(image, isThumbnail = true) }
+                }.awaitAll()
 
-        coroutineScope {
-            // Phase 1: In-viewport thumbnails (fast, many hit disk cache)
-            val thumbJobs = inView.map { image ->
-                async(Dispatchers.Default) {
-                    decodeAndNotify(image, isThumbnail = true)
+                // Phase 2: in-viewport full-res + prefetch thumbnails.
+                val fullJobs = inView.map { image ->
+                    async {
+                        val request = decodeRequestForImage(image)
+                        decodeAndNotify(
+                            image = image,
+                            isThumbnail = false,
+                            displayWidth = request.displayWidth,
+                            displayHeight = request.displayHeight,
+                            maxLevel = request.maxLevel,
+                        )
+                    }
                 }
-            }
-            thumbJobs.awaitAll()
-
-            // Phase 2: In-viewport full-res + prefetch thumbnails (parallel)
-            val fullJobs = inView.map { image ->
-                async(Dispatchers.Default) {
-                    val request = decodeRequestForImage(image)
-                    decodeAndNotify(
-                        image = image,
-                        isThumbnail = false,
-                        displayWidth = request.displayWidth,
-                        displayHeight = request.displayHeight,
-                        maxLevel = request.maxLevel,
-                    )
+                val prefetchJobs = prefetch.map { image ->
+                    async { decodeAndNotify(image, isThumbnail = true) }
                 }
+                (fullJobs + prefetchJobs).awaitAll()
             }
-            val prefetchJobs = prefetch.map { image ->
-                async(Dispatchers.Default) {
-                    decodeAndNotify(image, isThumbnail = true)
-                }
-            }
-            (fullJobs + prefetchJobs).awaitAll()
-
-            // Phase 3: Far off-viewport (delayed, thumbnail only)
-            val farJobs = farOffView.map { image ->
-                async(Dispatchers.Default) {
-                    kotlinx.coroutines.delay(OFF_VIEWPORT_DELAY_MS)
-                    decodeAndNotify(image, isThumbnail = true)
-                }
-            }
-            farJobs.awaitAll()
+            onBatchComplete?.invoke()
         }
-
-        onBatchComplete?.invoke()
     }
 
     /**
@@ -197,9 +189,9 @@ class ImageDecodePipeline(
         }
         if (toDecode.isEmpty()) return
 
-        coroutineScope {
+        decodeScope.launch {
             val jobs = toDecode.map { image ->
-                async(Dispatchers.Default) {
+                async {
                     val request = decodeRequestForImage(image)
                     decodeAndNotify(
                         image = image,
@@ -240,6 +232,8 @@ class ImageDecodePipeline(
             if (result != null) {
                 onBitmapReady?.invoke(image.id, result.level, result.bitmap)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Decode failed for ${image.name}", e)
         } finally {

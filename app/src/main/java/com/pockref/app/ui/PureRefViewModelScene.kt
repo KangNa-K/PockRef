@@ -1118,7 +1118,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
     fun enterCropMode() {
         val state = mainVm._uiState.value
-        val selectedId = state.selectedImageId ?: return
+        // The selection sheet is driven by selectedImageIds, while
+        // selectedImageId is only the legacy primary-selection field.
+        // Keep crop usable when a single selection came through a path
+        // that populated the set but did not populate the primary id.
+        val selectedId = state.selectedImageId
+            ?: state.selectedImageIds.singleOrNull()
+            ?: return
         // V_NOW: locked images can't be cropped. Without this
         // guard the crop overlay would render and commit a
         // pixel-level change despite the user's lock intent.
