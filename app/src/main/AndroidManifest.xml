@@ -33,6 +33,8 @@
         the user explicitly enables the system "display over other apps" switch.
     -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!--
         S Pen input remains on MainActivity's standard framework dispatch path.
@@ -114,7 +116,12 @@
         <service
             android:name=".FloatingWindowService"
             android:exported="false"
-            android:stopWithTask="false" />
+            android:stopWithTask="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-initiated interactive reference canvas displayed over other apps" />
+        </service>
 
         <activity
             android:name=".MainActivity"

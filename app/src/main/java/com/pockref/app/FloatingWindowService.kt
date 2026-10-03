@@ -1,14 +1,21 @@
 package com.pockref.app
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Outline
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -62,6 +69,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -175,15 +183,35 @@ class FloatingWindowService : Service() {
     private var spenInputBridge: SpenMotionEventBridge? = null
     private var bubbleView: View? = null
     private var bubbleLayoutParams: WindowManager.LayoutParams? = null
+    private val unlockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_USER_PRESENT) reattachWindow()
+        }
+    }
+    private var receiverRegistered = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(NOTIFICATION_ID, foregroundNotification())
+        if (!receiverRegistered) {
+            ContextCompat.registerReceiver(
+                this,
+                unlockReceiver,
+                IntentFilter(Intent.ACTION_USER_PRESENT),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            receiverRegistered = true
+        }
         showFloatingWindow()
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        if (receiverRegistered) {
+            unregisterReceiver(unlockReceiver)
+            receiverRegistered = false
+        }
         spenInputBridge?.reset()
         spenInputBridge = null
         overlayView?.let { view ->
@@ -202,8 +230,78 @@ class FloatingWindowService : Service() {
         super.onDestroy()
     }
 
+    private fun foregroundNotification(): Notification {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    NOTIFICATION_CHANNEL_ID,
+                    "悬浮参考图板",
+                    NotificationManager.IMPORTANCE_LOW,
+                ),
+            )
+        }
+        val openApp = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+        } else {
+            Notification.Builder(this)
+        }
+        return builder
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText("悬浮参考图板正在运行")
+            .setContentIntent(openApp)
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun reattachWindow() {
+        if (!Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return
+        }
+        val view = overlayView ?: bubbleView ?: return
+        val wasBubble = view === bubbleView
+        val params = if (wasBubble) bubbleLayoutParams else layoutParams
+        if (view.isAttachedToWindow && params != null) {
+            try {
+                windowManager.updateViewLayout(view, params)
+                return
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Floating window is no longer registered; recreating it", error)
+            }
+        }
+        runCatching { windowManager.removeViewImmediate(view) }
+        if (wasBubble) {
+            bubbleView = null
+            bubbleLayoutParams = null
+        } else {
+            overlayView = null
+            layoutParams = null
+            overlayOwner?.destroy()
+            overlayOwner = null
+            spenInputBridge?.reset()
+            spenInputBridge = null
+        }
+        try {
+            if (wasBubble) showBubble() else showFloatingWindow()
+        } catch (error: RuntimeException) {
+            Log.e(TAG, "Unable to restore floating window after unlock", error)
+            stopSelf()
+        }
+    }
+
     private fun showFloatingWindow() {
         if (overlayView != null) return
+        if (bubbleView != null) removeBubble()
         if (!Settings.canDrawOverlays(this)) {
             stopSelf()
             return
@@ -522,6 +620,9 @@ class FloatingWindowService : Service() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
 
     companion object {
+        private const val TAG = "FloatingWindowService"
+        private const val NOTIFICATION_CHANNEL_ID = "floating_window"
+        private const val NOTIFICATION_ID = 1001
         private const val PREFERENCES_NAME = "pockref_floating_window"
         private const val KEY_WIDTH = "width"
         private const val KEY_HEIGHT = "height"
@@ -543,7 +644,10 @@ class FloatingWindowService : Service() {
             onSpenEvent: (SpenButtonDetector.ButtonEvent) -> Unit,
         ) {
             FloatingWindowSession.attach(activity, viewModel, spenMode, onSpenEvent)
-            activity.startService(Intent(activity, FloatingWindowService::class.java))
+            ContextCompat.startForegroundService(
+                activity,
+                Intent(activity, FloatingWindowService::class.java),
+            )
         }
     }
 }
