@@ -24,6 +24,8 @@ import kotlin.coroutines.coroutineContext
  *
  * Keep this URL stable after the repository is created. The JSON should live
  * on the default branch; the APK itself should be an immutable Release asset.
+ * Use the public asset API URL: the browser download path can return 404 even
+ * when the asset API serves the file anonymously.
  */
 object GithubUpdateConfig {
     const val manifestUrl =
@@ -120,7 +122,7 @@ object GithubAppUpdater {
         }
         require(
             manifest.apkUrl.startsWith(
-                "https://github.com/KangNa-K/PockRef/releases/download/",
+                "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/",
             ),
         ) { "APK must be a PockRef GitHub Release asset" }
         require(manifest.sha256.matches(Regex("[A-Fa-f0-9]{64}"))) {
@@ -188,6 +190,8 @@ object GithubAppUpdater {
             connectTimeout = 15_000
             readTimeout = 60_000
             requestMethod = "GET"
+            setRequestProperty("Accept", "application/octet-stream")
+            setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
         }
         val temporary = File(destination.parentFile, "${destination.name}.part")
         try {

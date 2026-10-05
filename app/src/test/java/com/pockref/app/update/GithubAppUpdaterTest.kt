@@ -10,7 +10,7 @@ class GithubAppUpdaterTest {
     private fun manifest(sha: String, size: Long) = AppUpdateManifest(
         versionCode = 32,
         versionName = "2.2.6",
-        apkUrl = "https://github.com/KangNa-K/PockRef/releases/download/v2.2.6/pockref-2.2.6.apk",
+        apkUrl = "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/611241851",
         sha256 = sha,
         size = size,
         notes = "",
