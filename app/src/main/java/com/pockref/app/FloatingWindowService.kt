@@ -729,6 +729,7 @@ private fun FloatingWindowFrame(
         ) {
             PockRefApp(
                 state = state,
+                updateController = viewModel.appUpdateController,
                 onAction = viewModel::onAction,
                 imageLazyLoader = viewModel.imageLazyLoader,
                 imageDecoder = viewModel.imageDecoder,

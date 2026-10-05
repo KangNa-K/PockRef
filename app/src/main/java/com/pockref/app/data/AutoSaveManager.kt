@@ -21,6 +21,56 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
         appContext.getSharedPreferences("pockref_autosave", Context.MODE_PRIVATE)
 
     private val autoSaveDir = File(appContext.filesDir, "auto_save").also { it.mkdirs() }
+    private val updateCheckpoint = File(appContext.filesDir, "update_checkpoint.pur")
+
+    private fun installedVersion(): Long {
+        val info = appContext.packageManager.getPackageInfo(appContext.packageName, 0)
+        @Suppress("DEPRECATION")
+        return if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+    }
+
+    fun hasUpdateRecovery(): Boolean =
+        updateCheckpoint.isFile && prefs.getLong("update_from_version", Long.MAX_VALUE) < installedVersion()
+
+    fun hasPendingUpdateCheckpoint(): Boolean =
+        updateCheckpoint.isFile && prefs.contains("update_from_version")
+
+    suspend fun writeUpdateCheckpoint(scene: PockRefScene) = withContext(Dispatchers.IO) {
+        val temp = File(appContext.filesDir, "update_checkpoint.tmp")
+        try {
+            FileOutputStream(temp).use {
+                codec.write(scene, it)
+                it.fd.sync()
+            }
+            // Read back before committing; a failed checkpoint must block installation.
+            val validator = PurSceneCodec().also { it.initCacheDir(appContext.cacheDir) }
+            try {
+                validator.readFromFile(temp)
+            } finally {
+                validator.imageLazyLoader.release()
+                validator.imageDecoder.release()
+            }
+            Os.rename(temp.absolutePath, updateCheckpoint.absolutePath)
+            check(prefs.edit().putLong("update_from_version", installedVersion()).commit()) {
+                "无法保存更新恢复标记"
+            }
+        } finally {
+            temp.delete()
+        }
+    }
+
+    suspend fun readUpdateCheckpoint(): PockRefScene? = withContext(Dispatchers.IO) {
+        if (hasUpdateRecovery()) codec.readFromFile(updateCheckpoint) else null
+    }
+
+    fun clearUpdateCheckpoint() {
+        updateCheckpoint.delete()
+        consumeUpdateCheckpoint()
+    }
+
+    fun consumeUpdateCheckpoint() {
+        prefs.edit().remove("update_from_version").apply()
+    }
 
     // V_NOW: backed by [AppPreferences.autoSaveIntervalMs] so the
     // value is user-configurable via the new SettingsPanel slider.
@@ -228,6 +278,7 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
     )
 
     fun clearRecoveryBackups() {
+        clearUpdateCheckpoint()
         autoSaveDir.listFiles()?.forEach { file ->
             if (file.name.endsWith(".auto_backup.pur") || file.name.endsWith(".auto_backup.pur.tmp")) {
                 file.delete()

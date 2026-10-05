@@ -186,6 +186,7 @@ class MainActivity : ComponentActivity() {
             PockRefTheme(themeMode = state.themeMode) {
                 PockRefApp(
                     state = state,
+                    updateController = viewModel.appUpdateController,
                     onAction = viewModel::onAction,
                     imageLazyLoader = viewModel.imageLazyLoader,
                     imageDecoder = viewModel.imageDecoder,
@@ -202,7 +203,8 @@ class MainActivity : ComponentActivity() {
 
         window.decorView.setOnDragListener(dragListener)
         val hasExternalOpenRequest = handleOpenIntent(intent)
-        if (shouldRestoreBackup(previousSessionActive, hasExternalOpenRequest, savedInstanceState != null)) {
+        if ((!hasExternalOpenRequest && viewModel.hasUpdateRecovery()) ||
+            shouldRestoreBackup(previousSessionActive, hasExternalOpenRequest, savedInstanceState != null)) {
             viewModel.restorePreviousSessionIfAvailable()
         }
     }
@@ -235,6 +237,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        viewModel.onUpdateForeground()
         if (!awaitingOverlayPermission) return
         awaitingOverlayPermission = false
         if (Settings.canDrawOverlays(this)) {
@@ -250,6 +253,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        viewModel.appUpdateController.onBackground()
         // Reset the edge state so a backgrounded app
         // doesn't fire a stale UP when it resumes mid-
         // press (the user's finger was on the button
