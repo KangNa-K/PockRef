@@ -53,6 +53,22 @@ sealed interface UpdateInstallResult {
 }
 
 object GithubAppUpdater {
+    internal fun isInstalledVersionOlder(context: Context, code: Int): Boolean {
+        val installed = context.packageManager.getPackageInfo(context.packageName, 0)
+        @Suppress("DEPRECATION")
+        val current = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode else installed.versionCode.toLong()
+        return isNewer(code, current)
+    }
+
+    internal suspend fun cachedApk(context: Context, manifest: AppUpdateManifest): File? =
+        withContext(Dispatchers.IO) {
+            validateDownload(manifest)
+            val apk = File(context.cacheDir, "updates/pockref-${manifest.versionCode}.apk")
+            if (!verifyFile(apk, manifest)) return@withContext null
+            validatePackage(context, apk, manifest)
+            apk
+        }
+
     suspend fun checkForUpdate(context: Context): UpdateCheckResult = withContext(Dispatchers.IO) {
         val manifest = parseManifest(readUrl(GithubUpdateConfig.manifestUrl))
         require(manifest.versionCode > 0 && manifest.versionName.isNotBlank()) {

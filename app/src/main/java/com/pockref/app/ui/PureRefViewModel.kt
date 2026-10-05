@@ -116,6 +116,40 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     internal val autoSaveManager = AutoSaveManager(application, codec)
     internal val recoverySessionManager = RecoverySessionManager(application)
     internal val imageOptimizer = ImageOptimizer(application)
+    val appUpdateController = com.pockref.app.update.AppUpdateController(
+        application, viewModelScope, ::prepareUpdateInstall,
+    )
+    private var updateCheckpointInProgress = false
+
+    private suspend fun prepareUpdateInstall() {
+        val snapshot = _uiState.value
+        check(!snapshot.isBusy && !snapshot.isSaving && !snapshot.batchOptimizeState.isRunning &&
+            !sceneGestureActive && !snapshot.markupModeActive) { "请先完成当前操作再安装" }
+        if (!snapshot.hasSceneContent && !snapshot.blankCanvasOpen) {
+            autoSaveManager.consumeUpdateCheckpoint()
+            return
+        }
+        updateCheckpointInProgress = true
+        try {
+            val scene = snapshot.toScene()
+            autoSaveManager.writeUpdateCheckpoint(scene)
+            check(_uiState.value.toScene() == scene) { "画布已发生变化，请重试安装" }
+        } catch (error: Exception) {
+            autoSaveManager.consumeUpdateCheckpoint()
+            throw error
+        } finally {
+            updateCheckpointInProgress = false
+        }
+    }
+
+    fun onUpdateForeground() {
+        if (!autoSaveManager.hasUpdateRecovery() && !updateCheckpointInProgress) {
+            autoSaveManager.consumeUpdateCheckpoint()
+        }
+        appUpdateController.onForeground()
+    }
+
+    fun hasUpdateRecovery(): Boolean = autoSaveManager.hasUpdateRecovery()
 
     internal val undoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
     internal val redoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
@@ -500,6 +534,31 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         if (recoveryAttempted) return
         recoveryAttempted = true
         viewModelScope.launch {
+            val recoveringUpdate = autoSaveManager.hasUpdateRecovery()
+            if (recoveringUpdate) {
+                updateCheckpointInProgress = true
+                setBusy(true)
+            }
+            try {
+                val updateScene = autoSaveManager.readUpdateCheckpoint()
+                if (updateScene != null) {
+                    sceneController.restoreAutoSave(updateScene)
+                    _uiState.update { it.copy(blankCanvasOpen = true) }
+                    autoSaveManager.consumeUpdateCheckpoint()
+                    reportError("已恢复更新前的画布")
+                    return@launch
+                }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                reportError("更新前画布恢复失败，恢复文件已保留", error)
+                return@launch
+            } finally {
+                if (recoveringUpdate) {
+                    updateCheckpointInProgress = false
+                    setBusy(false)
+                }
+            }
             val restored = withContext(Dispatchers.IO) {
                 autoSaveManager.loadLatestValidBackup()
             } ?: return@launch
@@ -509,6 +568,8 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun endRecoverySession() {
+        // The independent checkpoint must survive the installer replacing this process.
+        if (autoSaveManager.hasPendingUpdateCheckpoint() || updateCheckpointInProgress) return
         autoSaveManager.clearRecoveryBackups()
         recoverySessionManager.endSession()
     }
@@ -696,6 +757,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun onAction(action: PockRefAction) {
+        if (updateCheckpointInProgress) return
         when (action) {
             PockRefAction.ResetView -> batchController.resetView()
             PockRefAction.FitToScreen -> batchController.fitToScreen()

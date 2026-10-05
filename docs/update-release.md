@@ -36,3 +36,29 @@ a new ID on reupload.
 Versions up to and including 2.2.6 still point to the now-private source
 repository, so users must manually install the 2.2.7 migration APK. Future
 updates can use the in-app button in Settings > General.
+
+## Foreground update flow
+
+The shared ViewModel controller checks when the main activity resumes, at most
+once every six hours (including failed attempts). Settings checks bypass this
+interval. Automatic failures are silent. Reminders can be snoozed for 24 hours
+or ignored for one version; manual checks still expose ignored releases.
+
+APK downloads require a user action. Closing Settings does not cancel them.
+Verified completed APKs and release metadata can be reused after restarting;
+partial downloads restart rather than resume byte ranges. Background download
+completion never opens the installer. Floating-window users return to the
+main activity and tap Continue Installation.
+
+Before opening the installer, the app creates a separate internal recovery
+checkpoint even when autosave is disabled, without overwriting the original
+document. Active scene operations or checkpoint failures block installation.
+After a version-code increase, the next ordinary launch restores this checkpoint.
+External document-open requests retain priority. Android's installation
+confirmation is still required.
+
+Local verification covers reminder policy and controller behavior with fake
+downloads/installers. Before publishing, verify a real signed version-code
+upgrade on device, permission return, background completion, download cancellation,
+and recovery with autosave disabled. Do not treat a same-version reinstall as
+an end-to-end update test.

@@ -635,6 +635,7 @@ fun PockRefApp(
     exportInProgressFlow: StateFlow<Boolean> = MutableStateFlow(false),
     onEnterFloatingWindow: () -> Unit = {},
     showFloatingWindowButton: Boolean = true,
+    updateController: com.pockref.app.update.AppUpdateController? = null,
 ) {
     val importLauncher = rememberLauncherForActivityResult(OpenMultipleDocuments()) { uris ->
         onAction(PockRefAction.ImportImages(uris))
@@ -1817,6 +1818,9 @@ fun PockRefApp(
                     ),
             )
             }
+            androidx.compose.runtime.CompositionLocalProvider(
+                com.pockref.app.ui.settings.LocalAppUpdateController provides updateController,
+            ) {
             SettingsPanel(
                 open = state.settingsSheetOpen,
                 onDismiss = { onAction(PockRefAction.SetSettingsSheetOpen(false)) },
@@ -1826,6 +1830,7 @@ fun PockRefApp(
                     saveDirectoryPickerLauncher.launch(selectedSaveTreeUri)
                 },
             )
+            }
 
             // V_NOW (2026-06-08 "global image lock" feature):
             // top-right lock toggle. Anchored at
@@ -2091,6 +2096,16 @@ fun PockRefApp(
                 posterizeCache = posterizeCache,
                 progress = hoverProgress,
             )
+        }
+        updateController?.let {
+            Box(Modifier.fillMaxSize()) {
+            com.pockref.app.ui.settings.AppUpdateNotice(
+                controller = it,
+                compact = state.hasSceneContent || state.blankCanvasOpen || !showFloatingWindowButton,
+                modifier = Modifier.align(Alignment.CenterEnd)
+                    .padding(end = 16.dp),
+            )
+            }
         }
     }
 }
