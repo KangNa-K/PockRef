@@ -29,7 +29,7 @@ import kotlin.coroutines.coroutineContext
  */
 object GithubUpdateConfig {
     const val manifestUrl =
-        "https://raw.githubusercontent.com/KangNa-K/PockRef/main/update/version.json"
+        "https://raw.githubusercontent.com/KangNa-K/PockRef-updates/main/update/version.json"
 }
 
 data class AppUpdateManifest(
@@ -122,7 +122,7 @@ object GithubAppUpdater {
         }
         require(
             manifest.apkUrl.startsWith(
-                "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/",
+                "https://api.github.com/repos/KangNa-K/PockRef-updates/releases/assets/",
             ),
         ) { "APK must be a PockRef GitHub Release asset" }
         require(manifest.sha256.matches(Regex("[A-Fa-f0-9]{64}"))) {
