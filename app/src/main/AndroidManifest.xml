@@ -26,6 +26,8 @@
          allows requesting camera access at runtime when the
          user taps the "拍照" button. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
         A user-enabled interactive reference window. This is not used for S Pen
