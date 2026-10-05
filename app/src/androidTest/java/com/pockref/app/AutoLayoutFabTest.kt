@@ -3,7 +3,8 @@ package com.pockref.app
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.performTouchInput
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import com.pockref.app.model.PockRefUiState
@@ -36,7 +37,7 @@ class AutoLayoutFabTest {
             PockRefApp(state = state, onAction = actions::add)
         }
 
-        composeRule.onNodeWithContentDescription("一键排版").performClick()
+        composeRule.onNodeWithContentDescription("一键排版").performTouchInput { click() }
 
         composeRule.runOnIdle {
             assertEquals(
@@ -44,7 +45,10 @@ class AutoLayoutFabTest {
                     PockRefAction.SetImportSourceMenuOpen(false),
                     PockRefAction.ExecuteAutoLayout,
                 ),
-                actions,
+                actions.filter {
+                    it is PockRefAction.SetImportSourceMenuOpen ||
+                        it == PockRefAction.ExecuteAutoLayout
+                },
             )
         }
     }

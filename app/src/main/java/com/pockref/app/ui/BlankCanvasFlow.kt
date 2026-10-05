@@ -4,7 +4,9 @@ import androidx.compose.ui.geometry.Offset
 import com.pockref.app.model.CropAspect
 import com.pockref.app.model.CropRect
 import com.pockref.app.model.PockRefUiState
-import com.pockref.app.model.Size2D
+
+// Viewport size belongs to the mounted canvas, not the scene. Clearing it
+// here would disable auto-layout until the window actually changes size.
 
 internal fun PockRefUiState.openBlankCanvas(): PockRefUiState = copy(
     selectedImageId = null,
@@ -32,7 +34,6 @@ internal fun PockRefUiState.openBlankCanvas(): PockRefUiState = copy(
     cropRotation = 0f,
     canvasScale = 1f,
     canvasOffset = Offset.Zero,
-    canvasViewportSize = Size2D(0f, 0f),
     transientDragImageIds = emptySet(),
     transientDragDelta = Offset.Zero,
     fittedImageId = null,
@@ -72,7 +73,6 @@ internal fun PockRefUiState.closeBlankCanvas(): PockRefUiState = copy(
     cropRotation = 0f,
     canvasScale = 1f,
     canvasOffset = Offset.Zero,
-    canvasViewportSize = Size2D(0f, 0f),
     transientDragImageIds = emptySet(),
     transientDragDelta = Offset.Zero,
     fittedImageId = null,
