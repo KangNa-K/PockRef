@@ -946,7 +946,11 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                     editingMarkupTextId = null,
                 )
             }
-            is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(action.point, action.showSheet)
+            is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(
+                action.point,
+                action.viewportSize,
+                action.showSheet,
+            )
             is PockRefAction.BringImageToFront -> transformController.bringImageToFront(action.imageId)
             // V_NOW (2026-06-10 user spec "单选 sheet 第一行
             // 按钮 = ... / 设为封面"): cover is a UI-only flag

@@ -488,6 +488,16 @@ private const val DOUBLE_TAP_MAX_DIST_DP = 32f
 private const val ZOOM_MIN = 0.25f
 private const val ZOOM_MAX = MAX_CANVAS_SCALE
 private const val DOUBLE_TAP_MAX_INTERVAL_MS = 400L
+
+internal fun isSingleFingerCanvasTap(
+    peakPointerCount: Int,
+    dragStarted: Boolean,
+    transformStarted: Boolean,
+    durationMs: Long,
+    maxDistancePx: Float,
+    tapMaxDragPx: Float,
+): Boolean = peakPointerCount == 1 && !dragStarted && !transformStarted &&
+    durationMs < 300L && maxDistancePx < tapMaxDragPx
 // V_NOW: delay before showing the SelectionBottomSheet
 // in single-select mode. Shorter than the full double-tap
 // window so the sheet appears responsive on single taps,
@@ -7627,7 +7637,7 @@ private fun PockRefCanvas(
                             // multi-select union.
                             val cornerImages: List<com.pockref.app.model.SceneImage> =
                                 if (hasSingleSelection) {
-                                    listOf(cs2.images.first { it.id == sId })
+                                    cs2.images.filter { it.id == sId }
                                 } else {
                                     cs2.images.filter { it.id in sIds }
                                 }
@@ -8015,6 +8025,7 @@ private fun PockRefCanvas(
                     var lockedCanvasPinchZoomActive = false
                     var dragStarted = false
                     var totalDrag = Offset.Zero
+                    var maxSingleFingerDistancePx = 0f
                     // Drag-to-edge auto-scroll handoff. The
                     // move loop is the authoritative source
                     // for the pointer position during this
@@ -8063,6 +8074,11 @@ private fun PockRefCanvas(
                             gestureMoved = changes.any { change ->
                                 (change.position - change.previousPosition).getDistance() > gestureMovedThresholdPx
                             }
+                        }
+                        if (peakPointerCount == 1) {
+                            val distance = changes.firstOrNull { it.id == down.id }
+                                ?.let { (it.position - downPos).getDistance() } ?: 0f
+                            maxSingleFingerDistancePx = maxOf(maxSingleFingerDistancePx, distance)
                         }
 
                         if (
@@ -8747,7 +8763,7 @@ private fun PockRefCanvas(
 
                             val dragId = activeDragImageId
                             if (dragId != null) {
-                                if (!dragStarted && totalDrag.getDistance() > dragTapThresholdPx) {
+                                if (!dragStarted && maxSingleFingerDistancePx >= tapMaxDragPx) {
                                     val alreadySelected = dragId in currentState.selectedImageIds
                                     if (!alreadySelected) {
                                         currentOnAction(PockRefAction.SelectImage(dragId))
@@ -8902,8 +8918,22 @@ private fun PockRefCanvas(
                     }
 
                     val upTime = System.currentTimeMillis()
-                    val isTap = !gestureMoved && !dragStarted && !transformStarted &&
-                        (upTime - downTime) < 300L && totalDrag.getDistance() < tapMaxDragPx
+                    val isTap = isSingleFingerCanvasTap(
+                        peakPointerCount = peakPointerCount,
+                        dragStarted = dragStarted,
+                        transformStarted = transformStarted,
+                        durationMs = upTime - downTime,
+                        maxDistancePx = maxSingleFingerDistancePx,
+                        tapMaxDragPx = tapMaxDragPx,
+                    )
+                    if (hitId != null && !isTap && !dragStarted && peakPointerCount == 1) {
+                        Log.d(
+                            "PockRefTouch",
+                            "image tap rejected duration=${upTime - downTime}ms " +
+                                "maxDistanceDp=${maxSingleFingerDistancePx / density} " +
+                                "transform=$transformStarted",
+                        )
+                    }
 
                     // V_NOW (2026-06-19 user spec "开启全局锁定
                     // 和冻结模式后,点一下应用界面,右上角锁定
@@ -9041,7 +9071,11 @@ private fun PockRefCanvas(
                                 // cancelled and the focus action
                                 // fires instead.
                                 val isSingleSelect = !isMultiSelect
-                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = !isSingleSelect))
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(
+                                    downPos,
+                                    Size(size.width.toFloat(), size.height.toFloat()),
+                                    showSheet = !isSingleSelect,
+                                ))
                                 if (isSingleSelect) {
                                     // V_NOW (2026-06-08 "连续弹出
                                     // 两次" 修复): debounce against
@@ -9165,9 +9199,17 @@ private fun PockRefCanvas(
                             // can cancel it and focus instead.
                             val isSingleSelect = !isMultiSelect
                             if (isSingleSelect) {
-                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = false))
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(
+                                    downPos,
+                                    Size(size.width.toFloat(), size.height.toFloat()),
+                                    showSheet = false,
+                                ))
                             } else {
-                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = true))
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(
+                                    downPos,
+                                    Size(size.width.toFloat(), size.height.toFloat()),
+                                    showSheet = true,
+                                ))
                             }
                             if (isSingleSelect) {
                                         // V_NOW (2026-06-08): same

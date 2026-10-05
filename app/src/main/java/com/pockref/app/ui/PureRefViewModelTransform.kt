@@ -1,6 +1,7 @@
 package com.pockref.app.ui
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.model.AngleSnapGuide
@@ -583,6 +584,13 @@ private fun SceneDiff.UpdateImage.swap(): SceneDiff.UpdateImage = SceneDiff.Upda
     newColorAdjust = oldColorAdjust,
 )
 
+internal fun canvasPointToWorld(
+    point: Offset,
+    viewportSize: Size,
+    canvasOffset: Offset,
+    canvasScale: Float,
+): Offset = (point - Offset(viewportSize.width / 2f, viewportSize.height / 2f) - canvasOffset) / canvasScale
+
 class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     /**
      * Pending 200ms debounce coroutine for rotation-snap engagement.
@@ -849,22 +857,16 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         }
     }
 
-    internal fun cycleImageUnderPoint(point: Offset, showSheet: Boolean = true) {
+    internal fun cycleImageUnderPoint(point: Offset, viewportSize: Size, showSheet: Boolean = true) {
         val state = mainVm._uiState.value
-        val viewportW = state.canvasViewportSize.width
-        val viewportH = state.canvasViewportSize.height
+        val viewportW = viewportSize.width
+        val viewportH = viewportSize.height
         if (viewportW <= 0f || viewportH <= 0f) return
 
         fun hitTest(state: PockRefUiState, p: Offset): List<String> {
             return state.images.sortedByDescending { it.zIndex }.mapNotNull { image ->
-                val mappedCenter = Offset(
-                    p.x - (viewportW / 2f) - state.canvasOffset.x,
-                    p.y - (viewportH / 2f) - state.canvasOffset.y,
-                )
-                val localPoint = Offset(
-                    x = (mappedCenter.x / state.canvasScale) - image.center.x,
-                    y = (mappedCenter.y / state.canvasScale) - image.center.y,
-                )
+                val worldPoint = canvasPointToWorld(p, viewportSize, state.canvasOffset, state.canvasScale)
+                val localPoint = worldPoint - image.center
                 val matrix = android.graphics.Matrix().apply {
                     postRotate(-image.rotationDegrees)
                     postScale(if (image.flipX) -1f else 1f, if (image.flipY) -1f else 1f)
