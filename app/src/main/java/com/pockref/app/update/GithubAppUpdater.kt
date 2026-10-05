@@ -24,8 +24,8 @@ import kotlin.coroutines.coroutineContext
  *
  * Keep this URL stable after the repository is created. The JSON should live
  * on the default branch; the APK itself should be an immutable Release asset.
- * Use the public asset API URL: the browser download path can return 404 even
- * when the asset API serves the file anonymously.
+ * Use the public asset API URL: the browser download path may lag publication
+ * or fail in networks where the asset API still downloads successfully.
  */
 object GithubUpdateConfig {
     const val manifestUrl =

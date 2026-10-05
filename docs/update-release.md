@@ -20,9 +20,10 @@ publishing its ID in the manifest: GitHub assigns a new ID on reupload.
    Download `https://api.github.com/repos/KangNa-K/PockRef/releases/assets/ID`
    anonymously with `Accept: application/octet-stream`; compare `shasum -a
    256` and byte size against the local APK, including from a target device.
-   For the first release, the normal browser download URL returned 404 while
-   the asset API URL returned the APK, so do not assume those URLs are
-   interchangeable.
+   For the first release, the normal browser URL initially returned 404,
+   then became available after propagation. A later tablet download from
+   that URL disconnected mid-transfer. The public asset API URL downloaded
+   and verified on the tablet; keep testing both paths for later releases.
 5. **Last**, update `update/version.json` on `main` with `versionCode`,
    `versionName`, the tested asset API `apkUrl`, `sha256`, `size`, `notes`,
    and `releaseUrl`.
