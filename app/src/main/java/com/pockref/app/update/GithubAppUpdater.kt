@@ -21,7 +21,7 @@ import org.json.JSONObject
  */
 object GithubUpdateConfig {
     const val manifestUrl =
-        "https://raw.githubusercontent.com/OWNER/REPOSITORY/main/update/version.json"
+        "https://raw.githubusercontent.com/KangNa-K/PockRef/main/update/version.json"
 }
 
 data class AppUpdateManifest(
