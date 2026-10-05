@@ -48,10 +48,7 @@ internal fun SettingsAppearanceTab(
  //主题
  item {
  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
- Text(
- text = "主题",
- style = MaterialTheme.typography.titleSmall,
- )
+ SettingsSectionHeading("主题", divided = false)
  val themeOptions = listOf(
  ThemeMode.SYSTEM to "系统",
  ThemeMode.LIGHT to "浅色",
@@ -82,10 +79,7 @@ internal fun SettingsAppearanceTab(
  //背景颜色
  item {
  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
- Text(
- text = "背景颜色",
- style = MaterialTheme.typography.titleSmall,
- )
+ SettingsSectionHeading("背景颜色")
  BackgroundColorPanel(
  currentColor = state.backgroundColor,
  onPreset = { preset ->
@@ -119,6 +113,7 @@ internal fun SettingsAppearanceTab(
  }
     //小地图显示
     item {
+        androidx.compose.material3.HorizontalDivider()
         SettingsMinimapSection(state = state, onAction = onAction)
     }
     // V_NOW (2026-06-16 user feedback "去掉设置里的启动

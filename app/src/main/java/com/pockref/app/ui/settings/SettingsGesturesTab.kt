@@ -73,11 +73,7 @@ internal fun SettingsGesturesTab(
  ) {
  gestureGroupSpecs.forEach { group ->
  item(key = "group_${group.title}") {
- Text(
- text = group.title,
- style = MaterialTheme.typography.titleSmall,
- color = MaterialTheme.colorScheme.onSurfaceVariant,
- )
+ SettingsSectionHeading(group.title, divided = group != gestureGroupSpecs.first())
  }
  items(
  items = group.ids,

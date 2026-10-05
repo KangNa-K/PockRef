@@ -25,6 +25,12 @@ import androidx.compose.ui.unit.dp
  *     1dp tiers so the most-tappable element pops the most
  */
 object Dimens {
+    val SettingsWindowMaxWidth = 760.dp
+    val SettingsContentMaxWidth = 560.dp
+    val SettingsNavigationWidth = 120.dp
+    val SettingsContentInset = 24.dp
+    const val SettingsWindowHeightFraction = 0.84f
+
     /** All floating elements get exactly this from the nearest edge. */
     val EdgeInset = 16.dp
 

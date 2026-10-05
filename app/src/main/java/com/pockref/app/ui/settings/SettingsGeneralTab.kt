@@ -19,6 +19,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import com.pockref.app.ui.theme.Dimens
 import androidx.compose.ui.unit.dp
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.ui.PockRefAction
@@ -43,13 +45,14 @@ internal fun SettingsGeneralTab(
  onChooseDefaultSaveDirectory: () -> Unit,
 ) {
  LazyColumn(
- modifier = Modifier.fillMaxSize(),
+ modifier = Modifier.fillMaxSize().testTag("settings_general_list"),
  contentPadding = PaddingValues(
- horizontal =24.dp,
+ horizontal =Dimens.SettingsContentInset,
  vertical =16.dp,
  ),
- verticalArrangement = Arrangement.spacedBy(16.dp),
+ verticalArrangement = Arrangement.spacedBy(12.dp),
  ) {
+ item { SettingsSectionHeading("基础行为", divided = false) }
  item {
  SettingsToggleRow(
  title = "吸附图像",
@@ -69,6 +72,9 @@ internal fun SettingsGeneralTab(
  onAction(PockRefAction.SetRotationSnapEnabled(checked))
  },
  )
+ }
+ item {
+ SettingsSectionHeading("保存与恢复")
  }
  item {
  SettingsAutoSaveSection(state = state, onAction = onAction)
@@ -125,8 +131,12 @@ internal fun SettingsGeneralTab(
  }
  }
  item {
+ SettingsSectionHeading("设备输入")
+ }
+ item {
  SettingsSpenSection(state = state, onAction = onAction)
  }
+ item { androidx.compose.material3.HorizontalDivider() }
  item {
  SettingsUpdateSection()
  }

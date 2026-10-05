@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.SwipeRight
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.model.SettingsTab
 import com.pockref.app.ui.PockRefAction
+import com.pockref.app.ui.theme.Dimens
 
 /**
  * Visual metadata for the3 settings tabs. Centralised so the
@@ -94,7 +96,7 @@ internal fun SettingsNavigationRail(
  selectedTab: SettingsTab,
  onTabSelected: (SettingsTab) -> Unit,
 ) {
- NavigationRail {
+ NavigationRail(modifier = Modifier.width(Dimens.SettingsNavigationWidth).fillMaxHeight()) {
  settingsTabSpecs.forEach { spec ->
  NavigationRailItem(
  selected = selectedTab == spec.tab,
