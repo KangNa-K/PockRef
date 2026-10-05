@@ -1,17 +1,23 @@
 package com.pockref.app.update
 
 import android.content.Context
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
 import android.provider.Settings
 import androidx.core.content.FileProvider
-import com.pockref.app.BuildConfig
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import kotlin.coroutines.coroutineContext
 
 /**
  * GitHub single-source updater.
@@ -45,55 +51,87 @@ sealed interface UpdateInstallResult {
 }
 
 object GithubAppUpdater {
-    suspend fun checkForUpdate(): UpdateCheckResult {
-        val json = readUrl(GithubUpdateConfig.manifestUrl)
-        val manifest = parseManifest(json)
-        require(manifest.versionCode > 0) { "versionCode must be positive" }
-        require(manifest.apkUrl.startsWith("https://")) { "apkUrl must use HTTPS" }
-        require(manifest.sha256.matches(Regex("[A-Fa-f0-9]{64}"))) {
-            "sha256 must be a SHA-256 hex digest"
+    suspend fun checkForUpdate(context: Context): UpdateCheckResult = withContext(Dispatchers.IO) {
+        val manifest = parseManifest(readUrl(GithubUpdateConfig.manifestUrl))
+        require(manifest.versionCode > 0 && manifest.versionName.isNotBlank()) {
+            "Invalid update version"
         }
-        return if (manifest.versionCode > BuildConfig.VERSION_CODE) {
+        val current = context.packageManager.getPackageInfo(context.packageName, 0)
+        val currentCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            current.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            current.versionCode.toLong()
+        }
+        if (isNewer(manifest.versionCode, currentCode)) {
+            validateDownload(manifest)
             UpdateCheckResult.Available(manifest)
         } else {
             UpdateCheckResult.UpToDate
         }
     }
 
-    fun downloadAndInstall(
+    suspend fun download(
         context: Context,
         manifest: AppUpdateManifest,
         onProgress: (Int) -> Unit,
-    ): UpdateInstallResult {
+    ): File = withContext(Dispatchers.IO) {
+        validateDownload(manifest)
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
         val apk = File(updatesDir, "pockref-${manifest.versionCode}.apk")
-        download(manifest, apk, onProgress)
+        if (!verifyFile(apk, manifest)) {
+            downloadFile(manifest, apk, onProgress)
+        }
+        validatePackage(context, apk, manifest)
+        apk
+    }
 
+    fun canInstall(context: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            context.packageManager.canRequestPackageInstalls()
+
+    fun openInstallPermission(context: Context) {
+        context.startActivity(
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
+
+    fun install(context: Context, apk: File): UpdateInstallResult {
+        if (!canInstall(context)) return UpdateInstallResult.PermissionRequired
         val uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
             apk,
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            !context.packageManager.canRequestPackageInstalls()
-        ) {
-            context.startActivity(
-                Intent(
-                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:${context.packageName}"),
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-            return UpdateInstallResult.PermissionRequired
-        }
-
         context.startActivity(
             Intent(Intent.ACTION_VIEW)
                 .setDataAndType(uri, "application/vnd.android.package-archive")
+                .apply { clipData = ClipData.newRawUri("PockRef update", uri) }
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
         return UpdateInstallResult.Started
     }
+
+    internal fun validateDownload(manifest: AppUpdateManifest) {
+        require(manifest.versionCode > 0 && manifest.size in 1..MAX_APK_SIZE) {
+            "Invalid APK size or version"
+        }
+        require(
+            manifest.apkUrl.startsWith(
+                "https://github.com/KangNa-K/PockRef/releases/download/",
+            ),
+        ) { "APK must be a PockRef GitHub Release asset" }
+        require(manifest.sha256.matches(Regex("[A-Fa-f0-9]{64}"))) {
+            "Invalid APK SHA-256"
+        }
+    }
+
+    internal fun isNewer(latestCode: Int, currentCode: Long): Boolean =
+        latestCode.toLong() > currentCode
+
+    private const val MAX_APK_SIZE = 250L * 1024 * 1024
 
     private fun readUrl(url: String): String {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -113,20 +151,35 @@ object GithubAppUpdater {
         }
     }
 
-    private fun parseManifest(json: String): AppUpdateManifest {
+    internal fun parseManifest(json: String): AppUpdateManifest {
         val objectJson = JSONObject(json)
         return AppUpdateManifest(
             versionCode = objectJson.getInt("versionCode"),
             versionName = objectJson.getString("versionName"),
-            apkUrl = objectJson.getString("apkUrl"),
-            sha256 = objectJson.getString("sha256"),
+            apkUrl = objectJson.optString("apkUrl"),
+            sha256 = objectJson.optString("sha256"),
             size = objectJson.optLong("size", 0L),
             notes = objectJson.optString("notes"),
             releaseUrl = objectJson.optString("releaseUrl").ifBlank { null },
         )
     }
 
-    private fun download(
+    internal fun verifyFile(file: File, manifest: AppUpdateManifest): Boolean {
+        if (!file.isFile || file.length() != manifest.size) return false
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().buffered().use { stream ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+            .equals(manifest.sha256, ignoreCase = true)
+    }
+
+    private suspend fun downloadFile(
         manifest: AppUpdateManifest,
         destination: File,
         onProgress: (Int) -> Unit,
@@ -139,27 +192,25 @@ object GithubAppUpdater {
         val temporary = File(destination.parentFile, "${destination.name}.part")
         try {
             if (connection.responseCode !in 200..299) error("APK HTTP ${connection.responseCode}")
-            val expectedLength = if (manifest.size > 0) manifest.size else connection.contentLengthLong
+            require(connection.url.protocol == "https") { "APK redirect must use HTTPS" }
             var downloaded = 0L
             val digest = MessageDigest.getInstance("SHA-256")
             connection.inputStream.use { input ->
                 temporary.outputStream().use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     while (true) {
+                        coroutineContext.ensureActive()
                         val count = input.read(buffer)
                         if (count < 0) break
                         output.write(buffer, 0, count)
                         digest.update(buffer, 0, count)
                         downloaded += count
-                        if (expectedLength > 0) {
-                            onProgress(((downloaded * 100) / expectedLength).toInt().coerceIn(0, 100))
-                        }
+                        if (downloaded > manifest.size) error("APK exceeds expected size")
+                        onProgress(((downloaded * 100) / manifest.size).toInt().coerceIn(0, 100))
                     }
                 }
             }
-            if (manifest.size > 0 && downloaded != manifest.size) {
-                error("APK size mismatch")
-            }
+            if (downloaded != manifest.size) error("APK size mismatch")
             val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
             if (!actualSha.equals(manifest.sha256, ignoreCase = true)) {
                 error("APK SHA-256 mismatch")
@@ -169,6 +220,43 @@ object GithubAppUpdater {
         } finally {
             connection.disconnect()
             if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun validatePackage(context: Context, apk: File, manifest: AppUpdateManifest) {
+        @Suppress("DEPRECATION")
+        val signingFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            PackageManager.GET_SIGNATURES
+        }
+        val manager = context.packageManager
+        val info: PackageInfo = manager.getPackageArchiveInfo(apk.absolutePath, signingFlag)
+            ?: error("Downloaded file is not an APK")
+        require(info.packageName == context.packageName) { "APK package mismatch" }
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+        require(code == manifest.versionCode.toLong()) { "APK version mismatch" }
+        @Suppress("DEPRECATION")
+        val installed = manager.getPackageInfo(context.packageName, signingFlag)
+        @Suppress("DEPRECATION")
+        val installedSigners = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            installed.signingInfo?.apkContentsSigners?.map { it.toCharsString() }
+        } else {
+            installed.signatures?.map { it.toCharsString() }
+        }
+        @Suppress("DEPRECATION")
+        val apkSigners = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.signingInfo?.apkContentsSigners?.map { it.toCharsString() }
+        } else {
+            info.signatures?.map { it.toCharsString() }
+        }
+        require(!installedSigners.isNullOrEmpty() && installedSigners == apkSigners) {
+            "APK signing certificate mismatch"
         }
     }
 }

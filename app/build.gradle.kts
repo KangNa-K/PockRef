@@ -15,8 +15,8 @@ android {
         applicationId = "com.pockref.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 31
-        versionName = "2.2.5"
+        versionCode = 32
+        versionName = "2.2.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -148,6 +148,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 

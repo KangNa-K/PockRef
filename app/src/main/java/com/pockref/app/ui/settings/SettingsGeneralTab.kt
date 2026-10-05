@@ -127,5 +127,8 @@ internal fun SettingsGeneralTab(
  item {
  SettingsSpenSection(state = state, onAction = onAction)
  }
+ item {
+ SettingsUpdateSection()
+ }
  }
 }
