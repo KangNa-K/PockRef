@@ -16,6 +16,8 @@ import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.IOException
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -843,7 +845,16 @@ class PurFileParser {
                 val probeData = ByteArray(probeSize)
                 probeRaf.readFully(probeData)
 
-                val (width, height) = probeImageSize(probeData)
+                val (width, height) = probeImageSize(probeData).let { size ->
+                    if (size.first > 0 && size.second > 0) size else {
+                        // EXIF/XMP may put the JPEG frame header beyond the 64 KiB
+                        // prefix. Scan only this image's bounded stream, not pixels.
+                        val stream = RandomAccessFileRegionInputStream(
+                            probeRaf, entry.start, dataLength.toLong(),
+                        )
+                        stream.buffered().use { probeJpegSize(it) } ?: size
+                    }
+                }
                 val mimeType = when {
                     probeData.size >= 6 &&
                         (String(probeData, 0, 6) == "GIF87a" || String(probeData, 0, 6) == "GIF89a") -> "image/gif"
@@ -1084,28 +1095,44 @@ class PurFileParser {
         return if (width > 0 && height > 0) width to height else null
     }
 
-    private fun probeJpegSize(data: ByteArray): Pair<Int, Int>? {
-        if (data.size < 4 || data[0] != 0xFF.toByte() || data[1] != 0xD8.toByte()) return null
-        var cursor = 2
-        while (cursor + 4 < data.size) {
-            while (cursor < data.size && data[cursor] != 0xFF.toByte()) cursor++
-            while (cursor < data.size && data[cursor] == 0xFF.toByte()) cursor++
-            if (cursor >= data.size) return null
-            val marker = data[cursor].toInt() and 0xFF
-            cursor++
-            if (marker == 0xD9 || marker == 0xDA) return null
-            if (marker == 0x01 || marker in 0xD0..0xD7) continue
-            if (cursor + 2 > data.size) return null
-            val segmentLength = readUInt16BE(data, cursor)
-            if (segmentLength < 2 || cursor + segmentLength > data.size) return null
-            if (marker in JPEG_SIZE_MARKERS && cursor + 7 <= data.size) {
-                val height = readUInt16BE(data, cursor + 3)
-                val width = readUInt16BE(data, cursor + 5)
-                if (width > 0 && height > 0) return width to height
+    private fun probeJpegSize(data: ByteArray): Pair<Int, Int>? =
+        probeJpegSize(ByteArrayInputStream(data))
+
+    internal fun probeJpegSize(input: InputStream): Pair<Int, Int>? {
+        val data = DataInputStream(input)
+        return try {
+            if (data.readUnsignedShort() != 0xFFD8) return null
+            while (true) {
+                if (data.readUnsignedByte() != 0xFF) return null
+                var marker = data.readUnsignedByte()
+                while (marker == 0xFF) marker = data.readUnsignedByte()
+                if (marker == 0xD9 || marker == 0xDA || marker == 0) return null
+                if (marker == 0x01 || marker in 0xD0..0xD7) continue
+                val segmentLength = data.readUnsignedShort()
+                if (segmentLength < 2) return null
+                if (marker in JPEG_SIZE_MARKERS) {
+                    if (segmentLength < 8) return null
+                    data.readUnsignedByte() // sample precision
+                    val height = data.readUnsignedShort()
+                    val width = data.readUnsignedShort()
+                    return if (width > 0 && height > 0) width to height else null
+                }
+                // Skip entire metadata segments so an EXIF thumbnail's SOF
+                // cannot be mistaken for the original image's dimensions.
+                var remaining = segmentLength - 2
+                while (remaining > 0) {
+                    val skipped = data.skipBytes(remaining)
+                    if (skipped > 0) remaining -= skipped else {
+                        data.readUnsignedByte()
+                        remaining--
+                    }
+                }
             }
-            cursor += segmentLength
+            @Suppress("UNREACHABLE_CODE")
+            null
+        } catch (_: IOException) {
+            null
         }
-        return null
     }
 
     private fun readUInt32BE(bytes: ByteArray, offset: Int): Long {
