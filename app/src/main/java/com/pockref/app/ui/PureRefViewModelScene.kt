@@ -29,7 +29,6 @@ import com.pockref.app.model.hasSceneContent
 import com.pockref.app.model.toScene
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileOutputStream
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.roundToInt
@@ -1038,37 +1037,18 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
                 val t0 = System.nanoTime()
                 val cacheDir = mainVm.getApplication<Application>().cacheDir
-                val tempOutput = File.createTempFile("pockref_save_", ".pur", cacheDir)
-                try {
-                    val bufferedOut = java.io.BufferedOutputStream(FileOutputStream(tempOutput), 256 * 1024)
-                    bufferedOut.use { tempFileOutput ->
-                        mainVm.codec.writePureRefCompatible(scene, tempFileOutput, cacheDir)
-                    }
-
-                    val t1 = System.nanoTime()
-                    Log.d("PockRefSave", "Scene written to temp file in ${(t1 - t0) / 1_000_000}ms")
-
-                    mainVm.takePersistablePermission(uri, read = true, write = true)
-                    val mode = if (truncate) "wt" else null
-                    val stream = if (mode != null) {
-                        mainVm.contentResolver.openOutputStream(uri, mode)
-                    } else {
-                        mainVm.contentResolver.openOutputStream(uri)
-                    }
-                    stream?.use { output ->
-                        val bufferedOutput = java.io.BufferedOutputStream(output, 256 * 1024)
-                        tempOutput.inputStream().use { input ->
-                            val bufferedInput = java.io.BufferedInputStream(input, 256 * 1024)
-                            bufferedInput.copyTo(bufferedOutput, 256 * 1024)
-                            bufferedOutput.flush()
+                mainVm.sceneFileWriter.write(
+                    encode = { mainVm.codec.writePureRefCompatible(scene, it, cacheDir) },
+                    openDestination = {
+                        mainVm.takePersistablePermission(uri, read = true, write = true)
+                        if (truncate) {
+                            mainVm.contentResolver.openOutputStream(uri, "wt")
+                        } else {
+                            mainVm.contentResolver.openOutputStream(uri)
                         }
-                    } ?: error("Unable to open destination")
-
-                    val t2 = System.nanoTime()
-                    Log.d("PockRefSave", "Copied to destination in ${(t2 - t1) / 1_000_000}ms, total ${(t2 - t0) / 1_000_000}ms")
-                } finally {
-                    tempOutput.delete()
-                }
+                    },
+                )
+                Log.d("PockRefSave", "Saved scene in ${(System.nanoTime() - t0) / 1_000_000}ms")
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e

@@ -14,7 +14,11 @@ import java.io.OutputStream
 import java.security.DigestOutputStream
 import java.security.MessageDigest
 
-class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
+class AutoSaveManager internal constructor(
+    context: Context,
+    private val codec: PurSceneCodec,
+    private val sceneFileWriter: SceneFileWriter = SceneFileWriter(File(context.filesDir, "scene_writes")),
+) {
 
     private val appContext = context.applicationContext
     private val prefs: SharedPreferences =
@@ -186,11 +190,10 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
             var originalSaved = false
             if (currentSceneUri != null) {
                 try {
-                    val output = contentResolver.openOutputStream(currentSceneUri, "wt")
-                        ?: error("Unable to open output stream for $currentSceneUri")
-                    output.use {
-                        codec.writePureRefCompatible(scene, it, appContext.cacheDir)
-                    }
+                    sceneFileWriter.write(
+                        encode = { codec.writePureRefCompatible(scene, it, appContext.cacheDir) },
+                        openDestination = { contentResolver.openOutputStream(currentSceneUri, "wt") },
+                    )
                     originalSaved = true
                     Log.d(TAG, "autoSave: wrote to original URI $currentSceneUri")
                 } catch (e: kotlinx.coroutines.CancellationException) {
@@ -202,10 +205,15 @@ class AutoSaveManager(context: Context, private val codec: PurSceneCodec) {
                 Log.d(TAG, "autoSave: no currentSceneUri, backup-only save")
             }
 
-            prefs.edit()
-                .putLong(KEY_LAST_SAVE_TS, System.currentTimeMillis())
-                .putString(KEY_LAST_CONTENT_HASH, sceneHash)
-                .apply()
+            val edit = prefs.edit().putLong(KEY_LAST_SAVE_TS, System.currentTimeMillis())
+            // A backup alone does not mean the original was saved. Retry the
+            // original on the next cycle even when the scene has not changed.
+            if (currentSceneUri == null || originalSaved) {
+                edit.putString(KEY_LAST_CONTENT_HASH, sceneHash)
+            } else {
+                edit.remove(KEY_LAST_CONTENT_HASH)
+            }
+            edit.apply()
 
             cleanupOldBackups()
 
