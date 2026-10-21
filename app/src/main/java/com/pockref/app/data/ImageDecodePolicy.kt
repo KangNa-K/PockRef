@@ -23,7 +23,7 @@ object ImageDecodePolicy {
         canvasScale: Float,
         isFocusedImage: Boolean,
     ): ImageDecodeRequest {
-        if (isFocusedImage) {
+        if (isFocusedImage || image.showsOriginalResolution) {
             return ImageDecodeRequest(
                 displayWidth = image.intrinsicWidth.coerceAtLeast(1),
                 displayHeight = image.intrinsicHeight.coerceAtLeast(1),

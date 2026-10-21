@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
@@ -37,6 +38,11 @@ internal fun originalResolutionStateFor(values: List<Boolean>): OriginalResoluti
 internal fun targetOriginalResolutionEnabled(values: List<Boolean>): Boolean =
     values.isNotEmpty() && !values.all { it }
 
+internal fun shouldShowOriginalResolutionControl(
+    rotationActive: Boolean,
+    containsAnimatedGif: Boolean,
+): Boolean = !rotationActive && !containsAnimatedGif
+
 internal fun originalResolutionControlPosition(
     frame: Rect,
     controlWidthPx: Float = CONTROL_WIDTH_PX,
@@ -54,6 +60,24 @@ internal fun originalResolutionControlPosition(
         frame.center.y
     }
     return Offset(x, y)
+}
+
+internal fun projectSelectionFrameToScreen(
+    worldFrame: Rect,
+    canvasOffset: Offset,
+    canvasScale: Float,
+    viewportSize: Size,
+): Rect {
+    val canvasCenter = Offset(
+        x = viewportSize.width / 2f + canvasOffset.x,
+        y = viewportSize.height / 2f + canvasOffset.y,
+    )
+    return Rect(
+        left = canvasCenter.x + worldFrame.left * canvasScale,
+        top = canvasCenter.y + worldFrame.top * canvasScale,
+        right = canvasCenter.x + worldFrame.right * canvasScale,
+        bottom = canvasCenter.y + worldFrame.bottom * canvasScale,
+    )
 }
 
 /**

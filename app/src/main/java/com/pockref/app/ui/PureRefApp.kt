@@ -7001,24 +7001,22 @@ private fun PockRefCanvas(
     }
 
     val controlDensity = LocalDensity.current
+    var selectionHdRotationActive by remember { mutableStateOf(false) }
     val controlWidthPx = with(controlDensity) { 52.dp.toPx() }
     val controlHeightPx = with(controlDensity) { 44.dp.toPx() }
     val controlInsetPx = with(controlDensity) { 8.dp.toPx() }
-    val selectedImageForHd = remember(
+    val selectedImagesForHd = remember(
         state.images,
         state.selectedImageIds,
         state.selectedImageId,
     ) {
-        val selectedId = ImageTilePolicy.singleSelectedImageId(
-            selectedImageIds = state.selectedImageIds,
-            selectedImageId = state.selectedImageId,
-        )
-        selectedId
-            ?.let { id -> state.images.firstOrNull { it.id == id } }
-            ?.takeUnless { image -> isGifMimeType(image.mimeType) }
+        val selectedIds = state.selectedImageIds.ifEmpty {
+            state.selectedImageId?.let(::setOf).orEmpty()
+        }
+        state.images.filter { it.id in selectedIds }
     }
     val selectionHdPlacement = remember(
-        selectedImageForHd,
+        selectedImagesForHd,
         state.canvasOffset,
         state.canvasScale,
         renderViewportSize,
@@ -7028,23 +7026,30 @@ private fun PockRefCanvas(
         controlHeightPx,
         controlInsetPx,
     ) {
-        val image = selectedImageForHd
         val viewport = renderViewportSize
-        if (image == null || viewport.width <= 0f || viewport.height <= 0f) {
-            null
-        } else {
+        val displayImages = selectedImagesForHd.map { image ->
             val dragOffset = if (image.id in state.transientDragImageIds) {
                 state.transientDragDelta
             } else {
                 Offset.Zero
             }
+            if (dragOffset == Offset.Zero) image else image.copy(center = image.center + dragOffset)
+        }
+        if (displayImages.isEmpty() ||
+            viewport.width <= 0f ||
+            viewport.height <= 0f ||
+            displayImages.any { image -> isGifMimeType(image.mimeType) }
+        ) {
+            null
+        } else if (displayImages.size == 1) {
+            val image = displayImages.single()
             val canvasCenter = Offset(
                 x = viewport.width / 2f + state.canvasOffset.x,
                 y = viewport.height / 2f + state.canvasOffset.y,
             )
             val imageCenter = Offset(
-                x = canvasCenter.x + (image.center.x + dragOffset.x) * state.canvasScale,
-                y = canvasCenter.y + (image.center.y + dragOffset.y) * state.canvasScale,
+                x = canvasCenter.x + image.center.x * state.canvasScale,
+                y = canvasCenter.y + image.center.y * state.canvasScale,
             )
             val imageWidth = image.displaySize.width * image.scale * state.canvasScale
             val imageHeight = image.displaySize.height * image.scale * state.canvasScale
@@ -7061,6 +7066,25 @@ private fun PockRefCanvas(
                     insetPx = controlInsetPx,
                 ),
                 rotationDegrees = image.rotationDegrees,
+                controlWidthPx = controlWidthPx,
+                controlHeightPx = controlHeightPx,
+            )
+        } else {
+            val selectionFrame = projectSelectionFrameToScreen(
+                worldFrame = groupSelectionAabb(displayImages).rect,
+                canvasOffset = state.canvasOffset,
+                canvasScale = state.canvasScale,
+                viewportSize = viewport,
+            )
+            val controlCenter = originalResolutionControlPosition(
+                frame = selectionFrame,
+                controlWidthPx = controlWidthPx,
+                controlHeightPx = controlHeightPx,
+                insetPx = controlInsetPx,
+            )
+            OriginalResolutionControlPlacement(
+                center = controlCenter,
+                rotationDegrees = 0f,
                 controlWidthPx = controlWidthPx,
                 controlHeightPx = controlHeightPx,
             )
@@ -7610,6 +7634,7 @@ private fun PockRefCanvas(
                                     )
                                     currentOnAction(PockRefAction.BeginSceneGesture)
                                     rotationHandleDragActive = true
+                                    selectionHdRotationActive = true
                                 }
 
                                 // V_NOW (2026-06-11 "旋转图片
@@ -8044,6 +8069,7 @@ private fun PockRefCanvas(
                                 currentOnAction(PockRefAction.EndSceneGesture)
                                 rotationHandleDragActive = false
                                 rotationHandleDrag = null
+                                selectionHdRotationActive = false
                             }
                             if (activeDragImageId != null && dragStarted) {
                                 currentOnAction(PockRefAction.CommitImageDrag)
@@ -8339,6 +8365,10 @@ private fun PockRefCanvas(
                                 }
                             }
 
+                            if (hasSelected && transformMode == ImageTransformMode.ROTATE) {
+                                selectionHdRotationActive = true
+                            }
+
                             val canvasOffsetForTransform = renderCanvasOffsetForLocalPan(
                                 stateOffset = currentState.canvasOffset,
                                 presentationOffset = canvasPanPresentationOffset,
@@ -8482,6 +8512,7 @@ private fun PockRefCanvas(
                                 transformMode = ImageTransformMode.NONE
                                 initialZoom = 1f
                                 initialRotation = 0f
+                                selectionHdRotationActive = false
                             }
 
                             val change = changes[0]
@@ -8747,6 +8778,7 @@ private fun PockRefCanvas(
                         transformMode = ImageTransformMode.NONE
                         initialZoom = 1f
                         initialRotation = 0f
+                        selectionHdRotationActive = false
                     }
 
                     // V_NOW (2026-06-10 #3 corner-handle
@@ -8778,6 +8810,7 @@ private fun PockRefCanvas(
                         currentOnAction(PockRefAction.EndSceneGesture)
                         rotationHandleDragActive = false
                         rotationHandleDrag = null
+                        selectionHdRotationActive = false
                     }
 
                     // V_NOW (2026-06-10 #3 corner-handle
@@ -9640,11 +9673,16 @@ private fun PockRefCanvas(
         }
         }
 
-        if (selectedImageForHd != null && selectionHdPlacement != null) {
+        if (
+            selectedImagesForHd.isNotEmpty() &&
+            selectionHdPlacement != null &&
+            shouldShowOriginalResolutionControl(
+                rotationActive = selectionHdRotationActive,
+                containsAnimatedGif = selectedImagesForHd.any { image -> isGifMimeType(image.mimeType) },
+            )
+        ) {
             SelectionHdControl(
-                state = originalResolutionStateFor(
-                    listOf(selectedImageForHd.showsOriginalResolution),
-                ),
+                state = originalResolutionStateFor(selectedImagesForHd.map { it.showsOriginalResolution }),
                 onClick = {
                     onAction(PockRefAction.ToggleOriginalDisplaySelected)
                 },

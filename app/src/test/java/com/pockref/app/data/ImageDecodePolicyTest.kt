@@ -113,6 +113,25 @@ class ImageDecodePolicyTest {
         assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
     }
 
+    @Test
+    fun hdImage_requestsOriginalQualityWithoutFocus() {
+        val request = ImageDecodePolicy.requestFor(
+            image = testImage(
+                displayWidth = 900f,
+                displayHeight = 600f,
+                imageScale = 1f,
+                intrinsicWidth = 10881,
+                intrinsicHeight = 14073,
+            ).copy(showsOriginalResolution = true),
+            canvasScale = 0.1f,
+            isFocusedImage = false,
+        )
+
+        assertEquals(10881, request.displayWidth)
+        assertEquals(14073, request.displayHeight)
+        assertEquals(SceneImageDecoder.DECODE_LADDER.lastIndex, request.maxLevel)
+    }
+
     private fun testImage(
         displayWidth: Float,
         displayHeight: Float,
