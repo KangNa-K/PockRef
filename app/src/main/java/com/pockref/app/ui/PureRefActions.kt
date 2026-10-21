@@ -4,6 +4,7 @@ import android.graphics.RectF
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import com.pockref.app.model.AlignMode
 import com.pockref.app.model.BackgroundPreset
@@ -373,7 +374,11 @@ sealed interface PockRefAction {
     // to force the sheet to hide.
     data object DismissSelectionSheet : PockRefAction
     data class MoveImage(val imageId: String, val delta: Offset) : PockRefAction
-    data class CycleImageUnderPoint(val point: Offset, val showSheet: Boolean = true) : PockRefAction
+    data class CycleImageUnderPoint(
+        val point: Offset,
+        val viewportSize: Size,
+        val showSheet: Boolean = true,
+    ) : PockRefAction
     data class BringImageToFront(val imageId: String) : PockRefAction
     /**
      * V_NOW (2026-06-10 user spec "单选 sheet 第一行按钮 = 水平翻转 /

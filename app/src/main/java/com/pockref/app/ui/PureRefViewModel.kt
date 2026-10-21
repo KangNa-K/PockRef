@@ -15,6 +15,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.AppPreferences
 import com.pockref.app.data.AutoSaveManager
+import com.pockref.app.data.SceneFileWriter
 import com.pockref.app.data.ImageOptimizer
 import com.pockref.app.data.ImageTilePolicy
 import com.pockref.app.data.PurFileParser
@@ -113,7 +114,8 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     val imageDecoder: SceneImageDecoder get() = codec.imageDecoder
     private val prefs = application.getSharedPreferences("pockref_ui", Context.MODE_PRIVATE)
     internal val appPrefs = AppPreferences(application)
-    internal val autoSaveManager = AutoSaveManager(application, codec)
+    internal val sceneFileWriter = SceneFileWriter(File(application.filesDir, "scene_writes"))
+    internal val autoSaveManager = AutoSaveManager(application, codec, sceneFileWriter)
     internal val recoverySessionManager = RecoverySessionManager(application)
     internal val imageOptimizer = ImageOptimizer(application)
     val appUpdateController = com.pockref.app.update.AppUpdateController(
@@ -946,7 +948,11 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                     editingMarkupTextId = null,
                 )
             }
-            is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(action.point, action.showSheet)
+            is PockRefAction.CycleImageUnderPoint -> transformController.cycleImageUnderPoint(
+                action.point,
+                action.viewportSize,
+                action.showSheet,
+            )
             is PockRefAction.BringImageToFront -> transformController.bringImageToFront(action.imageId)
             // V_NOW (2026-06-10 user spec "单选 sheet 第一行
             // 按钮 = ... / 设为封面"): cover is a UI-only flag

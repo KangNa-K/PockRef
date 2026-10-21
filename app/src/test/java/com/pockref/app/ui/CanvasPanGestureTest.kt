@@ -1,12 +1,54 @@
 package com.pockref.app.ui
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CanvasPanGestureTest {
+
+    @Test
+    fun imageTapUsesDispatchingWindowViewport() {
+        val fullScreenPoint = Offset(540f, 1000f)
+        val fullScreen = Size(1080f, 2000f)
+        val floatingWindow = Size(600f, 800f)
+        assertEquals(
+            Offset.Zero,
+            canvasPointToWorld(fullScreenPoint, fullScreen, Offset.Zero, 1f),
+        )
+        assertEquals(
+            Offset(240f, 600f),
+            canvasPointToWorld(fullScreenPoint, floatingWindow, Offset.Zero, 1f),
+        )
+        assertEquals(
+            fullScreen,
+            PockRefAction.CycleImageUnderPoint(fullScreenPoint, fullScreen).viewportSize,
+        )
+    }
+
+    @Test
+    fun singleFingerJitterBelowTapLimit_stillSelects() {
+        assertTrue(
+            isSingleFingerCanvasTap(
+                peakPointerCount = 1,
+                dragStarted = false,
+                transformStarted = false,
+                durationMs = 90L,
+                maxDistancePx = 11f,
+                tapMaxDragPx = 12f,
+            ),
+        )
+    }
+
+    @Test
+    fun imageDragOrTwoFingerGesture_isNotSingleTap() {
+        assertFalse(isSingleFingerCanvasTap(1, true, false, 90L, 13f, 12f))
+        assertFalse(isSingleFingerCanvasTap(2, false, false, 90L, 1f, 12f))
+        assertFalse(isSingleFingerCanvasTap(1, false, false, 90L, 12f, 12f))
+        assertFalse(isSingleFingerCanvasTap(1, false, false, 300L, 1f, 12f))
+    }
 
     @Test
     fun singlePointerPanDelta_isIgnored() {

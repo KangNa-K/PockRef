@@ -488,6 +488,16 @@ private const val DOUBLE_TAP_MAX_DIST_DP = 32f
 private const val ZOOM_MIN = 0.25f
 private const val ZOOM_MAX = MAX_CANVAS_SCALE
 private const val DOUBLE_TAP_MAX_INTERVAL_MS = 400L
+
+internal fun isSingleFingerCanvasTap(
+    peakPointerCount: Int,
+    dragStarted: Boolean,
+    transformStarted: Boolean,
+    durationMs: Long,
+    maxDistancePx: Float,
+    tapMaxDragPx: Float,
+): Boolean = peakPointerCount == 1 && !dragStarted && !transformStarted &&
+    durationMs < 300L && maxDistancePx < tapMaxDragPx
 // V_NOW: delay before showing the SelectionBottomSheet
 // in single-select mode. Shorter than the full double-tap
 // window so the sheet appears responsive on single taps,
@@ -1499,82 +1509,6 @@ fun PockRefApp(
                         },
                 )
             }
-            // V_NOW (2026-06-08 速写练习 feedback):
-            // [BottomRightActionPanel] (the FAB + 4 list
-            // items) moved from earlier in this Box to
-            // HERE so the FAB stays on top of the
-            // [SelectionBottomSheet] / [PracticeConfigSheet]
-            // / [PracticeScreen]. The previous order had
-            // the FAB rendered before the sheets, so a
-            // popped-up sheet covered the FAB visually
-            // AND intercepted taps to the FAB area
-            // (because the sheet's scrim is part of the
-            // sheet's [Surface], not the FAB's).
-            //
-            // Render condition unchanged from the
-            // original location: only when the canvas
-            // has at least one image AND we're not in
-            // crop mode (a crop session has its own
-            // commit/cancel chrome at the bottom and
-            // showing the FAB there would conflict).
-            //
-            // The 一键排版 action is also reachable from
-            // [SelectionBottomSheet]'s row2 (in multi/box
-            // mode) — the FAB is the primary path for
-            // canvas-tap workflows, the sheet button is
-            // the primary path for selection-tap workflows.
-            // Both dispatch the same
-            // [PockRefAction.ExecuteAutoLayout].
-            //
-            // V_NOW (2026-06-08 速写练习 focus-mode
-            // revision): gate on
-            // [state.practiceState == null] so the FAB
-            // genuinely doesn't render during practice
-            // (the practice screen's fullscreen black
-            // background would cover it anyway, but
-            // skipping the render is cheaper + the
-            // 4-item panel's expanded state can't
-            // accidentally survive across a practice
-            // session).
-            // Auto-hide the FAB when the selection sheet would
-            // visually overlap it. The sheet is BottomCenter-
-            // aligned with widthIn(max = SheetMaxWidth); the
-            // FAB sits at BottomEnd with CornerInset padding.
-            // If the FAB's left edge falls inside the sheet's
-            // right edge, skip the render.
-            val fabOverlapsSheet = state.selectedImageIds.isNotEmpty() && run {
-                val containerWidthDp = with(LocalDensity.current) { constraints.maxWidth.toDp() }
-                val sheetWidthDp = minOf(containerWidthDp, Dimens.SheetMaxWidth)
-                val sheetRightDp = (containerWidthDp + sheetWidthDp) / 2
-                val fabLeftDp = containerWidthDp - Dimens.CornerInset -
-                    Dimens.BottomPanelChromeSize
-                fabLeftDp < sheetRightDp
-            }
-            if (state.hasSceneContent && state.cropImageId == null &&
-                state.practiceState == null && !isLockEngaged &&
-                !state.markupModeActive &&
-                !fabOverlapsSheet
-            ) {
-                BottomRightActionPanel(
-                    state = state,
-                    onAction = onAction,
-                    onSaveScene = onSaveScene,
-                    onExportCanvas = {
-                        // V_NOW (2026-06-16): the canvas-export
-                        // entry used to launch the SAF picker
-                        // directly, bypassing the
-                        // [ExportCanvasDialogHost]. Now we
-                        // dispatch [PockRefAction.ExportCanvas]
-                        // to open the dialog; the dialog's
-                        // "确认导出" button is the single point
-                        // that reads the chosen [maxDim] +
-                        // [backgroundMode] and launches the
-                        // picker (which then comes back through
-                        // [exportCanvasLauncher] above).
-                        onAction(PockRefAction.ExportCanvas)
-                    },
-                )
-            }
             // V_NOW (2026-06-10 unified popup parity):
             // tap-outside scrim for the import popup.
             // The popup is an inline
@@ -1602,44 +1536,34 @@ fun PockRefApp(
                         },
                 )
             }
-            // V_NOW (bug fix — "menu open 时点击 FAB 不收起 / 不执行自动排版"):
-            // the [BottomRightActionPanel] used to live inside
-            // [CanvasPanel] (which is the first child of this
-            // [BoxWithConstraints]). The menu scrim above is a
-            // full-screen clickable drawn AFTER [CanvasPanel], so it
-            // covers the FAB's hit area and intercepts every FAB /
-            // list-item tap — the FAB's [combinedClickable.onClick] /
-            // [onLongClick] never fire, [onMenuDismiss] never runs
-            // from the FAB side, and [PockRefAction.ExecuteAutoLayout]
-            // / [SetBottomRightPanelExpanded] never dispatch. The
-            // visible "menu closes" came from the scrim itself,
-            // masking the broken click path.
-            //
-            // Fix: render [BottomRightActionPanel] here, AFTER the
-            // scrims but BEFORE [TopToolbar], so it sits visually on
-            // top of the menu scrim. The FAB + 4 list items become
-            // the topmost hit target at the bottom-right corner, so
-            // their [onMenuDismiss] + business-action paths both
-            // run. The render condition is the same as before
-            // (`state.images.isNotEmpty() && state.cropImageId ==
-            // null`) — the panel's [Surface] uses
-            // [BoxScope.align(Alignment.BottomEnd)] to anchor itself
-            // to this [BoxWithConstraints]'s bottom-end, same visual
-            // position as the old inside-CanvasPanel placement.
-            // V_NOW (2026-06-08 速写练习 feedback — "sheet
-            // 弹出时一键排版按钮被遮挡"): the
-            // [BottomRightActionPanel] was previously
-            // rendered HERE, BEFORE the
-            // [SelectionBottomSheet] / [PracticeConfigSheet]
-            // / [PracticeScreen], so the sheet covered the
-            // FAB when it popped up. Moved the FAB block
-            // to AFTER the sheets (search for "Moved
-            // BottomRightActionPanel" further down in this
-            // Box) so the FAB + 4 list items stay the
-            // topmost hit target. The FAB's own behaviour
-            // is unchanged — it still runs auto-layout
-            // (or, when long-pressed, expands the action
-            // list) regardless of the sheet state.
+            // Keep this panel above both the canvas sheets and the
+            // full-screen import/title dismiss scrims. Otherwise a
+            // visible FAB tap dismisses the popup without running layout.
+            val fabOverlapsSheet = state.selectedImageIds.isNotEmpty() && run {
+                val containerWidthDp = with(LocalDensity.current) { constraints.maxWidth.toDp() }
+                val sheetWidthDp = minOf(containerWidthDp, Dimens.SheetMaxWidth)
+                val sheetRightDp = (containerWidthDp + sheetWidthDp) / 2
+                val fabLeftDp = containerWidthDp - Dimens.CornerInset -
+                    Dimens.BottomPanelChromeSize
+                fabLeftDp < sheetRightDp
+            }
+            if (state.hasSceneContent && state.cropImageId == null &&
+                state.practiceState == null && !isLockEngaged &&
+                !state.markupModeActive && !fabOverlapsSheet
+            ) {
+                BottomRightActionPanel(
+                    state = state,
+                    onAction = { action ->
+                        if (state.importSourceMenuOpen) {
+                            onAction(PockRefAction.SetImportSourceMenuOpen(false))
+                        }
+                        if (isEditingSceneName) dismissSceneNameEdit()
+                        onAction(action)
+                    },
+                    onSaveScene = onSaveScene,
+                    onExportCanvas = { onAction(PockRefAction.ExportCanvas) },
+                )
+            }
             //
             // V_NOW (2026-06-08 速写练习 focus-mode
             // revision): gate on
@@ -7627,7 +7551,7 @@ private fun PockRefCanvas(
                             // multi-select union.
                             val cornerImages: List<com.pockref.app.model.SceneImage> =
                                 if (hasSingleSelection) {
-                                    listOf(cs2.images.first { it.id == sId })
+                                    cs2.images.filter { it.id == sId }
                                 } else {
                                     cs2.images.filter { it.id in sIds }
                                 }
@@ -8015,6 +7939,7 @@ private fun PockRefCanvas(
                     var lockedCanvasPinchZoomActive = false
                     var dragStarted = false
                     var totalDrag = Offset.Zero
+                    var maxSingleFingerDistancePx = 0f
                     // Drag-to-edge auto-scroll handoff. The
                     // move loop is the authoritative source
                     // for the pointer position during this
@@ -8063,6 +7988,11 @@ private fun PockRefCanvas(
                             gestureMoved = changes.any { change ->
                                 (change.position - change.previousPosition).getDistance() > gestureMovedThresholdPx
                             }
+                        }
+                        if (peakPointerCount == 1) {
+                            val distance = changes.firstOrNull { it.id == down.id }
+                                ?.let { (it.position - downPos).getDistance() } ?: 0f
+                            maxSingleFingerDistancePx = maxOf(maxSingleFingerDistancePx, distance)
                         }
 
                         if (
@@ -8747,7 +8677,7 @@ private fun PockRefCanvas(
 
                             val dragId = activeDragImageId
                             if (dragId != null) {
-                                if (!dragStarted && totalDrag.getDistance() > dragTapThresholdPx) {
+                                if (!dragStarted && maxSingleFingerDistancePx >= tapMaxDragPx) {
                                     val alreadySelected = dragId in currentState.selectedImageIds
                                     if (!alreadySelected) {
                                         currentOnAction(PockRefAction.SelectImage(dragId))
@@ -8902,8 +8832,22 @@ private fun PockRefCanvas(
                     }
 
                     val upTime = System.currentTimeMillis()
-                    val isTap = !gestureMoved && !dragStarted && !transformStarted &&
-                        (upTime - downTime) < 300L && totalDrag.getDistance() < tapMaxDragPx
+                    val isTap = isSingleFingerCanvasTap(
+                        peakPointerCount = peakPointerCount,
+                        dragStarted = dragStarted,
+                        transformStarted = transformStarted,
+                        durationMs = upTime - downTime,
+                        maxDistancePx = maxSingleFingerDistancePx,
+                        tapMaxDragPx = tapMaxDragPx,
+                    )
+                    if (hitId != null && !isTap && !dragStarted && peakPointerCount == 1) {
+                        Log.d(
+                            "PockRefTouch",
+                            "image tap rejected duration=${upTime - downTime}ms " +
+                                "maxDistanceDp=${maxSingleFingerDistancePx / density} " +
+                                "transform=$transformStarted",
+                        )
+                    }
 
                     // V_NOW (2026-06-19 user spec "开启全局锁定
                     // 和冻结模式后,点一下应用界面,右上角锁定
@@ -9041,7 +8985,11 @@ private fun PockRefCanvas(
                                 // cancelled and the focus action
                                 // fires instead.
                                 val isSingleSelect = !isMultiSelect
-                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = !isSingleSelect))
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(
+                                    downPos,
+                                    Size(size.width.toFloat(), size.height.toFloat()),
+                                    showSheet = !isSingleSelect,
+                                ))
                                 if (isSingleSelect) {
                                     // V_NOW (2026-06-08 "连续弹出
                                     // 两次" 修复): debounce against
@@ -9165,9 +9113,17 @@ private fun PockRefCanvas(
                             // can cancel it and focus instead.
                             val isSingleSelect = !isMultiSelect
                             if (isSingleSelect) {
-                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = false))
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(
+                                    downPos,
+                                    Size(size.width.toFloat(), size.height.toFloat()),
+                                    showSheet = false,
+                                ))
                             } else {
-                                currentOnAction(PockRefAction.CycleImageUnderPoint(downPos, showSheet = true))
+                                currentOnAction(PockRefAction.CycleImageUnderPoint(
+                                    downPos,
+                                    Size(size.width.toFloat(), size.height.toFloat()),
+                                    showSheet = true,
+                                ))
                             }
                             if (isSingleSelect) {
                                         // V_NOW (2026-06-08): same

@@ -112,9 +112,23 @@ class BlankCanvasFlowTest {
         assertEquals(0f, result.cropRotation, 0f)
         assertEquals(1f, result.canvasScale, 0f)
         assertEquals(Offset.Zero, result.canvasOffset)
-        assertEquals(Size2D(0f, 0f), result.canvasViewportSize)
+        assertEquals(opened.canvasViewportSize, result.canvasViewportSize)
         assertTrue(result.transientDragImageIds.isEmpty())
         assertEquals(Offset.Zero, result.transientDragDelta)
+    }
+
+    @Test
+    fun blankCanvasRoundTrip_preservesMeasuredViewportForAutoLayout() {
+        val viewport = Size2D(1080f, 2376f)
+        val measured = PockRefUiState(canvasViewportSize = viewport)
+
+        val opened = measured.openBlankCanvas()
+        val closed = opened.closeBlankCanvas()
+        val reopened = closed.openBlankCanvas()
+
+        assertEquals(viewport, opened.canvasViewportSize)
+        assertEquals(viewport, closed.canvasViewportSize)
+        assertEquals(viewport, reopened.canvasViewportSize)
     }
 
     @Test
