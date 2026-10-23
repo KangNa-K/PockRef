@@ -3,8 +3,15 @@ package com.pockref.app.data
 import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.pockref.app.model.ColorAdjust
+import com.pockref.app.model.CropRect
+import com.pockref.app.model.PockRefScene
+import com.pockref.app.model.SceneGroup
+import com.pockref.app.model.SceneImage
+import com.pockref.app.model.Size2D
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -14,9 +21,113 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.io.ByteArrayOutputStream
+import java.util.Base64
 
 @RunWith(AndroidJUnit4::class)
 class PurV2ParserInstrumentedTest {
+
+    @Test
+    fun nativeWriterRoundTripsGroupsAndPersistsItemsGroupsRows() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val png = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL+XQAAAABJRU5ErkJggg==",
+        )
+        val scene = PockRefScene(
+            name = "Android V2 groups",
+            backgroundColor = Color(0xFF203040),
+            backgroundColorIsPersisted = true,
+            groups = listOf(
+                SceneGroup(
+                    id = "android-group-id",
+                    name = "Moodboard",
+                    imageIds = listOf("first", "second"),
+                    backgroundColor = Color(0xFF336699),
+                    backgroundOpacity = 0.3f,
+                    movesAsUnit = false,
+                    positionLocked = true,
+                ),
+            ),
+            images = listOf(
+                SceneImage(
+                    id = "first", name = "first.png", mimeType = "image/png", imageBytes = png,
+                    intrinsicWidth = 1, intrinsicHeight = 1,
+                    center = Offset(120f, -40f), displaySize = Size2D(80f, 60f),
+                    colorAdjust = ColorAdjust(brightness = 0.1f, contrast = -0.2f, saturation = -1f),
+                    posterizeLevels = 8, rotationDegrees = 15f, flipX = true,
+                    zIndex = 1, locked = true, cropRect = CropRect(0.1f, 0.2f, 0.9f, 0.8f),
+                    showsOriginalResolution = true,
+                ),
+                SceneImage(
+                    id = "second", name = "second.png", mimeType = "image/png", imageBytes = png,
+                    intrinsicWidth = 1, intrinsicHeight = 1,
+                    center = Offset(-50f, 30f), displaySize = Size2D(32f, 24f), zIndex = 2,
+                ),
+            ),
+        )
+        val file = File(context.cacheDir, "native_group_writer.pur")
+        val codec = PurSceneCodec().also { it.initCacheDir(context.cacheDir) }
+        try {
+            file.outputStream().use { codec.writePureRefCompatible(scene, it, context.cacheDir) }
+            val bytes = file.readBytes()
+            assertEquals("2.1", PurFileParser().parseHeader(bytes).formatVersion)
+
+            val restoredDatabase = File(context.cacheDir, "native_group_writer.sqlite")
+            val sqliteOffset = ByteBuffer.wrap(bytes, 14, 8).order(ByteOrder.BIG_ENDIAN).long.toInt()
+            val prefixLength = bytes.size - sqliteOffset
+            ByteArrayOutputStream().use { sqliteBytes ->
+                sqliteBytes.write(bytes, sqliteOffset, prefixLength)
+                sqliteBytes.write(bytes, prefixLength, sqliteOffset - prefixLength)
+                restoredDatabase.writeBytes(sqliteBytes.toByteArray())
+            }
+            val db = SQLiteDatabase.openDatabase(restoredDatabase.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+            try {
+                db.rawQuery("SELECT COUNT(*) FROM items_groups", null).use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertEquals(1, cursor.getInt(0))
+                }
+                db.rawQuery("SELECT parent FROM items WHERE id = 1", null).use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertEquals(3L, cursor.getLong(0))
+                }
+                db.rawQuery("SELECT lock_mode FROM items_groups", null).use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertEquals(0, cursor.getInt(0))
+                }
+                db.rawQuery("SELECT locked FROM items WHERE id = 3", null).use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertEquals(1, cursor.getInt(0))
+                }
+                db.rawQuery("SELECT length(thumbnail) FROM metadata WHERE id = 0", null).use { cursor ->
+                    assertTrue(cursor.moveToFirst())
+                    assertTrue("V2 metadata thumbnail should be populated", cursor.getInt(0) > 0)
+                }
+            } finally {
+                db.close()
+                restoredDatabase.delete()
+            }
+
+            val restored = codec.readFromFile(file)
+            assertEquals("Android V2 groups", restored.name)
+            assertEquals(Color(0xFF203040), restored.backgroundColor)
+            val group = restored.groups.single()
+            assertEquals("android-group-id", group.id)
+            assertEquals("Moodboard", group.name)
+            assertEquals(setOf("pur-v2-image-1", "pur-v2-image-2"), group.imageIds.toSet())
+            assertEquals(Color(0xFF336699), group.backgroundColor)
+            assertEquals(0.3f, group.backgroundOpacity, 0.0001f)
+            assertTrue(!group.movesAsUnit)
+            assertTrue(group.positionLocked)
+            val first = restored.images.first { it.name == "first.png" }
+            assertEquals(8, first.posterizeLevels)
+            assertEquals(-1f, first.colorAdjust.saturation, 0.0001f)
+            assertEquals(CropRect(0.1f, 0.2f, 0.9f, 0.8f), first.cropRect)
+            assertTrue(first.showsOriginalResolution)
+        } finally {
+            codec.release()
+            file.delete()
+        }
+    }
 
     @Test
     fun loadsReferencePureRefV2FileWhenPathIsProvided() {

@@ -7,6 +7,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import com.pockref.app.R
 import java.util.UUID
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 
 data class SceneImage(
     val id: String = UUID.randomUUID().toString(),
@@ -44,6 +47,49 @@ data class SceneImage(
     // It never authorizes decoding the source image as one full Bitmap.
     val showsOriginalResolution: Boolean = false,
 )
+
+/** A flat, non-destructive group of canvas images. */
+data class SceneGroup(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "组",
+    val imageIds: List<String> = emptyList(),
+    val backgroundColor: Color = Color.Black,
+    val backgroundOpacity: Float = 0f,
+    /** PureRef native group mode: move members as one unit. */
+    val movesAsUnit: Boolean = true,
+    /** PockRef positional lock: prevent editing the group and its members. */
+    val positionLocked: Boolean = false,
+) {
+    fun contains(imageId: String): Boolean = imageId in imageIds
+
+    /** Returns the rotated world-space bounds of the group's image members. */
+    fun canvasBounds(images: List<SceneImage>, padding: Float = 0f): RectF? {
+        val members = images.filter { it.id in imageIds }
+        if (members.isEmpty()) return null
+        var minX = Float.POSITIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        members.forEach { image ->
+            val halfW = image.displaySize.width * image.scale / 2f
+            val halfH = image.displaySize.height * image.scale / 2f
+            val angle = Math.toRadians(image.rotationDegrees.toDouble())
+            val rotatedHalfW = abs(cos(angle)).toFloat() * halfW + abs(sin(angle)).toFloat() * halfH
+            val rotatedHalfH = abs(sin(angle)).toFloat() * halfW + abs(cos(angle)).toFloat() * halfH
+            minX = minOf(minX, image.center.x - rotatedHalfW)
+            minY = minOf(minY, image.center.y - rotatedHalfH)
+            maxX = maxOf(maxX, image.center.x + rotatedHalfW)
+            maxY = maxOf(maxY, image.center.y + rotatedHalfH)
+        }
+        val safePadding = padding.takeIf { it.isFinite() }?.coerceAtLeast(0f) ?: 0f
+        return RectF(minX - safePadding, minY - safePadding, maxX + safePadding, maxY + safePadding)
+    }
+
+    /** Compatibility alias for callers written against the first Android port. */
+    @Deprecated("Use positionLocked")
+    val locked: Boolean
+        get() = positionLocked
+}
 
 data class Size2D(
     val width: Float,
@@ -502,6 +548,8 @@ data class PockRefScene(
      */
     val backgroundColorIsPersisted: Boolean = false,
     val images: List<SceneImage> = emptyList(),
+    val groups: List<SceneGroup> = emptyList(),
+    val requiresGroupFlattening: Boolean = false,
     val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
     val markupTexts: List<CanvasMarkupText> = emptyList(),
     /**
@@ -794,6 +842,12 @@ data class PockRefUiState(
     val spenMode: com.pockref.app.spen.SpenMode =
         com.pockref.app.spen.SpenMode.DOUBLE_TAP,
     val images: List<SceneImage> = emptyList(),
+    val groups: List<SceneGroup> = emptyList(),
+    /** Groups selected as atomic canvas objects outside group-edit mode. */
+    val selectedGroupIds: Set<String> = emptySet(),
+    /** Group whose members are currently being edited independently. */
+    val editingGroupId: String? = null,
+    val requiresGroupFlattening: Boolean = false,
     val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
     val markupTexts: List<CanvasMarkupText> = emptyList(),
     val markupModeActive: Boolean = false,
@@ -1660,6 +1714,8 @@ fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
     backgroundColor = backgroundColor,
     backgroundColorIsPersisted = true,
     images = images.sortedBy { it.zIndex },
+    groups = groups,
+    requiresGroupFlattening = requiresGroupFlattening,
     markupStrokes = markupStrokes,
     markupTexts = markupTexts,
     defaultSpacing = sceneDefaultSpacing,
@@ -1701,10 +1757,27 @@ internal val PockRefUiState.isCanvasOpen: Boolean
  * here, not hunted down across the codebase.
  */
 fun PockRefUiState.isImageLocked(imageId: String?): Boolean {
-    if (globalImageLock) return true
+    if (globalImageLock || requiresGroupFlattening) return true
     if (imageId == null) return false
-    return images.firstOrNull { it.id == imageId }?.locked == true
+    if (images.firstOrNull { it.id == imageId }?.locked == true) return true
+    if (editingGroupId != null && groups.firstOrNull { it.id == editingGroupId }?.contains(imageId) != true) {
+        return true
+    }
+    val selectedGroup = if (editingGroupId == null) selectedGroups.singleOrNull() else null
+    if (selectedGroup != null && selectedGroup.imageIds.any { memberId ->
+            images.firstOrNull { it.id == memberId }?.locked == true
+        }
+    ) return true
+    return groups.firstOrNull { it.contains(imageId) }?.positionLocked == true
 }
+
+val PockRefUiState.selectedGroups: List<SceneGroup>
+    get() = if (editingGroupId != null) emptyList()
+    else if (selectedGroupIds.isNotEmpty()) groups.filter { it.id in selectedGroupIds }
+    else groups.filter { group -> group.imageIds.any { it in selectedImageIds } }
+
+fun PockRefUiState.groupContaining(imageId: String): SceneGroup? =
+    groups.firstOrNull { it.contains(imageId) }
 
 // V_NOW (2026-06-11, "cover image bug — clear cover doesn't
 // restore default thumbnail" investigation round 2): extracted

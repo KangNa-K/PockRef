@@ -15,6 +15,7 @@ import com.pockref.app.model.ColorAdjust
 import com.pockref.app.model.CropRect
 import com.pockref.app.model.ImageAlignment
 import com.pockref.app.model.PockRefScene
+import com.pockref.app.model.SceneGroup
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import java.io.ByteArrayInputStream
@@ -80,6 +81,9 @@ class PurSceneCodec {
         }
         output.writeMarkupBlock(scene)
         output.writeSceneSettingsBlock(scene)
+        // The private checkpoint format carries both group flags.  Keep the
+        // legacy desktop metadata block below on its original one-byte shape.
+        output.writeSceneGroupsBlock(scene.groups, includeMovesAsUnit = true)
     }
 
     fun writeDesktopCompatible(scene: PockRefScene, output: OutputStream, workDir: File) {
@@ -88,25 +92,14 @@ class PurSceneCodec {
             output = output,
             workDir = workDir,
             includePockRefExtensions = false,
-            includeSceneMetadata = scene.images.any { it.showsOriginalResolution },
+            includeSceneMetadata = scene.images.any { it.showsOriginalResolution } || scene.groups.isNotEmpty(),
             includeImageState = false,
         )
     }
 
-    /**
-     * Write a PureRef 1.10-compatible scene while retaining PockRef-only
-     * per-image state in the legacy scene metadata area. Desktop PureRef
-     * ignores that area and reads the standard image/index records normally.
-     */
+    /** Write the native PureRef 2.x container, including native group membership. */
     fun writePureRefCompatible(scene: PockRefScene, output: OutputStream, workDir: File) {
-        writeLegacyStreaming(
-            scene = scene,
-            output = output,
-            workDir = workDir,
-            includePockRefExtensions = false,
-            includeSceneMetadata = true,
-            includeImageState = true,
-        )
+        PurV2SceneWriter(workDir, ::resolveImageBytes).write(scene, output)
     }
 
     private data class LegacySceneExtension(
@@ -116,6 +109,7 @@ class PurSceneCodec {
         val markupTexts: List<CanvasMarkupText> = emptyList(),
         val originalResolutionImageIndexes: Set<Int> = emptySet(),
         val imageStates: List<LegacyImageState> = emptyList(),
+        val groups: List<SceneGroup> = emptyList(),
     )
 
     private data class LegacyImageState(
@@ -232,6 +226,11 @@ class PurSceneCodec {
             writeMarkupBlock(scene)
             writeOriginalResolutionBlock(images)
             if (includeImageState) writeImageStateBlock(images)
+            writeSceneGroupsBlock(
+                scene.groups,
+                images.mapIndexed { index, image -> image.id to index.toString() }.toMap(),
+                includeMovesAsUnit = false,
+            )
         }.toByteArray()
 
     private fun OutputStream.writeLegacySceneMetadata(
@@ -290,6 +289,32 @@ class PurSceneCodec {
                 writeFloatLe(crop.bottom)
             }
             writeBooleanByte(image.showsOriginalResolution)
+        }
+    }
+
+    private fun OutputStream.writeSceneGroupsBlock(
+        groups: List<SceneGroup>,
+        legacyImageIds: Map<String, String>? = null,
+        includeMovesAsUnit: Boolean = false,
+    ) {
+        val encodedGroups = groups.mapNotNull { group ->
+            val imageIds = legacyImageIds?.let { idMap -> group.imageIds.mapNotNull(idMap::get) }
+                ?: group.imageIds
+            group to imageIds
+        }.filter { (_, imageIds) -> imageIds.isNotEmpty() }
+        write(SCENE_GROUPS_MAGIC)
+        writeIntLe(encodedGroups.size)
+        encodedGroups.forEach { (group, imageIds) ->
+            writeStringUtf8(group.id)
+            writeStringUtf8(group.name)
+            writeIntLe(imageIds.size)
+            imageIds.forEach { imageId -> writeStringUtf8(imageId) }
+            writeLongLe(group.backgroundColor.value.toLong())
+            writeFloatLe(group.backgroundOpacity)
+            // Legacy desktop metadata has one group lock byte. The custom
+            // checkpoint format appends the native move-mode bit in v6.
+            writeBooleanByte(group.positionLocked)
+            if (includeMovesAsUnit) writeBooleanByte(group.movesAsUnit)
         }
     }
 
@@ -855,6 +880,7 @@ class PurSceneCodec {
             defaultAlignment = extension?.defaultAlignment ?: scene.defaultAlignment,
             markupStrokes = extension?.markupStrokes ?: scene.markupStrokes,
             markupTexts = extension?.markupTexts ?: scene.markupTexts,
+            groups = extension?.groups ?: scene.groups,
             backgroundColor = backgroundColor ?: scene.backgroundColor,
             backgroundColorIsPersisted = backgroundColor != null || scene.backgroundColorIsPersisted,
         )
@@ -991,6 +1017,11 @@ class PurSceneCodec {
             payloadStart = payloadStart + SCENE_METADATA_PAYLOAD_SIZE,
             payloadEnd = payloadEnd,
         )
+        val groups = readLegacySceneGroups(
+            bytes = bytes,
+            payloadStart = payloadStart + SCENE_METADATA_PAYLOAD_SIZE,
+            payloadEnd = payloadEnd,
+        )
 
         return LegacySceneExtension(
             defaultSpacing = defaultSpacing,
@@ -999,7 +1030,53 @@ class PurSceneCodec {
             markupTexts = markupTexts,
             originalResolutionImageIndexes = originalResolutionImageIndexes,
             imageStates = imageStates,
+            groups = groups,
         ) to payloadEnd
+    }
+
+    private fun readLegacySceneGroups(
+        bytes: ByteArray,
+        payloadStart: Int,
+        payloadEnd: Int,
+    ): List<SceneGroup> {
+        val headerSize = SCENE_GROUPS_MAGIC.size + Int.SIZE_BYTES
+        if (payloadEnd - payloadStart < headerSize) return emptyList()
+        for (offset in payloadStart..payloadEnd - headerSize) {
+            if (!bytes.matchesAt(SCENE_GROUPS_MAGIC, offset)) continue
+            val groups = runCatching {
+                DataInputStream(
+                    ByteArrayInputStream(bytes, offset + SCENE_GROUPS_MAGIC.size, payloadEnd - offset - SCENE_GROUPS_MAGIC.size),
+                ).use { data ->
+                    val count = data.readIntLe()
+                    require(count in 0..10_000)
+                    buildList(count) {
+                        repeat(count) {
+                            val id = data.readStringUtf8()
+                            val name = data.readStringUtf8()
+                            val memberCount = data.readIntLe()
+                            require(memberCount in 1..10_000)
+                            val imageIds = List(memberCount) { data.readStringUtf8() }
+                            val color = Color(data.readLongLe().toULong())
+                            val opacity = data.readFloatLe()
+                            val locked = data.readBooleanByte()
+                            require(opacity.isFinite())
+                            add(
+                                SceneGroup(
+                                    id = id,
+                                    name = name,
+                                    imageIds = imageIds,
+                                    backgroundColor = color,
+                                    backgroundOpacity = opacity.coerceIn(0f, 1f),
+                                    positionLocked = locked,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }.getOrNull()
+            if (groups != null) return groups
+        }
+        return emptyList()
     }
 
     private fun readOriginalResolutionImageIndexes(
@@ -1096,8 +1173,6 @@ class PurSceneCodec {
                                 ),
                             )
                         }
-                    }.also {
-                        require(data.available() == 0) { "Trailing bytes after PockRef image-state block" }
                     }
                 }
             }.getOrNull()
@@ -1222,12 +1297,14 @@ class PurSceneCodec {
         }
         val (markupStrokes, markupTexts) = readMarkupTail(data)
         val (defaultSpacing, defaultAlignment) = readSceneSettingsTail(data)
+        val groups = if (version >= 5) readSceneGroupsTail(data, includeMovesAsUnit = version >= 6) else emptyList()
         return PockRefScene(
             version = version,
             name = name,
             backgroundColor = backgroundColor,
             backgroundColorIsPersisted = true,
             images = images,
+            groups = groups,
             markupStrokes = markupStrokes,
             markupTexts = markupTexts,
             defaultSpacing = defaultSpacing,
@@ -1305,12 +1382,18 @@ class PurSceneCodec {
         }
         val (markupStrokes, markupTexts) = readMarkupTail(raf, fileLen)
         val (defaultSpacing, defaultAlignment) = readSceneSettingsTail(raf, fileLen)
+        val groups = if (version >= 5) {
+            readSceneGroupsTail(raf, fileLen, includeMovesAsUnit = version >= 6)
+        } else {
+            emptyList()
+        }
         return PockRefScene(
             version = version,
             name = name,
             backgroundColor = backgroundColor,
             backgroundColorIsPersisted = true,
             images = images,
+            groups = groups,
             markupStrokes = markupStrokes,
             markupTexts = markupTexts,
             defaultSpacing = defaultSpacing,
@@ -1344,6 +1427,88 @@ class PurSceneCodec {
         val spacing = Size2D(raf.readFloatLe(), raf.readFloatLe())
         val alignment = ImageAlignment.entries.getOrNull(raf.readIntLe()) ?: ImageAlignment.CENTER
         return spacing to alignment
+    }
+
+    private fun readSceneGroupsTail(
+        data: DataInputStream,
+        includeMovesAsUnit: Boolean,
+    ): List<SceneGroup> {
+        if (data.available() < SCENE_GROUPS_MAGIC.size + Int.SIZE_BYTES) return emptyList()
+        val marker = ByteArray(SCENE_GROUPS_MAGIC.size)
+        data.readFully(marker)
+        if (!marker.contentEquals(SCENE_GROUPS_MAGIC)) return emptyList()
+        return readSceneGroups(data, includeMovesAsUnit)
+    }
+
+    private fun readSceneGroupsTail(
+        raf: RandomAccessFile,
+        fileLen: Long,
+        includeMovesAsUnit: Boolean,
+    ): List<SceneGroup> {
+        if (fileLen - raf.filePointer < SCENE_GROUPS_MAGIC.size + Int.SIZE_BYTES) return emptyList()
+        val marker = ByteArray(SCENE_GROUPS_MAGIC.size)
+        raf.readFully(marker)
+        if (!marker.contentEquals(SCENE_GROUPS_MAGIC)) return emptyList()
+        val count = raf.readIntLe()
+        require(count in 0..10_000) { "Invalid scene group count: $count" }
+        return buildList(count) {
+            repeat(count) {
+                val id = raf.readStringUtf8()
+                val name = raf.readStringUtf8()
+                val memberCount = raf.readIntLe()
+                require(memberCount in 1..10_000) { "Invalid scene group member count: $memberCount" }
+                val imageIds = List(memberCount) { raf.readStringUtf8() }
+                val color = Color(raf.readLongLe().toULong())
+                val opacity = raf.readFloatLe()
+                val locked = raf.readBooleanByte()
+                val movesAsUnit = if (includeMovesAsUnit) raf.readBooleanByte() else true
+                require(opacity.isFinite()) { "Invalid scene group opacity" }
+                add(
+                    SceneGroup(
+                        id = id,
+                        name = name,
+                        imageIds = imageIds,
+                        backgroundColor = color,
+                        backgroundOpacity = opacity.coerceIn(0f, 1f),
+                        movesAsUnit = movesAsUnit,
+                        positionLocked = locked,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun readSceneGroups(
+        data: DataInputStream,
+        includeMovesAsUnit: Boolean,
+    ): List<SceneGroup> {
+        val count = data.readIntLe()
+        require(count in 0..10_000) { "Invalid scene group count: $count" }
+        return buildList(count) {
+            repeat(count) {
+                val id = data.readStringUtf8()
+                val name = data.readStringUtf8()
+                val memberCount = data.readIntLe()
+                require(memberCount in 1..10_000) { "Invalid scene group member count: $memberCount" }
+                val imageIds = List(memberCount) { data.readStringUtf8() }
+                val color = Color(data.readLongLe().toULong())
+                val opacity = data.readFloatLe()
+                val locked = data.readBooleanByte()
+                val movesAsUnit = if (includeMovesAsUnit) data.readBooleanByte() else true
+                require(opacity.isFinite()) { "Invalid scene group opacity" }
+                add(
+                    SceneGroup(
+                        id = id,
+                        name = name,
+                        imageIds = imageIds,
+                        backgroundColor = color,
+                        backgroundOpacity = opacity.coerceIn(0f, 1f),
+                        movesAsUnit = movesAsUnit,
+                        positionLocked = locked,
+                    ),
+                )
+            }
+        }
     }
 
     private fun readMarkupTail(data: DataInputStream): Pair<List<CanvasMarkupStroke>, List<CanvasMarkupText>> {
@@ -2164,7 +2329,7 @@ class PurSceneCodec {
 
     companion object {
         private const val TAG = "PurSceneCodec"
-        private const val CUSTOM_SCENE_VERSION = 4
+        private const val CUSTOM_SCENE_VERSION = 6
         private const val HEADER_MIN_SIZE = 0x6C
         private const val EMBEDDED_IMAGE_FALLBACK_MAX_BYTES = 64L * 1024L * 1024L
         private const val DESKTOP_MARKUP_OVERLAY_MAX_SIDE = 4096f
@@ -2181,6 +2346,7 @@ class PurSceneCodec {
         private val SCENE_SETTINGS_MAGIC = byteArrayOf('S'.code.toByte(), 'E'.code.toByte(), 'T'.code.toByte(), '1'.code.toByte())
         private val ORIGINAL_RESOLUTION_MAGIC = byteArrayOf('H'.code.toByte(), 'D'.code.toByte(), '0'.code.toByte(), '1'.code.toByte())
         private val IMAGE_STATE_MAGIC = byteArrayOf('I'.code.toByte(), 'M'.code.toByte(), 'S'.code.toByte(), '1'.code.toByte())
+        private val SCENE_GROUPS_MAGIC = byteArrayOf('G'.code.toByte(), 'R'.code.toByte(), 'P'.code.toByte(), '1'.code.toByte())
         private val LEGACY_IDENTITY_MATRIX = listOf(1.0, 0.0, 0.0, 1.0)
         // ASCII "PRCA" (PockRef ColorAdjust) in big-endian is
         // declared at file scope (above the class) so the top-level

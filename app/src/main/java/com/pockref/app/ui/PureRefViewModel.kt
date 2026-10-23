@@ -107,6 +107,80 @@ internal fun shouldOpenSceneFromImport(displayName: String?, mimeType: String?):
     return !mimeType.orEmpty().startsWith("image/", ignoreCase = true)
 }
 
+private fun PockRefAction.mutatesUnflattenedScene(): Boolean = when (this) {
+    PockRefAction.Undo,
+    PockRefAction.Redo,
+    PockRefAction.BeginSceneGesture,
+    is PockRefAction.BeginImageDrag,
+    is PockRefAction.UpdateImageDrag,
+    PockRefAction.CommitImageDrag,
+    is PockRefAction.AddImagesToGroupAfterDrag,
+    PockRefAction.RotateLeft,
+    PockRefAction.RotateRight,
+    PockRefAction.FlipHorizontal,
+    PockRefAction.FlipVertical,
+    PockRefAction.BringToFront,
+    PockRefAction.SendToBack,
+    PockRefAction.DeleteSelected,
+    PockRefAction.DuplicateSelected,
+    PockRefAction.CreateGroup,
+    PockRefAction.EnterSelectedGroup,
+    is PockRefAction.EnterGroup,
+    PockRefAction.UngroupSelected,
+    PockRefAction.DuplicateSelectedGroup,
+    PockRefAction.RemoveSelectedFromGroup,
+    is PockRefAction.RenameSelectedGroup,
+    is PockRefAction.SetSelectedGroupAppearance,
+    PockRefAction.ToggleSelectedGroupLock,
+    PockRefAction.ToggleLockSelected,
+    PockRefAction.ToggleOriginalDisplaySelected,
+    is PockRefAction.ImportImages,
+    PockRefAction.ImportFromClipboard,
+    is PockRefAction.ImportMixed,
+    is PockRefAction.DropImages,
+    is PockRefAction.MoveImage,
+    is PockRefAction.BringImageToFront,
+    is PockRefAction.SaveScene,
+    PockRefAction.SaveSceneDirect,
+    PockRefAction.RequestSaveScene,
+    is PockRefAction.ConfirmSaveSceneName,
+    PockRefAction.UnsavedDialogSave,
+    is PockRefAction.ConfirmRenameScene,
+    PockRefAction.ExecuteAutoLayout,
+    PockRefAction.UndoLastOptimization,
+    PockRefAction.ConfirmBatchOptimize,
+    PockRefAction.RetryFailedOptimization,
+    is PockRefAction.SetBackgroundPreset,
+    is PockRefAction.SetBackgroundColor,
+    is PockRefAction.SetColorAdjust,
+    is PockRefAction.SetSceneName,
+    PockRefAction.EnterCropMode,
+    PockRefAction.CommitCrop,
+    is PockRefAction.UpdateCropRect,
+    is PockRefAction.SetCropAspect,
+    is PockRefAction.SetCropRotation,
+    PockRefAction.ScaleUp,
+    PockRefAction.ScaleDown,
+    PockRefAction.ResetTransform,
+    is PockRefAction.TransformSelectedImage,
+    is PockRefAction.SetSelectedImagesScale,
+    is PockRefAction.SetSingleImageCornerScale,
+    is PockRefAction.BatchAlign,
+    is PockRefAction.BatchScale,
+    PockRefAction.BatchFlipHorizontal,
+    PockRefAction.ConvertToGrayscale,
+    is PockRefAction.TogglePosterizeLevel,
+    is PockRefAction.BeginMarkupStroke,
+    is PockRefAction.UpdateMarkupStroke,
+    PockRefAction.CommitMarkupStroke,
+    is PockRefAction.MoveMarkupText,
+    is PockRefAction.SetPendingMarkupText,
+    is PockRefAction.SetPendingMarkupTextFontSize,
+    PockRefAction.CommitMarkupText,
+    PockRefAction.TakePhoto -> true
+    else -> false
+}
+
 class PockRefViewModel(application: Application) : AndroidViewModel(application) {
     internal val contentResolver = application.contentResolver
     internal val codec = PurSceneCodec().also { it.initCacheDir(application.cacheDir) }
@@ -422,6 +496,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     internal val batchController: PockRefViewModelBatch
     internal val selectionController: PockRefViewModelSelection
     internal val sceneController: PockRefViewModelScene
+    internal val groupController: PureRefViewModelGroups
     // V_NOW (2026-06-08 速写练习): wraps the pure
     // [PracticeReducer] and applies its output to
     // [PockRefUiState.practiceState]. The eight
@@ -439,6 +514,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
         batchController = PockRefViewModelBatch(this)
         selectionController = PockRefViewModelSelection(this)
         sceneController = PockRefViewModelScene(this)
+        groupController = PureRefViewModelGroups(this)
         practiceController = PockRefViewModelPractice(this)
         startAutoSaveLoop()
     }
@@ -599,6 +675,17 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             sb.append(img.colorAdjust.contrast.toBits())
             sb.append(img.colorAdjust.saturation.toBits())
         }
+        sb.append(scene.groups.size)
+        scene.groups.forEach { group ->
+            sb.append(group.id)
+            sb.append(group.name)
+            sb.append(group.imageIds.joinToString("|"))
+            sb.append(group.backgroundColor.value)
+            sb.append(group.backgroundOpacity.toBits())
+            sb.append(group.movesAsUnit)
+            sb.append(group.positionLocked)
+        }
+        sb.append(scene.requiresGroupFlattening)
         sb.append(scene.markupStrokes.size)
         scene.markupStrokes.forEach { stroke ->
             sb.append(stroke.id)
@@ -760,6 +847,10 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
 
     fun onAction(action: PockRefAction) {
         if (updateCheckpointInProgress) return
+        if (_uiState.value.requiresGroupFlattening && action.mutatesUnflattenedScene()) {
+            reportError("该 PureRef 文件含 Android 暂不支持的组结构；请先在桌面版展平或移除这些内容，再编辑并保存。")
+            return
+        }
         when (action) {
             PockRefAction.ResetView -> batchController.resetView()
             PockRefAction.FitToScreen -> batchController.fitToScreen()
@@ -806,7 +897,19 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 else sceneController.onCloseScene()
             }
             is PockRefAction.SelectImage -> transformController.selectImage(action.imageId)
-            PockRefAction.Deselect -> transformController.deselect()
+            PockRefAction.CreateGroup -> groupController.createGroup()
+            PockRefAction.EnterSelectedGroup -> groupController.enterSelectedGroup()
+            is PockRefAction.EnterGroup -> groupController.enterGroup(action.groupId, action.imageId)
+            PockRefAction.ExitGroup -> groupController.exitGroup()
+            PockRefAction.ClearGroupSelection -> groupController.clearSelection()
+            PockRefAction.UngroupSelected -> groupController.ungroupSelected()
+            PockRefAction.DuplicateSelectedGroup -> groupController.duplicateSelectedGroup()
+            PockRefAction.RemoveSelectedFromGroup -> groupController.removeSelectedFromGroup()
+            is PockRefAction.RenameSelectedGroup -> groupController.renameSelectedGroup(action.name)
+            is PockRefAction.SetSelectedGroupAppearance ->
+                groupController.setSelectedGroupAppearance(action.color, action.opacity)
+            PockRefAction.ToggleSelectedGroupLock -> groupController.toggleSelectedGroupLock()
+            PockRefAction.Deselect -> groupController.deselectOrExit()
             is PockRefAction.FlashSelection -> _uiState.update {
                 // V_NOW (P2-C3): set the one-shot
                 // flash marker so the renderer can
@@ -985,6 +1088,10 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.BeginImageDrag -> transformController.beginImageDrag(action.imageId)
             is PockRefAction.UpdateImageDrag -> transformController.updateImageDrag(action.delta)
  PockRefAction.CommitImageDrag -> transformController.commitImageDrag()
+ is PockRefAction.AddImagesToGroupAfterDrag -> groupController.addImagesToGroupAfterDrag(
+     action.groupId,
+     action.imageIds,
+ )
  PockRefAction.CancelImageDrag -> transformController.cancelImageDrag()
  is PockRefAction.MoveImage -> transformController.moveImage(action.imageId, action.delta)
  is PockRefAction.PanCanvas -> {
@@ -2159,6 +2266,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             if (before.sceneName != after.sceneName ||
                 before.backgroundColor != after.backgroundColor ||
                 before.images != after.images ||
+                before.groups != after.groups ||
                 before.markupStrokes != after.markupStrokes ||
                 before.markupTexts != after.markupTexts
             ) {
@@ -2179,10 +2287,12 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun mutateScene(transform: PockRefUiState.() -> PockRefUiState) {
         val before = _uiState.value
+        if (before.requiresGroupFlattening) return
         val after = before.transform().normalizeSelection()
         if (before.sceneName != after.sceneName ||
             before.backgroundColor != after.backgroundColor ||
             before.images != after.images ||
+            before.groups != after.groups ||
             before.markupStrokes != after.markupStrokes ||
             before.markupTexts != after.markupTexts
         ) {
@@ -2193,6 +2303,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     internal fun updateSceneForGesture(transform: PockRefUiState.() -> PockRefUiState) {
+        if (_uiState.value.requiresGroupFlattening) return
         if (!sceneGestureActive) {
             mutateScene(transform)
             return
@@ -2257,6 +2368,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     bottomRightPanelExpanded = false,
                     selectedImageId = null,
                     selectedImageIds = emptySet(),
+                    selectedGroupIds = emptySet(),
                     multiSelectMode = false,
                     boxSelectMode = false,
                     boxSelectRect = null,

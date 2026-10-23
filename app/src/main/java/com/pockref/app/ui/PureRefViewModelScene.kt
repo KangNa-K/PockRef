@@ -321,10 +321,14 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 // "untitled_N").
                 val newName = SceneNaming.nextUntitled(mainVm.untitledCounter)
                 mainVm._uiState.update { state ->
+                    val merged = state.mergeImportedImages(imported)
                     state.copy(
                         sceneName = newName,
                         blankCanvasOpen = false,
-                        images = state.images + imported,
+                        images = merged.images,
+                        groups = merged.groups,
+                        selectedGroupIds = emptySet(),
+                        editingGroupId = merged.editingGroupId,
                         selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
                         selectedImageIds = imported.mapTo(linkedSetOf()) { it.id },
                         isDragOver = false,
@@ -332,9 +336,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 }
             } else {
                 mainVm._uiState.update { state ->
+                    val merged = state.mergeImportedImages(imported)
                     state.copy(
                         blankCanvasOpen = false,
-                        images = state.images + imported,
+                        images = merged.images,
+                        groups = merged.groups,
+                        selectedGroupIds = emptySet(),
+                        editingGroupId = merged.editingGroupId,
                         selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
                         selectedImageIds = imported.mapTo(linkedSetOf()) { it.id },
                         isDragOver = false,
@@ -343,16 +351,15 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             }
             mainVm.notifyContentChanged()
             // First-import auto-arrange: when the scene was empty
-            // before this import, run [executeAutoLayout] so the
-            // new images land in a sensible grid instead of
-            // overlapping at their import offsets. For subsequent
-            // imports into a populated scene, preserve the user's
-            // existing layout and just call [fitToScreen] to zoom
-            // the canvas so the new images are visible (the
-            // pre-existing behavior).
+            // before this import, run [executeAutoLayout]. For a
+            // populated scene, arrange only this batch beside the
+            // existing content, including the active group.
             if (preImportImages.isEmpty()) {
                 mainVm.batchController.executeAutoLayout()
             } else {
+                mainVm.batchController.executeImportedAutoLayout(
+                    imported.mapTo(linkedSetOf()) { it.id },
+                )
                 mainVm.batchController.fitToScreen()
             }
             mainVm.setBusy(false)
@@ -472,14 +479,25 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.recordUndoState()
             mainVm._uiState.update { state ->
                 val newSelection = imported.mapTo(linkedSetOf()) { it.id }
+                val merged = state.mergeImportedImages(imported)
                 state.copy(
                     blankCanvasOpen = false,
-                    images = state.images + imported,
+                    images = merged.images,
+                    groups = merged.groups,
+                    selectedGroupIds = emptySet(),
+                    editingGroupId = merged.editingGroupId,
                     selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
                     selectedImageIds = newSelection.ifEmpty { state.selectedImageIds },
                 ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
             }
             mainVm.notifyContentChanged()
+            if (mainVm._uiState.value.images.size == imported.size) {
+                mainVm.batchController.executeAutoLayout()
+            } else {
+                mainVm.batchController.executeImportedAutoLayout(
+                    imported.mapTo(linkedSetOf()) { it.id },
+                )
+            }
             mainVm.batchController.fitToScreen()
             mainVm.setBusy(false)
         }
@@ -540,14 +558,25 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm.recordUndoState()
             mainVm._uiState.update { state ->
                 val newSelection = imported.mapTo(linkedSetOf()) { it.id }
+                val merged = state.mergeImportedImages(imported)
                 state.copy(
                     blankCanvasOpen = false,
-                    images = state.images + imported,
+                    images = merged.images,
+                    groups = merged.groups,
+                    selectedGroupIds = emptySet(),
+                    editingGroupId = merged.editingGroupId,
                     selectedImageId = imported.lastOrNull()?.id ?: state.selectedImageId,
                     selectedImageIds = newSelection.ifEmpty { state.selectedImageIds },
                 ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
             }
             mainVm.notifyContentChanged()
+            if (mainVm._uiState.value.images.size == imported.size) {
+                mainVm.batchController.executeAutoLayout()
+            } else {
+                mainVm.batchController.executeImportedAutoLayout(
+                    imported.mapTo(linkedSetOf()) { it.id },
+                )
+            }
             mainVm.batchController.fitToScreen()
             mainVm.setBusy(false)
         }
@@ -627,8 +656,14 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     backgroundColor = bg,
                     backgroundCustomColor = bg,
                     images = scene.images,
+                    groups = scene.groups,
+                    selectedGroupIds = emptySet(),
+                    requiresGroupFlattening = scene.requiresGroupFlattening,
+                    editingGroupId = null,
                     markupStrokes = scene.markupStrokes,
                     markupTexts = scene.markupTexts,
+                    sceneDefaultSpacing = scene.defaultSpacing,
+                    sceneDefaultAlignment = scene.defaultAlignment,
                     markupVisible = true,
                     markupModeActive = false,
                     draftMarkupStroke = null,
@@ -679,6 +714,10 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 backgroundColor = scene.backgroundColor,
                 backgroundCustomColor = scene.backgroundColor,
                 images = scene.images,
+                groups = scene.groups,
+                selectedGroupIds = emptySet(),
+                requiresGroupFlattening = scene.requiresGroupFlattening,
+                editingGroupId = null,
                 markupStrokes = scene.markupStrokes,
                 markupTexts = scene.markupTexts,
                 sceneDefaultSpacing = scene.defaultSpacing,
@@ -1959,6 +1998,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 backgroundCustomColor = defaultBg,
                 showBackgroundPicker = false,
                 images = emptyList(),
+                groups = emptyList(),
+                requiresGroupFlattening = false,
+                editingGroupId = null,
                 markupStrokes = emptyList(),
                 markupTexts = emptyList(),
                 markupVisible = true,
@@ -1972,6 +2014,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 editingMarkupTextId = null,
                 selectedImageId = null,
                 selectedImageIds = emptySet(),
+                selectedGroupIds = emptySet(),
                 posterizeControlsVisible = false,
                 posterizeLevels = null,
                 posterizeTargetImageIds = emptySet(),
@@ -2949,4 +2992,61 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             canvas.drawText(line, x, firstBaseline + index * lineHeight, paint)
         }
     }
+}
+
+internal data class ImportedSceneMerge(
+    val images: List<SceneImage>,
+    val groups: List<com.pockref.app.model.SceneGroup>,
+    val editingGroupId: String?,
+)
+
+/**
+ * Adds imported images to the active group without leaving a split layer
+ * block. This mirrors the iOS import path: valid group editing inserts the
+ * new members beside the existing members and normalizes z-order; a locked
+ * or stale editor is closed instead of granting the import group access.
+ */
+internal fun com.pockref.app.model.PockRefUiState.mergeImportedImages(
+    imported: List<SceneImage>,
+): ImportedSceneMerge {
+    val combinedImages = images + imported
+    val editingId = editingGroupId ?: return ImportedSceneMerge(
+        images = combinedImages,
+        groups = groups,
+        editingGroupId = null,
+    )
+    val groupIndex = groups.indexOfFirst { it.id == editingId }
+    if (groupIndex < 0 || groups[groupIndex].positionLocked) {
+        return ImportedSceneMerge(
+            images = combinedImages,
+            groups = groups,
+            editingGroupId = null,
+        )
+    }
+
+    val importedIds = imported.mapTo(linkedSetOf()) { it.id }
+    val originalMembers = groups[groupIndex].imageIds
+        .filter { id -> images.any { it.id == id } }
+        .toSet()
+    val orderedExisting = images.sortedBy { it.zIndex }
+    val insertionIndex = orderedExisting.indexOfLast { it.id in originalMembers }
+        .let { if (it >= 0) it + 1 else orderedExisting.size }
+    val ordered = orderedExisting.toMutableList().apply {
+        addAll(insertionIndex.coerceIn(0, size), imported.sortedBy { it.zIndex })
+    }
+    val zById = ordered.mapIndexed { index, image -> image.id to index }.toMap()
+    val normalizedImages = combinedImages.map { image ->
+        image.copy(zIndex = zById[image.id] ?: image.zIndex)
+    }
+    val groupMembers = ordered
+        .filter { it.id in originalMembers || it.id in importedIds }
+        .map { it.id }
+    val updatedGroups = groups.mapIndexed { index, group ->
+        if (index == groupIndex) group.copy(imageIds = groupMembers) else group
+    }
+    return ImportedSceneMerge(
+        images = normalizedImages,
+        groups = updatedGroups,
+        editingGroupId = editingId,
+    )
 }

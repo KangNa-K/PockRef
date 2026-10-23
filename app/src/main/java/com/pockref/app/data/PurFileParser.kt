@@ -7,12 +7,18 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.ColorAdjust
+import com.pockref.app.model.CropRect
+import com.pockref.app.model.ImageAlignment
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneImage
+import com.pockref.app.model.SceneGroup
 import com.pockref.app.model.Size2D
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -27,6 +33,7 @@ import java.nio.ByteOrder
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -324,18 +331,27 @@ class PurFileParser {
                 SQLiteDatabase.OPEN_READONLY,
             )
             try {
+                val privateMetadata = readV2PockRefMetadata(db)
                 val images = FileOutputStream(imageFile).use { output ->
-                    readV2SceneImages(db, output)
+                    readV2SceneImages(db, output, privateMetadata)
                 }
                 val notes = readV2Notes(db)
                 val drawings = readV2DrawingImages(db)
-                val name = readV2DisplayName(db)
+                val groupRead = readV2SceneGroups(db)
+                val groups = mergeV2Groups(groupRead.groups, privateMetadata)
+                val name = privateMetadata?.optString("displayName")?.takeIf { it.isNotBlank() }
+                    ?: readV2DisplayName(db)
                 return PockRefScene(
                     version = 2,
                     name = name,
-                    backgroundColor = Color(0xFF111111),
+                    backgroundColor = readV2BackgroundColor(privateMetadata),
+                    backgroundColorIsPersisted = privateMetadata?.has("backgroundColor") == true,
                     images = (images + drawings).sortedBy { it.zIndex },
+                    groups = groups,
+                    requiresGroupFlattening = groupRead.requiresFlattening,
                     markupTexts = notes,
+                    defaultSpacing = readV2DefaultSpacing(privateMetadata),
+                    defaultAlignment = readV2DefaultAlignment(privateMetadata),
                 )
             } finally {
                 db.close()
@@ -346,6 +362,212 @@ class PurFileParser {
             imageTempFile = null
             try { imageFile.delete() } catch (_: Exception) {}
             throw error
+        }
+    }
+
+    private data class V2GroupReadResult(
+        val groups: List<SceneGroup>,
+        val requiresFlattening: Boolean,
+    )
+
+    private fun readV2PockRefMetadata(db: SQLiteDatabase): JSONObject? = runCatching {
+        db.rawQuery("SELECT json FROM pockref_metadata ORDER BY id LIMIT 1", emptyArray()).use { cursor ->
+            if (!cursor.moveToFirst() || cursor.isNull(0)) return@use null
+            val bytes = if (cursor.getType(0) == android.database.Cursor.FIELD_TYPE_BLOB) {
+                cursor.getBlob(0)
+            } else {
+                cursor.getString(0).toByteArray(Charsets.UTF_8)
+            }
+            JSONObject(String(bytes, Charsets.UTF_8))
+        }
+    }.getOrNull()
+
+    private fun readV2BackgroundColor(metadata: JSONObject?): Color {
+        val value = metadata?.optJSONObject("backgroundColor") ?: return Color(0xFF111111)
+        val red = value.optInt("r", 17).coerceIn(0, 255)
+        val green = value.optInt("g", 17).coerceIn(0, 255)
+        val blue = value.optInt("b", 17).coerceIn(0, 255)
+        val alpha = value.optInt("a", 255).coerceIn(0, 255)
+        return Color(android.graphics.Color.argb(alpha, red, green, blue))
+    }
+
+    private fun readV2DefaultSpacing(metadata: JSONObject?): Size2D {
+        val value = metadata?.optJSONObject("androidDefaultSpacing") ?: return Size2D(8f, 8f)
+        return Size2D(
+            value.optDouble("width", 8.0).toFloat().coerceAtLeast(0f),
+            value.optDouble("height", 8.0).toFloat().coerceAtLeast(0f),
+        )
+    }
+
+    private fun readV2DefaultAlignment(metadata: JSONObject?): ImageAlignment {
+        val ordinal = metadata?.optInt("androidDefaultAlignment", ImageAlignment.CENTER.ordinal)
+            ?: ImageAlignment.CENTER.ordinal
+        return ImageAlignment.values().getOrElse(ordinal) { ImageAlignment.CENTER }
+    }
+
+    private fun mergeV2Groups(nativeGroups: List<SceneGroup>, metadata: JSONObject?): List<SceneGroup> {
+        val savedGroups = metadata?.optJSONArray("groups") ?: return nativeGroups
+        if (nativeGroups.isEmpty()) return emptyList()
+        return nativeGroups.map { native ->
+            val saved = (0 until savedGroups.length())
+                .mapNotNull { savedGroups.optJSONObject(it) }
+                .firstOrNull { savedGroup ->
+                    val savedIds = savedGroup.optJSONArray("imageIds").toStringSet()
+                    savedIds.isNotEmpty() && savedIds == native.imageIds.toSet()
+                } ?: return@map native
+            val colorJson = saved.optJSONObject("backgroundColor")
+            val savedColor = colorJson?.let {
+                Color(android.graphics.Color.argb(
+                    it.optInt("a", 255).coerceIn(0, 255),
+                    it.optInt("r", 0).coerceIn(0, 255),
+                    it.optInt("g", 0).coerceIn(0, 255),
+                    it.optInt("b", 0).coerceIn(0, 255),
+                ))
+            }
+            val savedOpacity = saved.optDouble("backgroundOpacity", 0.0).toFloat().coerceIn(0f, 1f)
+            val metadataVersion = metadata.optInt("version", 1)
+            val savedMovesAsUnit = if (saved.has("movesAsUnit")) {
+                saved.optBoolean("movesAsUnit", native.movesAsUnit)
+            } else {
+                // Version 1 used one `locked` bit for both native group mode
+                // and PockRef's positional lock.
+                true
+            }
+            val savedPositionLocked = if (saved.has("positionLocked")) {
+                saved.optBoolean("positionLocked", native.positionLocked)
+            } else {
+                saved.optBoolean("locked", native.positionLocked)
+            }
+            val nativeArgb = native.backgroundColor.toArgb()
+            val savedArgb = savedColor?.toArgb()
+            val expectedAlpha = savedArgb?.let {
+                (android.graphics.Color.alpha(it) * savedOpacity).roundToInt().coerceIn(0, 255)
+            }
+            var mergedMovesAsUnit = native.movesAsUnit
+            if (metadataVersion < 2 &&
+                native.movesAsUnit == savedPositionLocked &&
+                native.positionLocked == savedPositionLocked
+            ) {
+                mergedMovesAsUnit = true
+            }
+            val nativeMatchesSaved = native.name == saved.optString("name", native.name) &&
+                mergedMovesAsUnit == savedMovesAsUnit &&
+                native.positionLocked == savedPositionLocked &&
+                savedArgb != null &&
+                android.graphics.Color.red(nativeArgb) == android.graphics.Color.red(savedArgb) &&
+                android.graphics.Color.green(nativeArgb) == android.graphics.Color.green(savedArgb) &&
+                android.graphics.Color.blue(nativeArgb) == android.graphics.Color.blue(savedArgb) &&
+                (android.graphics.Color.alpha(nativeArgb) * native.backgroundOpacity).roundToInt() == expectedAlpha
+            native.copy(
+                id = saved.optString("id", native.id).ifBlank { native.id },
+                backgroundColor = if (nativeMatchesSaved) savedColor!! else native.backgroundColor,
+                backgroundOpacity = if (nativeMatchesSaved) savedOpacity else native.backgroundOpacity,
+                movesAsUnit = mergedMovesAsUnit,
+                positionLocked = native.positionLocked,
+            )
+        }
+    }
+
+    private fun JSONArray?.toStringSet(): Set<String> = this?.let { array ->
+        buildSet { for (index in 0 until array.length()) array.optString(index).takeIf(String::isNotBlank)?.let(::add) }
+    }.orEmpty()
+
+    private fun readV2SceneGroups(db: SQLiteDatabase): V2GroupReadResult {
+        val hasGroupTable = runCatching {
+            db.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'items_groups'",
+                emptyArray(),
+            ).use { it.moveToFirst() }
+        }.getOrDefault(false)
+        if (!hasGroupTable) return V2GroupReadResult(emptyList(), false)
+
+        return runCatching {
+            data class GroupRow(
+                val id: Long,
+                val name: String,
+                val movesAsUnit: Boolean,
+                val positionLocked: Boolean,
+                val backgroundColor: String?,
+                val parentId: Long,
+            )
+
+            val rows = buildList {
+                db.rawQuery(
+                    "SELECT g.id, i.name, g.lock_mode, g.background_color, i.parent, i.locked " +
+                        "FROM items_groups g JOIN items i ON i.id = g.id ORDER BY i.z, i.id",
+                    emptyArray(),
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        add(
+                            GroupRow(
+                                id = cursor.getLong(0),
+                                name = cursor.getString(1)?.takeIf { it.isNotBlank() } ?: "组",
+                                movesAsUnit = cursor.getInt(2) != 0,
+                                positionLocked = cursor.getInt(5) != 0,
+                                backgroundColor = if (cursor.isNull(3)) null else cursor.getString(3),
+                                parentId = cursor.getLong(4),
+                            ),
+                        )
+                    }
+                }
+            }
+            val groupIds = rows.mapTo(mutableSetOf()) { it.id }
+            val imageItemIds = mutableSetOf<Long>()
+            db.rawQuery("SELECT id FROM items_images", emptyArray()).use { cursor ->
+                while (cursor.moveToNext()) imageItemIds += cursor.getLong(0)
+            }
+            var nested = rows.any { it.parentId >= 0L && it.parentId in groupIds }
+            val parentByItem = mutableMapOf<Long, Long>()
+            db.rawQuery("SELECT id, parent FROM items WHERE parent >= 0", emptyArray()).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val childId = cursor.getLong(0)
+                    val parentId = cursor.getLong(1)
+                    parentByItem[childId] = parentId
+                    if (childId in groupIds && parentId in groupIds) nested = true
+                }
+            }
+            val unsupportedGroupContents = parentByItem.any { (childId, parentId) ->
+                parentId in groupIds && childId !in imageItemIds && childId !in groupIds
+            }
+
+            val groups = rows.mapNotNull { row ->
+                val memberIds = buildList {
+                    db.rawQuery(
+                        "SELECT id FROM items WHERE parent = ? ORDER BY z, id",
+                        arrayOf(row.id.toString()),
+                    ).use { cursor ->
+                        while (cursor.moveToNext()) {
+                            val memberId = cursor.getLong(0)
+                            if (memberId in imageItemIds) add("pur-v2-image-$memberId")
+                        }
+                    }
+                }
+                if (memberIds.isEmpty()) return@mapNotNull null
+                val storedArgb = row.backgroundColor?.let {
+                    runCatching { android.graphics.Color.parseColor(it) }.getOrNull()
+                }
+                val opacity = if (storedArgb != null) android.graphics.Color.alpha(storedArgb) / 255f else 0f
+                val opaqueColor = storedArgb?.let {
+                    Color(android.graphics.Color.rgb(
+                        android.graphics.Color.red(it),
+                        android.graphics.Color.green(it),
+                        android.graphics.Color.blue(it),
+                    ))
+                } ?: Color.Black
+                SceneGroup(
+                    id = "pur-v2-group-${row.id}",
+                    name = row.name,
+                    imageIds = memberIds,
+                    backgroundColor = opaqueColor,
+                    backgroundOpacity = opacity,
+                    movesAsUnit = row.movesAsUnit,
+                    positionLocked = row.positionLocked,
+                )
+            }
+            V2GroupReadResult(groups, nested || unsupportedGroupContents)
+        }.getOrElse {
+            Log.w(TAG, "PureRef v2 group metadata could not be read", it)
+            V2GroupReadResult(emptyList(), true)
         }
     }
 
@@ -404,13 +626,18 @@ class PurFileParser {
         }
     }
 
-    private fun readV2SceneImages(db: SQLiteDatabase, imageOutput: FileOutputStream): List<SceneImage> {
+    private fun readV2SceneImages(
+        db: SQLiteDatabase,
+        imageOutput: FileOutputStream,
+        privateMetadata: JSONObject?,
+    ): List<SceneImage> {
         val sql = """
             SELECT ii.id, ii.image, im.width, im.height, im.format, it.opacity, it.z, it.locked,
-                   it.transform, ii.image_transform
+                   it.transform, ii.image_transform, parent_group.transform, it.name
             FROM items_images ii
             JOIN images im ON im.id = ii.image
             JOIN items it ON it.id = ii.id
+            LEFT JOIN items parent_group ON parent_group.id = it.parent
             WHERE im.data IS NOT NULL
             ORDER BY it.z, ii.id
         """.trimIndent()
@@ -428,14 +655,28 @@ class PurFileParser {
                 val itemTransform = v2TransformFrom(sqliteTextPayload(cursor, 8)) ?: V2Transform()
                 val imageTransform = v2TransformFrom(sqliteTextPayload(cursor, 9))
                     ?: centeredImageTransform(width, height)
+                val groupTransform = v2TransformFrom(sqliteTextPayload(cursor, 10)) ?: V2Transform()
                 val blob = copyV2ImageBlob(db, imageId, imageOutput) ?: continue
-                val combined = itemTransform.applying(imageTransform)
+                val combined = groupTransform.applying(itemTransform).applying(imageTransform)
                 val center = combined.applyingTo(width / 2.0, height / 2.0)
                 val displayWidth = maxOf(1.0, hypot(combined.m11, combined.m12) * width)
                 val displayHeight = maxOf(1.0, hypot(combined.m21, combined.m22) * height)
+                val stableId = "pur-v2-image-$itemId"
+                val metadata = privateMetadata?.optJSONObject("images")?.optJSONObject(stableId)
+                val cropJson = metadata?.optJSONObject("cropRect")
+                val crop = cropJson?.takeIf { metadata.optBoolean("androidHasCrop", true) }?.let {
+                    val left = it.optDouble("x", 0.0).toFloat()
+                    val top = it.optDouble("y", 0.0).toFloat()
+                    val right = (left + it.optDouble("width", 1.0)).toFloat()
+                    val bottom = (top + it.optDouble("height", 1.0)).toFloat()
+                    CropRect(left, top, right, bottom)
+                }
+                val adjustJson = metadata?.optJSONObject("colorAdjust")
                 images += SceneImage(
-                    id = "pur-v2-image-$itemId",
-                    name = "image_$itemId",
+                    id = stableId,
+                    name = cursor.getString(11)?.takeIf { it.isNotBlank() }
+                        ?: metadata?.optString("originalFilename")?.takeIf { it.isNotBlank() }
+                        ?: "image_$itemId",
                     mimeType = formatMimeType(format),
                     imageBytes = ByteArray(0),
                     imageByteOffset = blob.offset.toInt(),
@@ -445,10 +686,18 @@ class PurFileParser {
                     center = center,
                     displaySize = Size2D(displayWidth.toFloat(), displayHeight.toFloat()),
                     rotationDegrees = Math.toDegrees(atan2(combined.m12, combined.m11)).toFloat(),
-                    flipX = combined.m11 < 0,
-                    flipY = combined.m22 < 0,
+                    flipX = false,
+                    flipY = combined.m11 * combined.m22 - combined.m12 * combined.m21 < 0,
                     zIndex = z.toInt(),
                     locked = locked,
+                    colorAdjust = ColorAdjust(
+                        brightness = adjustJson?.optDouble("brightness", 0.0)?.toFloat() ?: 0f,
+                        contrast = adjustJson?.optDouble("contrast", 0.0)?.toFloat() ?: 0f,
+                        saturation = adjustJson?.optDouble("saturation", 0.0)?.toFloat() ?: 0f,
+                    ),
+                    cropRect = crop,
+                    showsOriginalResolution = metadata?.optBoolean("showsOriginalResolution", false) ?: false,
+                    posterizeLevels = metadata?.optInt("posterizeLevels", 0)?.let(::supportedPosterizeLevel),
                 )
             }
         }
@@ -565,7 +814,14 @@ class PurFileParser {
         "jpg", "jpeg" -> "image/jpeg"
         "gif" -> "image/gif"
         "webp" -> "image/webp"
+        "heic", "heif" -> "image/heic"
+        "avif" -> "image/avif"
         else -> "image/jpeg"
+    }
+
+    private fun supportedPosterizeLevel(value: Int): Int? = when (value) {
+        2, 4, 8, 16 -> value
+        else -> null
     }
 
     private fun v2TransformFrom(payload: ByteArray?): V2Transform? {
@@ -600,14 +856,15 @@ class PurFileParser {
 
     private fun sqliteTextPayload(cursor: android.database.Cursor, index: Int): ByteArray? {
         if (cursor.isNull(index)) return null
+        if (cursor.getType(index) == android.database.Cursor.FIELD_TYPE_BLOB) {
+            return runCatching { cursor.getBlob(index) }.getOrNull()
+        }
         val text = runCatching { cursor.getString(index) }.getOrNull()
         if (text != null) {
             return text.mapNotNull { ch -> ch.code.takeIf { it <= 0xFF }?.toByte() }.toByteArray()
         }
         return runCatching {
-            cursor.getBlob(index).toString(Charsets.UTF_8)
-                .mapNotNull { ch -> ch.code.takeIf { it <= 0xFF }?.toByte() }
-                .toByteArray()
+            cursor.getBlob(index)
         }.getOrNull()
     }
 

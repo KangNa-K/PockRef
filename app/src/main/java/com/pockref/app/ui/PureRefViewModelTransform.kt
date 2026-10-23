@@ -11,9 +11,12 @@ import com.pockref.app.model.ColorAdjust
 import com.pockref.app.model.SelectionFlash
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.model.SceneImage
+import com.pockref.app.model.SceneGroup
 import com.pockref.app.model.Size2D
 import com.pockref.app.model.SpeedSample
+import com.pockref.app.model.groupContaining
 import com.pockref.app.model.isImageLocked
+import com.pockref.app.model.selectedGroups
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -33,6 +36,7 @@ import kotlinx.coroutines.withContext
 internal data class SceneSnapshot(
     val sceneName: String,
     val backgroundColor: Color,
+    val groups: List<SceneGroup>,
 )
 
 /**
@@ -56,6 +60,11 @@ internal sealed interface SceneDiff {
     data class ReplaceImages(
         val oldImages: List<SceneImage>,
         val newImages: List<SceneImage>,
+    ) : SceneDiff
+
+    data class ReplaceGroups(
+        val oldGroups: List<SceneGroup>,
+        val newGroups: List<SceneGroup>,
     ) : SceneDiff
 
     /**
@@ -136,6 +145,7 @@ internal sealed interface HistoryEntry {
         val sceneName: String,
         val backgroundColor: Color,
         val images: List<SceneImage>,
+        val groups: List<SceneGroup>,
         val markupStrokes: List<CanvasMarkupStroke>,
         val markupTexts: List<CanvasMarkupText>,
     ) : HistoryEntry
@@ -275,19 +285,62 @@ internal const val ROTATION_SNAP_DEBOUNCE_MS_LOCAL = ROTATION_SNAP_DEBOUNCE_MS
 
 internal fun PockRefUiState.normalizeSelection(): PockRefUiState {
     val validIds = images.map { it.id }.toSet()
+    val ownedIds = mutableSetOf<String>()
+    val normalizedGroups = groups.mapNotNull { group ->
+        val members = group.imageIds.filter { it in validIds && ownedIds.add(it) }.distinct()
+        group.copy(
+            imageIds = members,
+            backgroundOpacity = group.backgroundOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0f,
+        ).takeIf { members.isNotEmpty() }
+    }
+    val normalizedEditingGroupId = editingGroupId?.takeIf { id ->
+        normalizedGroups.any { it.id == id && !it.positionLocked }
+    }
+    val validSelectedGroupIds = selectedGroupIds.filterTo(linkedSetOf()) { id ->
+        normalizedGroups.any { it.id == id }
+    }
     val keptSelection = selectedImageIds.filterTo(linkedSetOf()) { it in validIds }
     val primary = when {
         selectedImageId in validIds -> selectedImageId
         keptSelection.isNotEmpty() -> keptSelection.last()
         else -> null
     }
-    val normalizedIds = when {
+    var normalizedIds = when {
         primary == null -> emptySet()
         keptSelection.isEmpty() -> setOf(primary)
         else -> keptSelection
     }
+    if (normalizedEditingGroupId != null) {
+        val members = normalizedGroups.first { it.id == normalizedEditingGroupId }.imageIds.toSet()
+        normalizedIds = normalizedIds.intersect(members)
+    } else {
+        val explicitGroups = normalizedGroups.filter { it.id in validSelectedGroupIds }
+        if (explicitGroups.isNotEmpty()) {
+            explicitGroups.forEach { group -> normalizedIds = normalizedIds + group.imageIds }
+        } else {
+            normalizedGroups.forEach { group ->
+                if (group.imageIds.any { it in normalizedIds }) normalizedIds = normalizedIds + group.imageIds
+            }
+        }
+    }
+    val normalizedSelectedGroupIds = if (normalizedEditingGroupId != null) {
+        emptySet()
+    } else if (validSelectedGroupIds.isNotEmpty()) {
+        validSelectedGroupIds
+    } else {
+        normalizedGroups.filter { group ->
+            group.imageIds.isNotEmpty() && group.imageIds.all { it in normalizedIds }
+        }.mapTo(linkedSetOf()) { it.id }
+    }
+    val normalizedPrimary = when {
+        primary != null && primary in normalizedIds -> primary
+        else -> normalizedIds.lastOrNull()
+    }
     return copy(
-        selectedImageId = primary,
+        groups = normalizedGroups,
+        selectedGroupIds = normalizedSelectedGroupIds,
+        editingGroupId = normalizedEditingGroupId,
+        selectedImageId = normalizedPrimary,
         selectedImageIds = normalizedIds,
     ).clearPosterizeIfSelectionChanged(normalizedIds)
 }
@@ -301,6 +354,7 @@ internal fun PockRefUiState.toHistoryEntry(): HistoryEntry.Snapshot =
         sceneName = sceneName,
         backgroundColor = backgroundColor,
         images = images,
+        groups = groups,
         markupStrokes = markupStrokes,
         markupTexts = markupTexts,
     )
@@ -338,7 +392,8 @@ internal fun buildHistoryEntry(
     if (markupChanged) {
         val onlyMarkupChanged = oldState.sceneName == newState.sceneName &&
             oldState.backgroundColor == newState.backgroundColor &&
-            oldState.images == newState.images
+            oldState.images == newState.images &&
+            oldState.groups == newState.groups
         if (onlyMarkupChanged) {
             return HistoryEntry.Diff(
                 SceneDiff.ReplaceMarkup(
@@ -347,6 +402,16 @@ internal fun buildHistoryEntry(
                     oldTexts = oldState.markupTexts,
                     newTexts = newState.markupTexts,
                 ),
+            )
+        }
+        return oldState.toHistoryEntry()
+    }
+    if (oldState.groups != newState.groups) {
+        if (oldState.images == newState.images &&
+            oldState.sceneName == newState.sceneName &&
+            oldState.backgroundColor == newState.backgroundColor) {
+            return HistoryEntry.Diff(
+                SceneDiff.ReplaceGroups(oldGroups = oldState.groups, newGroups = newState.groups),
             )
         }
         return oldState.toHistoryEntry()
@@ -539,6 +604,10 @@ internal fun invertDiff(diff: SceneDiff, appliedState: PockRefUiState): SceneDif
             oldImages = diff.newImages,
             newImages = diff.oldImages,
         )
+        is SceneDiff.ReplaceGroups -> SceneDiff.ReplaceGroups(
+            oldGroups = diff.newGroups,
+            newGroups = diff.oldGroups,
+        )
         is SceneDiff.UpdateImage -> diff.swap()
         is SceneDiff.AddImage -> SceneDiff.RemoveImage(image = diff.image)
         is SceneDiff.RemoveImage -> SceneDiff.AddImage(image = diff.image)
@@ -615,7 +684,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     internal fun deselect() {
         val before = mainVm._uiState.value
         // Only do work if there was an actual selection to lose.
-        if (before.selectedImageIds.isEmpty() && before.selectedImageId == null) return
+        if (before.selectedImageIds.isEmpty() && before.selectedImageId == null && before.editingGroupId == null) return
         // V_NOW (2026-06-08 "双指撤销后无法继续撤销" 修复):
         // selection is a TRANSIENT user gesture, not a
         // durable scene change. The previous design
@@ -669,7 +738,9 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
             state.copy(
                 selectedImageId = null,
                 selectedImageIds = emptySet(),
+                selectedGroupIds = emptySet(),
                 multiSelectMode = false,
+                editingGroupId = null,
                 bottomRightPanelExpanded = false,
             ).normalizeSelection().syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
         }
@@ -717,6 +788,8 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                 return@update state.copy(
                     selectedImageId = null,
                     selectedImageIds = emptySet(),
+                    selectedGroupIds = emptySet(),
+                    editingGroupId = null,
                     topToolbarExpanded = true,
                     // V_NOW: same as [deselect] — deselecting
                     // a selected image collapses the
@@ -724,10 +797,37 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     bottomRightPanelExpanded = false,
                 ).normalizeSelection()
             }
+            val editingGroup = state.editingGroupId?.let { id -> state.groups.firstOrNull { it.id == id } }
+            if (state.editingGroupId != null && editingGroup?.contains(imageId) != true) {
+                return@update state
+            }
+            val group = if (state.editingGroupId == null) state.groupContaining(imageId) else null
+            if (group != null) {
+                val groupIds = group.imageIds.toSet()
+                val nextSelection = if (state.multiSelectMode) {
+                    if (state.selectedImageIds.containsAll(groupIds)) state.selectedImageIds - groupIds
+                    else state.selectedImageIds + groupIds
+                } else {
+                    groupIds
+                }
+                return@update state.copy(
+                    selectedImageId = imageId.takeIf { it in nextSelection } ?: nextSelection.lastOrNull(),
+                    selectedImageIds = nextSelection,
+                    selectedGroupIds = state.groups.filter { candidate ->
+                        candidate.imageIds.any { it in nextSelection }
+                    }.mapTo(linkedSetOf()) { it.id },
+                    multiSelectMode = nextSelection.size > 1,
+                    boxSelectMode = false,
+                    topToolbarExpanded = nextSelection.isEmpty(),
+                    bottomRightPanelExpanded = false,
+                ).normalizeSelection()
+            }
             if (!state.multiSelectMode) {
                 return@update state.copy(
                     selectedImageId = imageId,
                     selectedImageIds = setOf(imageId),
+                    selectedGroupIds = emptySet(),
+                    editingGroupId = state.editingGroupId,
                     topToolbarExpanded = false,
                     // V_NOW: selecting an image causes the
                     // SelectionFloatingToolbar to appear
@@ -755,6 +855,9 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     else -> updated.lastOrNull()
                 },
                 selectedImageIds = updated,
+                selectedGroupIds = state.groups.filter { group ->
+                    group.imageIds.isNotEmpty() && group.imageIds.all { it in updated }
+                }.mapTo(linkedSetOf()) { it.id },
                 topToolbarExpanded = updated.isEmpty(),
                 // V_NOW: re-show the selection toolbar on
                 // multi-select tap (same as single-select).
@@ -844,16 +947,19 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         if (imageId.isBlank()) return
         val state = mainVm._uiState.value
         val target = state.images.firstOrNull { it.id == imageId } ?: return
+        val targetIds = if (state.editingGroupId == null) {
+            state.groupContaining(imageId)?.imageIds?.toSet() ?: setOf(imageId)
+        } else setOf(imageId)
         val currentMax = state.images.maxOf { it.zIndex }
-        if (target.zIndex >= currentMax) {
+        if (targetIds.all { id -> state.images.firstOrNull { it.id == id }?.zIndex == currentMax }) {
             // Already at the top; still record a gesture entry so undo/redo
             // work consistently even when the zIndex bump is a no-op.
             return
         }
         mainVm.updateSceneForGesture {
-            copy(images = images.map { img ->
-                if (img.id == imageId) img.copy(zIndex = currentMax + 1) else img
-            })
+            val reordered = images.sortedBy { it.zIndex }.filterNot { it.id in targetIds } +
+                images.filter { it.id in targetIds }.sortedBy { it.zIndex }
+            copy(images = reordered.mapIndexed { index, img -> img.copy(zIndex = index) })
         }
     }
 
@@ -865,6 +971,9 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
 
         fun hitTest(state: PockRefUiState, p: Offset): List<String> {
             return state.images.sortedByDescending { it.zIndex }.mapNotNull { image ->
+                if (state.editingGroupId != null &&
+                    state.groupContaining(image.id)?.id != state.editingGroupId
+                ) return@mapNotNull null
                 val worldPoint = canvasPointToWorld(p, viewportSize, state.canvasOffset, state.canvasScale)
                 val localPoint = worldPoint - image.center
                 val matrix = android.graphics.Matrix().apply {
@@ -1549,7 +1658,8 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     }
 
     internal fun scaleSelected(factor: Float) {
-        val selectedIds = currentSelectedIds()
+        val stateBefore = mainVm._uiState.value
+        val selectedIds = currentSelectedIds().filterTo(mutableSetOf()) { id -> !stateBefore.isImageLocked(id) }
         if (selectedIds.isEmpty()) return
         mainVm.mutateScene {
             val selected = images.filter { it.id in selectedIds }
@@ -1575,7 +1685,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // continuous pinch / rotate (see [transformSelectedImage]
         // and [flipSelected] for the matching filter).
         val selectedIds = allSelectedIds.filter { id ->
-            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+            !stateBefore.isImageLocked(id)
         }
         if (selectedIds.isEmpty()) return
         val rotationSnapActive = stateBefore.rotationSnapEnabled
@@ -1613,7 +1723,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // for an all-locked selection, the call is a no-op
         // (same shape as the transformSelectedImage filter).
         val transformableIds = allSelectedIds.filter { id ->
-            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+            !stateBefore.isImageLocked(id)
         }
         if (transformableIds.isEmpty()) return
         mainVm.mutateScene {
@@ -1626,18 +1736,40 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     }
 
     internal fun bringToFront() {
-        val selectedIds = currentSelectedIds()
-        if (selectedIds.isEmpty()) return
-        mainVm.mutateScene {
-            copy(images = reorderZIndex(images, selectedIds, bringToFront = true))
-        }
+        reorderSelectedImages(bringToFront = true)
     }
 
     internal fun sendToBack() {
+        reorderSelectedImages(bringToFront = false)
+    }
+
+    private fun reorderSelectedImages(bringToFront: Boolean) {
+        val stateBefore = mainVm._uiState.value
         val selectedIds = currentSelectedIds()
         if (selectedIds.isEmpty()) return
+        val movableIds = selectedIds.filterTo(mutableSetOf()) { id -> !stateBefore.isImageLocked(id) }
+        if (movableIds.isEmpty()) return
+        val ordered = stateBefore.images.sortedBy { it.zIndex }
+        val scopeIds = stateBefore.editingGroupId?.let { groupId ->
+            stateBefore.groups.firstOrNull { it.id == groupId }?.imageIds?.toSet()
+        } ?: ordered.mapTo(mutableSetOf()) { it.id }
+        val scoped = ordered.filter { it.id in scopeIds }
+        val selected = scoped.filter { it.id in movableIds }
+        if (selected.isEmpty()) return
+        val remaining = scoped.filterNot { it.id in movableIds }
+        val reorderedScope = if (bringToFront) remaining + selected else selected + remaining
+        val replacement = reorderedScope.iterator()
+        val reordered = ordered.map { image ->
+            if (image.id in scopeIds) replacement.next() else image
+        }.mapIndexed { index, image -> image.copy(zIndex = index) }
         mainVm.mutateScene {
-            copy(images = reorderZIndex(images, selectedIds, bringToFront = false))
+            val zById = reordered.associate { it.id to it.zIndex }
+            copy(
+                images = reordered,
+                groups = groups.map { group ->
+                    group.copy(imageIds = group.imageIds.sortedBy { zById[it] ?: Int.MAX_VALUE })
+                },
+            )
         }
     }
 
@@ -1680,7 +1812,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
             stateBefore.selectedImageId?.let(::setOf).orEmpty()
         }
         if (selectedIds.isEmpty()) return
-        val originals = stateBefore.images.filter { it.id in selectedIds }
+        val originals = stateBefore.images.filter { it.id in selectedIds }.sortedBy { it.zIndex }
         mainVm.mutateScene {
             val maxZ = (images.maxOfOrNull { it.zIndex } ?: 0) + 1
             val newImages = originals.mapIndexed { i, original ->
@@ -1695,8 +1827,46 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                 )
                 clone
             }
+            val idMap = originals.zip(newImages).associate { (original, copy) -> original.id to copy.id }
+            val editingGroupId = stateBefore.editingGroupId
+            val updatedGroups = if (editingGroupId != null) {
+                groups.map { group ->
+                    if (group.id == editingGroupId) group.copy(imageIds = group.imageIds + newImages.map { it.id })
+                    else group
+                }
+            } else {
+                val copiedGroups = stateBefore.selectedGroups
+                    .filter { group -> selectedIds.containsAll(group.imageIds) }
+                    .map { group ->
+                        group.copy(
+                            id = java.util.UUID.randomUUID().toString(),
+                            name = "${group.name} 副本",
+                            imageIds = group.imageIds.mapNotNull(idMap::get),
+                        )
+                    }
+                groups + copiedGroups
+            }
+            val imagesWithCopies = images + newImages
+            val orderedImages = if (editingGroupId != null) {
+                val originalGroupIds = groups.firstOrNull { it.id == editingGroupId }?.imageIds.orEmpty().toSet()
+                val copyIds = newImages.mapTo(mutableSetOf()) { it.id }
+                val existing = imagesWithCopies.filterNot { it.id in copyIds }.sortedBy { it.zIndex }
+                val insertionIndex = (existing.indexOfLast { it.id in originalGroupIds } + 1)
+                    .coerceIn(0, existing.size)
+                existing.toMutableList().apply { addAll(insertionIndex, newImages) }
+                    .mapIndexed { index, image -> image.copy(zIndex = index) }
+            } else {
+                imagesWithCopies
+            }
             copy(
-                images = images + newImages,
+                images = orderedImages,
+                groups = updatedGroups,
+                selectedGroupIds = if (editingGroupId == null) {
+                    updatedGroups.filter { group -> newImages.map { it.id }.toSet().containsAll(group.imageIds) }
+                        .mapTo(linkedSetOf()) { it.id }
+                } else {
+                    emptySet()
+                },
                 selectedImageIds = newImages.map { it.id }.toSet(),
                 selectedImageId = newImages.last().id,
             )
@@ -1775,6 +1945,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     internal fun toggleLockSelected() {
         val selectedIds = currentSelectedIds()
         if (selectedIds.isEmpty()) return
+        val state = mainVm._uiState.value
         // V_NOW (2026-06-08 "global image lock" feature):
         // refuse to toggle per-image lock when the
         // global lock is on. The semantic is "global
@@ -1782,12 +1953,22 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // lock off before they can change any individual
         // image's lock state. This keeps the
         // "everything's locked" promise consistent.
-        if (mainVm._uiState.value.globalImageLock) return
+        if (state.globalImageLock) return
+        val selectedGroups = state.selectedGroups
+        val selectedGroupIds = selectedGroups.mapTo(mutableSetOf()) { it.id }
+        val selectedGroupMembers = state.groups.filter { it.id in selectedGroupIds }
+            .flatMapTo(mutableSetOf()) { it.imageIds }
+        val shouldUnlockGroup = selectedGroups.any { it.positionLocked }
         mainVm.mutateScene {
-            copy(images = images.map { image ->
-                if (image.id !in selectedIds) image
-                else image.copy(locked = !image.locked)
-            })
+            copy(
+                groups = groups.map { group ->
+                    if (group.id in selectedGroupIds) group.copy(positionLocked = !shouldUnlockGroup) else group
+                },
+                images = images.map { image ->
+                    if (image.id !in selectedIds || image.id in selectedGroupMembers) image
+                    else image.copy(locked = !image.locked)
+                },
+            )
         }
     }
 
@@ -1858,6 +2039,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                         sceneName = entry.sceneName,
                         backgroundColor = entry.backgroundColor,
                         images = entry.images,
+                        groups = entry.groups,
                         markupStrokes = entry.markupStrokes,
                         markupTexts = entry.markupTexts,
                         markupModeActive = false,
@@ -1891,6 +2073,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     transientDragImageIds = emptySet(),
                     transientDragDelta = Offset.Zero,
                 )
+                is SceneDiff.ReplaceGroups -> state.copy(groups = diff.newGroups)
                 is SceneDiff.UpdateImage -> state.copy(
                     images = state.images.map { img ->
                         if (img.id != diff.id) img
@@ -1960,7 +2143,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // image must keep its current pose until the user explicitly
         // unlocks, so reset is a no-op for it.
         val selectedIds = allSelectedIds.filter { id ->
-            stateBefore.images.firstOrNull { it.id == id }?.locked != true
+            !stateBefore.isImageLocked(id)
         }
         if (selectedIds.isEmpty()) return
         mainVm.mutateScene {

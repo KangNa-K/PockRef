@@ -307,6 +307,7 @@ internal class PockRefViewModelPractice(
                 practiceConfigSheetOpen = false,
                 selectedImageIds = emptySet(),
                 selectedImageId = null,
+                selectedGroupIds = emptySet(),
                 multiSelectMode = false,
                 boxSelectMode = false,
                 boxSelectRect = null,

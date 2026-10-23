@@ -81,7 +81,7 @@ class SceneFileWriterTest {
     }
 
     @Test
-    fun compatibleScene_isCompleteBeforeOriginalIsOpened_andRoundTrips() = runBlocking {
+    fun encodedScene_isCompleteBeforeOriginalIsOpened_andRoundTrips() = runBlocking {
         val original = temporaryFolder.newFile().apply { writeText("original scene") }
         val codec = PurSceneCodec()
         val png = Base64.getDecoder().decode(
@@ -93,12 +93,12 @@ class SceneFileWriterTest {
             center = Offset.Zero, displaySize = Size2D(1f, 1f),
         )))
         val expected = ByteArrayOutputStream().also {
-            codec.writePureRefCompatible(scene, it, temporaryFolder.root)
+            codec.write(scene, it)
         }.toByteArray()
         var encoded = false
         writer().write(
             encode = {
-                codec.writePureRefCompatible(scene, it, temporaryFolder.root)
+                codec.write(scene, it)
                 encoded = true
             },
             openDestination = {

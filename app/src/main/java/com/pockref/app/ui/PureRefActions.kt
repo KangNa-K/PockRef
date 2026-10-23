@@ -26,6 +26,7 @@ sealed interface PockRefAction {
     data class BeginImageDrag(val imageId: String) : PockRefAction
     data class UpdateImageDrag(val delta: Offset) : PockRefAction
     data object CommitImageDrag : PockRefAction
+    data class AddImagesToGroupAfterDrag(val groupId: String, val imageIds: Set<String>) : PockRefAction
     data object CancelImageDrag : PockRefAction
     data object RotateLeft : PockRefAction
     data object RotateRight : PockRefAction
@@ -35,6 +36,17 @@ sealed interface PockRefAction {
     data object SendToBack : PockRefAction
     data object DeleteSelected : PockRefAction
     data object DuplicateSelected : PockRefAction
+    data object CreateGroup : PockRefAction
+    data object EnterSelectedGroup : PockRefAction
+    data class EnterGroup(val groupId: String, val imageId: String? = null) : PockRefAction
+    data object ExitGroup : PockRefAction
+    data object ClearGroupSelection : PockRefAction
+    data object UngroupSelected : PockRefAction
+    data object DuplicateSelectedGroup : PockRefAction
+    data object RemoveSelectedFromGroup : PockRefAction
+    data class RenameSelectedGroup(val name: String) : PockRefAction
+    data class SetSelectedGroupAppearance(val color: Color, val opacity: Float) : PockRefAction
+    data object ToggleSelectedGroupLock : PockRefAction
     data object ToggleLockSelected : PockRefAction
     data object ToggleOriginalDisplaySelected : PockRefAction
     // V_NOW (2026-06-08 "global image lock" feature):

@@ -174,7 +174,9 @@ class PockRefActionsTest {
     // 2026-08-03: 177 → 178 — kept both the save-path switch and the
     // selectable default directory action.
     // 2026-08-13: 181 → 183 — added transient posterize controls.
-    private val expectedVariantCount: Int = 183
+    // 183 baseline variants + 10 editable-group operations + the
+    // group-editor-specific ClearGroupSelection action.
+    private val expectedVariantCount: Int = 195
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

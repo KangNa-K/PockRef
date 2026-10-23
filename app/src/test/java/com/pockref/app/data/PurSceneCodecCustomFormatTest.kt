@@ -7,6 +7,7 @@ import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.CropRect
 import com.pockref.app.model.ImageAlignment
 import com.pockref.app.model.PockRefScene
+import com.pockref.app.model.SceneGroup
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import org.junit.Assert.assertArrayEquals
@@ -76,7 +77,7 @@ class PurSceneCodecCustomFormatTest {
     }
 
     @Test
-    fun pureRefCompatibleWrite_roundTripsPockRefImageStateWithoutTransformExtensions() {
+    fun customFormat_roundTripsPockRefImageStateAndGroups() {
         val codec = PurSceneCodec()
         val file = File.createTempFile("pockref-pureref-compatible", ".pur")
         file.deleteOnExit()
@@ -86,6 +87,16 @@ class PurSceneCodecCustomFormatTest {
         val crop = CropRect(0.1f, 0.2f, 0.9f, 0.8f)
         val scene = PockRefScene(
             name = "desktop-compatible-state",
+            groups = listOf(
+                SceneGroup(
+                    id = "refs",
+                    name = "References",
+                    imageIds = listOf("front-uuid", "back-uuid"),
+                    backgroundColor = Color(0xFF336699),
+                    backgroundOpacity = 0.3f,
+                    positionLocked = true,
+                ),
+            ),
             images = listOf(
                 SceneImage(
                     id = "front-uuid",
@@ -125,16 +136,17 @@ class PurSceneCodecCustomFormatTest {
             ),
         )
 
-        file.outputStream().use { output ->
-            codec.writePureRefCompatible(scene, output, File("build/tmp"))
-        }
+        file.outputStream().use { codec.write(scene, it) }
 
-        val written = file.readBytes()
-        assertEquals(8, ByteBuffer.wrap(written, 0, 4).order(ByteOrder.BIG_ENDIAN).int)
-        assertArrayEquals("1.10".toByteArray(Charsets.UTF_16BE), written.copyOfRange(4, 12))
-        assertEquals(-1, written.indexOfPattern(byteArrayOf('P'.code.toByte(), 'R'.code.toByte(), 'C'.code.toByte(), 'A'.code.toByte())))
-
-        val restored = codec.readFromFile(file).images.associateBy { it.name }
+        val restoredScene = codec.readFromFile(file)
+        val restored = restoredScene.images.associateBy { it.name }
+        val group = restoredScene.groups.single()
+        assertEquals("refs", group.id)
+        assertEquals("References", group.name)
+        assertEquals(listOf("front-uuid", "back-uuid"), group.imageIds)
+        assertEquals(Color(0xFF336699), group.backgroundColor)
+        assertEquals(0.3f, group.backgroundOpacity, 0.0001f)
+        assertTrue(group.positionLocked)
         val front = restored.getValue("front.png")
         val back = restored.getValue("back.png")
         assertEquals(2, front.posterizeLevels)
@@ -151,6 +163,42 @@ class PurSceneCodecCustomFormatTest {
         assertTrue(front.showsOriginalResolution)
         assertEquals(crop, front.cropRect)
     }
+
+    @Test
+    fun customFormatV6_roundTripsBothEditableGroupFlags() {
+        val codec = PurSceneCodec()
+        val file = File.createTempFile("pockref-custom-groups", ".pur")
+        file.deleteOnExit()
+        val group = SceneGroup(
+            id = "group-id",
+            name = "Study set",
+            imageIds = listOf("first", "second"),
+            backgroundColor = Color(0xFFAA5522),
+            backgroundOpacity = 0.42f,
+            movesAsUnit = false,
+            positionLocked = true,
+        )
+        val scene = PockRefScene(
+            groups = listOf(group),
+            images = listOf(testImage("first", 0), testImage("second", 1)),
+        )
+
+        file.outputStream().use { codec.write(scene, it) }
+
+        assertEquals(group, codec.readFromFile(file).groups.single())
+    }
+
+    private fun testImage(id: String, zIndex: Int) = SceneImage(
+        id = id,
+        name = "$id.png",
+        mimeType = "image/png",
+        imageBytes = byteArrayOf(1, 2, 3),
+        intrinsicWidth = 10,
+        intrinsicHeight = 10,
+        center = Offset.Zero,
+        displaySize = Size2D(10f, 10f),
+        zIndex = zIndex,
+    )
 
     @Test
     fun customFormat_restoresSceneDefaults() {

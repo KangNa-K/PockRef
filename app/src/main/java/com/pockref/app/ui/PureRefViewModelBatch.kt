@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import com.pockref.app.model.AlignMode
 import com.pockref.app.model.SceneImage
+import com.pockref.app.model.SceneGroup
 import com.pockref.app.model.isImageLocked
 import kotlin.math.ceil
 import kotlin.math.max
@@ -155,6 +156,77 @@ internal fun alignEdgeAndPackWithoutOverlap(
     }
 }
 
+/**
+ * Arrange group members with the same row-scan layout used by iOS when a
+ * dragged image is attached to a group. The returned positions are centered
+ * around the origin; the caller can translate the complete layout back to
+ * the group's original center.
+ *
+ * Keeping this separate from [PockRefViewModelBatch.executeAutoLayout] is
+ * intentional: dropping into a group must not resize the members or create a
+ * second undo entry for the surrounding canvas.
+ */
+internal fun layoutGroupMembersForDrag(
+    images: List<SceneImage>,
+    maxRowWidth: Float,
+    gap: Float = 16f,
+): List<SceneImage> {
+    if (images.isEmpty()) return emptyList()
+
+    val safeGap = gap.coerceAtLeast(0f)
+    val footprints = images.map(::imageRotatedFootprint)
+    val availableWidth = maxOf(
+        1f,
+        maxRowWidth,
+        footprints.maxOf { it.width },
+    )
+
+    val rows = mutableListOf<List<Int>>()
+    var current = mutableListOf<Int>()
+    var currentWidth = 0f
+    footprints.forEachIndexed { index, footprint ->
+        val nextWidth = if (current.isEmpty()) {
+            footprint.width
+        } else {
+            currentWidth + safeGap + footprint.width
+        }
+        if (current.isNotEmpty() && nextWidth > availableWidth) {
+            rows += current
+            current = mutableListOf(index)
+            currentWidth = footprint.width
+        } else {
+            current += index
+            currentWidth = nextWidth
+        }
+    }
+    if (current.isNotEmpty()) rows += current
+
+    val rowHeights = rows.map { row -> row.maxOf { footprints[it].height } }
+    val rowWidths = rows.map { row ->
+        row.sumOf { footprints[it].width.toDouble() }.toFloat() +
+            safeGap * (row.size - 1)
+    }
+    val totalHeight = rowHeights.sum() + safeGap * (rows.size - 1)
+    var cursorY = -totalHeight / 2f
+    val result = ArrayList<SceneImage>(images.size)
+
+    rows.forEachIndexed { rowIndex, row ->
+        val rowHeight = rowHeights[rowIndex]
+        var cursorX = -rowWidths[rowIndex] / 2f
+        row.forEach { imageIndex ->
+            val footprint = footprints[imageIndex]
+            val center = Offset(
+                x = cursorX + footprint.width / 2f,
+                y = cursorY + (rowHeight - footprint.height) / 2f + footprint.height / 2f,
+            )
+            result += images[imageIndex].copy(center = center)
+            cursorX += footprint.width + safeGap
+        }
+        cursorY += rowHeight + safeGap
+    }
+    return result
+}
+
 private fun compareByTopEdge(): Comparator<SceneImage> =
     compareBy<SceneImage>(
         {
@@ -208,6 +280,42 @@ internal fun imagesBounds(images: List<SceneImage>): android.graphics.RectF? {
 }
 
 class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
+
+    /**
+     * Lay out only the images from the current import batch. Existing canvas
+     * content stays put, while the new batch is kept compact and placed next
+     * to it. This is the Android equivalent of iOS `layoutImported`, and is
+     * especially important when the batch is being attached to an edited
+     * group: the new members must not remain stacked at the import origin.
+     */
+    fun executeImportedAutoLayout(importedIds: Set<String>) {
+        if (importedIds.isEmpty()) return
+        val state = mainVm._uiState.value
+        val imported = state.images.filter { it.id in importedIds }.sortedBy { it.zIndex }
+        if (imported.isEmpty()) return
+        val laidOut = alignEdgeAndPackWithoutOverlap(
+            selected = imported,
+            mode = AlignMode.ALIGN_TOP,
+            gap = state.sceneDefaultSpacing.width.coerceAtLeast(2f),
+        )
+        val existing = state.images.filter { it.id !in importedIds }
+        val existingBounds = imagesBounds(existing)
+        val importedBounds = imagesBounds(laidOut)
+        val offset = if (existingBounds != null && importedBounds != null) {
+            Offset(
+                existingBounds.right + state.sceneDefaultSpacing.width.coerceAtLeast(8f) - importedBounds.left,
+                existingBounds.centerY() - importedBounds.centerY(),
+            )
+        } else {
+            Offset.Zero
+        }
+        val placed = laidOut.associate { image ->
+            image.id to image.copy(center = image.center + offset)
+        }
+        mainVm._uiState.update { current ->
+            current.copy(images = current.images.map { placed[it.id] ?: it }).normalizeSelection()
+        }
+    }
 
     fun resetView() {
         mainVm._uiState.update { it.copy(canvasOffset = Offset.Zero, canvasScale = 1f, fittedImageId = null) }
@@ -317,11 +425,14 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
     }
 
     internal fun batchAlign(mode: AlignMode) {
-        val selectedIds = mainVm._uiState.value.selectedImageIds
+        val stateBefore = mainVm._uiState.value
+        val selectedIds = stateBefore.selectedImageIds.filterTo(mutableSetOf()) { id ->
+            !stateBefore.isImageLocked(id)
+        }
         if (selectedIds.size < 2) {
             return
         }
-        val selected = mainVm._uiState.value.images.filter { it.id in selectedIds }
+        val selected = stateBefore.images.filter { it.id in selectedIds }
         mainVm.mutateScene {
             val gap = 15f
             val aligned = when (mode) {
@@ -464,9 +575,12 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
     }
 
     internal fun batchScale(scaleFactor: Float) {
-        val selectedIds = mainVm._uiState.value.selectedImageIds
+        val stateBefore = mainVm._uiState.value
+        val selectedIds = stateBefore.selectedImageIds.filterTo(mutableSetOf()) { id ->
+            !stateBefore.isImageLocked(id)
+        }
         if (selectedIds.isEmpty()) return
-        val selected = mainVm._uiState.value.images.filter { it.id in selectedIds }
+        val selected = stateBefore.images.filter { it.id in selectedIds }
         val cx = selected.map { it.center.x }.average().toFloat()
         val cy = selected.map { it.center.y }.average().toFloat()
         val groupCenter = Offset(cx, cy)
@@ -705,6 +819,12 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
             return
         }
 
+        // Treat each native group as one layout unit. Moving the members as
+        // independent images would visually split a group during auto-layout.
+        if (currentState.groups.isNotEmpty() && executeGroupAwareAutoLayout(currentState)) {
+            return
+        }
+
         // In multi-select / box-select mode with ≥2 selected images,
         // layout only the selected images within the viewport.
         // Otherwise, layout all images.
@@ -898,4 +1018,101 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
         // the complete layout including non-selected images.
         fitToScreen()
     }
+
+    private fun executeGroupAwareAutoLayout(state: com.pockref.app.model.PockRefUiState): Boolean {
+        val selectedIds = state.selectedImageIds
+        val selectionOnly = (state.multiSelectMode || state.boxSelectMode) && selectedIds.size >= 2
+        val sortedImages = state.images.sortedBy { it.zIndex }
+        val selectedGroupIds = if (selectionOnly) {
+            state.groups.filter { group -> group.imageIds.any(selectedIds::contains) }.mapTo(mutableSetOf()) { it.id }
+        } else {
+            emptySet()
+        }
+        val selectedUnitImageIds = if (selectionOnly) {
+            selectedGroupIds.flatMap { groupId ->
+                state.groups.firstOrNull { it.id == groupId }?.imageIds.orEmpty()
+            }.toSet() + selectedIds
+        } else {
+            emptySet()
+        }
+
+        data class LayoutUnit(
+            val group: SceneGroup?,
+            val members: List<SceneImage>,
+            val bounds: android.graphics.RectF,
+            val zIndex: Int,
+        )
+
+        val units = mutableListOf<LayoutUnit>()
+        val groupedIds = mutableSetOf<String>()
+        state.groups.sortedBy { group ->
+            group.imageIds.mapNotNull { id -> state.images.firstOrNull { it.id == id }?.zIndex }.minOrNull()
+                ?: Int.MAX_VALUE
+        }.forEach { group ->
+            val members = sortedImages.filter { it.id in group.imageIds }
+            val included = !selectionOnly || group.id in selectedGroupIds
+            val movable = !group.positionLocked && members.isNotEmpty() && members.none { it.locked }
+            val bounds = group.canvasBounds(members, GROUP_CANVAS_BOUNDS_PADDING)
+            if (included && movable && bounds != null) {
+                units += LayoutUnit(group, members, bounds, members.maxOf { it.zIndex })
+                groupedIds += members.map { it.id }
+            } else if (included) {
+                // Do not later re-introduce these members as standalone units.
+                groupedIds += members.map { it.id }
+            }
+        }
+        sortedImages.filter { image ->
+            image.id !in groupedIds &&
+                (!selectionOnly || image.id in selectedUnitImageIds) &&
+                !image.locked
+        }.forEach { image ->
+            val bounds = imagesBounds(listOf(image)) ?: return@forEach
+            units += LayoutUnit(null, listOf(image), bounds, image.zIndex)
+        }
+        // The caller only enters this path when groups exist. If every
+        // layout unit is locked, report the group-aware path as handled so
+        // the legacy fallback cannot move locked group members.
+        if (units.isEmpty()) return true
+        units.sortBy { it.zIndex }
+
+        val gap = 2f
+        val edgePadding = 2f
+        val availableWidth = (state.canvasViewportSize.width - edgePadding * 2f).coerceAtLeast(1f)
+        val availableHeight = (state.canvasViewportSize.height - edgePadding * 2f).coerceAtLeast(1f)
+        val columns = ceil(sqrt(units.size.toFloat())).toInt().coerceAtLeast(1)
+        val rows = ceil(units.size.toFloat() / columns).toInt().coerceAtLeast(1)
+        val cellWidth = ((availableWidth - gap * (columns - 1)) / columns).coerceAtLeast(1f)
+        val cellHeight = ((availableHeight - gap * (rows - 1)) / rows).coerceAtLeast(1f)
+        val originX = -(columns * cellWidth + (columns - 1) * gap) / 2f
+        val originY = -(rows * cellHeight + (rows - 1) * gap) / 2f
+        val replacements = mutableMapOf<String, SceneImage>()
+
+        units.forEachIndexed { index, unit ->
+            val col = index % columns
+            val row = index / columns
+            val targetCenter = Offset(
+                originX + col * (cellWidth + gap) + cellWidth / 2f,
+                originY + row * (cellHeight + gap) + cellHeight / 2f,
+            )
+            val factor = min(
+                cellWidth / unit.bounds.width().coerceAtLeast(1f),
+                cellHeight / unit.bounds.height().coerceAtLeast(1f),
+            )
+            val originalCenter = Offset(unit.bounds.centerX(), unit.bounds.centerY())
+            unit.members.forEach { image ->
+                val relative = image.center - originalCenter
+                replacements[image.id] = image.copy(
+                    center = targetCenter + relative * factor,
+                    scale = (image.scale * factor).coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE),
+                )
+            }
+        }
+        mainVm.mutateScene {
+            copy(images = images.map { replacements[it.id] ?: it })
+        }
+        fitToScreen()
+        return true
+    }
 }
+
+private const val GROUP_CANVAS_BOUNDS_PADDING = 12f

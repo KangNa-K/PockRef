@@ -11,6 +11,7 @@ import com.pockref.app.model.PockRefUiState
 internal fun PockRefUiState.openBlankCanvas(): PockRefUiState = copy(
     selectedImageId = null,
     selectedImageIds = emptySet(),
+    selectedGroupIds = emptySet(),
     multiSelectMode = false,
     boxSelectMode = false,
     boxSelectRect = null,
@@ -54,6 +55,7 @@ internal fun PockRefUiState.closeBlankCanvas(): PockRefUiState = copy(
     bulkDeleteConfirmOpen = false,
     selectedImageId = null,
     selectedImageIds = emptySet(),
+    selectedGroupIds = emptySet(),
     multiSelectMode = false,
     boxSelectMode = false,
     boxSelectRect = null,

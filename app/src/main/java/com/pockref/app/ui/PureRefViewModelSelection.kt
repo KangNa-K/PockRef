@@ -58,6 +58,7 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
                             boxSelectPreviewIds = emptySet(),
                             selectedImageIds = if (retainedPrimary != null) setOf(retainedPrimary) else emptySet(),
                             selectedImageId = retainedPrimary,
+                            selectedGroupIds = emptySet(),
                         ).normalizeSelection()
                     }
                     SelectionMode.MULTI -> state.copy(
@@ -91,6 +92,7 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
                     else -> emptySet()
                 },
                 selectedImageId = retainedPrimary,
+                selectedGroupIds = if (enabled) state.selectedGroupIds else emptySet(),
             )
                 .normalizeSelection()
         }
@@ -123,6 +125,7 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
             state.copy(
                 selectedImageIds = emptySet(),
                 selectedImageId = null,
+                selectedGroupIds = emptySet(),
                 boxSelectRect = null,
                 boxSelectPreviewIds = emptySet(),
             )
@@ -143,6 +146,7 @@ class PockRefViewModelSelection(private val mainVm: PockRefViewModel) {
             state.copy(
                 selectedImageIds = emptySet(),
                 selectedImageId = null,
+                selectedGroupIds = emptySet(),
                 boxSelectRect = null,
                 boxSelectPreviewIds = emptySet(),
                 boxSelectStart = start,

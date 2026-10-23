@@ -98,6 +98,7 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.Crop
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.Flip
 import androidx.compose.material.icons.rounded.FlipToBack
@@ -335,6 +336,9 @@ import com.pockref.app.ui.theme.Dimens
 import com.pockref.app.model.CropAspect
 import com.pockref.app.model.CropRect
 import com.pockref.app.model.PockRefUiState
+import com.pockref.app.model.SceneGroup
+import com.pockref.app.model.groupContaining
+import com.pockref.app.model.selectedGroups
 import com.pockref.app.ui.logs.LogExportFab
 import com.pockref.app.model.SceneImage
 import com.pockref.app.model.SceneNaming
@@ -2889,7 +2893,25 @@ private fun SelectionBottomSheet(
     selectedGifPlaybackImageId: String?,
 ) {
     val selectedCount = state.selectedImageIds.size
-    if (selectedCount == 0) return
+    if (selectedCount == 0 && state.editingGroupId == null) return
+    val selectedGroups = state.selectedGroups
+    val selectedGroup = state.selectedGroups.singleOrNull()
+    val editingGroup = state.editingGroupId?.let { id -> state.groups.firstOrNull { it.id == id } }
+    val groupActionTarget = editingGroup ?: selectedGroup
+    val canCreateGroup = !state.requiresGroupFlattening && state.editingGroupId == null &&
+        selectedCount >= 1 && selectedGroups.isEmpty() &&
+        state.selectedImageIds.none { id -> state.isImageLocked(id) }
+    var showRenameGroup by remember { mutableStateOf(false) }
+    var showGroupAppearance by remember { mutableStateOf(false) }
+    var groupNameDraft by remember(groupActionTarget?.id) {
+        mutableStateOf(groupActionTarget?.name.orEmpty())
+    }
+    var groupBackgroundColor by remember(groupActionTarget?.id) {
+        mutableStateOf(groupActionTarget?.backgroundColor ?: Color.Black)
+    }
+    var groupBackgroundOpacity by remember(groupActionTarget?.id) {
+        mutableFloatStateOf(groupActionTarget?.backgroundOpacity ?: 0f)
+    }
 
     val posterizeControlsVisible =
         state.posterizeControlsVisible &&
@@ -2942,7 +2964,11 @@ private fun SelectionBottomSheet(
                     )
                 } else {
                     Text(
-                        text = "已选 $selectedCount 张",
+                        text = if (state.editingGroupId != null) {
+                            "组内编辑 · 已选 $selectedCount 张"
+                        } else {
+                            "已选 $selectedCount 张"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -2986,6 +3012,110 @@ private fun SelectionBottomSheet(
             )
             Spacer(Modifier.height(14.dp))
 
+            if (state.requiresGroupFlattening) {
+                Text(
+                    text = "该文件含 Android 暂不支持编辑的嵌套组或组内容；为避免保存时破坏结构，画布已设为只读。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            } else if (state.editingGroupId != null || selectedGroups.isNotEmpty() || canCreateGroup) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (state.editingGroupId != null) {
+                        AssistChip(
+                            onClick = { onAction(PockRefAction.ExitGroup) },
+                            label = { Text("完成组内编辑") },
+                            leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null) },
+                        )
+                        if (selectedCount > 0) {
+                            AssistChip(
+                                onClick = { onAction(PockRefAction.RemoveSelectedFromGroup) },
+                                label = { Text("移出组") },
+                                leadingIcon = { Icon(Icons.Rounded.Layers, contentDescription = null) },
+                            )
+                        }
+                        AssistChip(
+                            onClick = { onAction(PockRefAction.ToggleSelectedGroupLock) },
+                            label = { Text(if (editingGroup?.positionLocked == true) "解锁组" else "锁定组") },
+                            leadingIcon = {
+                                Icon(
+                                    if (editingGroup?.positionLocked == true) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
+                                    contentDescription = null,
+                                )
+                            },
+                        )
+                    } else if (selectedGroup != null) {
+                        AssistChip(
+                            onClick = { onAction(PockRefAction.UngroupSelected) },
+                            label = { Text("解组") },
+                            leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null) },
+                        )
+                        AssistChip(
+                            onClick = { onAction(PockRefAction.DuplicateSelectedGroup) },
+                            label = { Text("复制组") },
+                            leadingIcon = { Icon(Icons.Rounded.ContentCopy, contentDescription = null) },
+                        )
+                        AssistChip(
+                            onClick = { groupNameDraft = selectedGroup.name; showRenameGroup = true },
+                            label = { Text("重命名") },
+                            leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+                        )
+                        AssistChip(
+                            onClick = {
+                                groupBackgroundColor = selectedGroup.backgroundColor
+                                groupBackgroundOpacity = selectedGroup.backgroundOpacity
+                                showGroupAppearance = true
+                            },
+                            label = { Text("外观") },
+                            leadingIcon = { Icon(Icons.Rounded.Palette, contentDescription = null) },
+                        )
+                        AssistChip(
+                            onClick = { onAction(PockRefAction.ToggleSelectedGroupLock) },
+                            label = { Text(if (selectedGroup.positionLocked) "解锁组" else "锁定组") },
+                            leadingIcon = {
+                                Icon(
+                                    if (selectedGroup.positionLocked) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
+                                    contentDescription = null,
+                                )
+                            },
+                        )
+                    } else if (selectedGroups.isNotEmpty()) {
+                        AssistChip(
+                            onClick = { onAction(PockRefAction.UngroupSelected) },
+                            label = { Text("解组 ${selectedGroups.size} 个") },
+                            leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null) },
+                        )
+                        AssistChip(
+                            onClick = { onAction(PockRefAction.ToggleSelectedGroupLock) },
+                            label = {
+                                Text(if (selectedGroups.all { it.positionLocked }) "解锁组" else "锁定组")
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (selectedGroups.all { it.positionLocked }) Icons.Rounded.LockOpen
+                                    else Icons.Rounded.Lock,
+                                    contentDescription = null,
+                                )
+                            },
+                        )
+                    } else if (canCreateGroup) {
+                        AssistChip(
+                            onClick = { onAction(PockRefAction.CreateGroup) },
+                            label = { Text("成组") },
+                            leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
             val gifImageId = selectedGifPlaybackImageId
             if (gifImageId != null && selectedGifPlaybackSource != null && selectedGifPlaybackState != null) {
                 GifFrameControlBar(
@@ -3001,7 +3131,21 @@ private fun SelectionBottomSheet(
                 Spacer(Modifier.height(12.dp))
             }
 
-            if (isLockedPanel) {
+            if (state.requiresGroupFlattening) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    SheetActionButton(
+                        icon = Icons.Rounded.Image,
+                        label = "导出",
+                        modifier = Modifier.weight(1f),
+                        onClick = { onAction(PockRefAction.ExportSelected) },
+                    )
+                }
+            } else if (isLockedPanel) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3026,7 +3170,12 @@ private fun SelectionBottomSheet(
                         label = "解锁",
                         active = true,
                         modifier = Modifier.weight(1f),
-                        onClick = { onAction(PockRefAction.ToggleLockSelected) },
+                        onClick = {
+                            onAction(
+                            if (selectedGroups.isNotEmpty()) PockRefAction.ToggleSelectedGroupLock
+                                else PockRefAction.ToggleLockSelected,
+                            )
+                        },
                     )
                     SheetActionButton(
                         icon = Icons.Rounded.Image,
@@ -3291,6 +3440,73 @@ private fun SelectionBottomSheet(
             }
         }
 	    }
+    if (showRenameGroup && groupActionTarget != null) {
+        AlertDialog(
+            onDismissRequest = { showRenameGroup = false },
+            title = { Text("重命名组") },
+            text = {
+                OutlinedTextField(
+                    value = groupNameDraft,
+                    onValueChange = { groupNameDraft = it },
+                    singleLine = true,
+                    label = { Text("组名") },
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    onAction(PockRefAction.RenameSelectedGroup(groupNameDraft))
+                    showRenameGroup = false
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                Button(onClick = { showRenameGroup = false }) { Text("取消") }
+            },
+        )
+    }
+    if (showGroupAppearance && groupActionTarget != null) {
+        val palette = listOf(Color.Black, Color.Red, Color(0xFF2E7D32), Color(0xFF1565C0), Color(0xFFFFC107))
+        AlertDialog(
+            onDismissRequest = { showGroupAppearance = false },
+            title = { Text("组外观") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        palette.forEach { color ->
+                            FilterChip(
+                                selected = groupBackgroundColor == color,
+                                onClick = { groupBackgroundColor = color },
+                                label = { Text("色") },
+                                leadingIcon = {
+                                    Surface(
+                                        modifier = Modifier.size(16.dp),
+                                        shape = RoundedCornerShape(50),
+                                        color = color,
+                                    ) { }
+                                },
+                            )
+                        }
+                    }
+                    Text("背景透明度 ${(groupBackgroundOpacity * 100).roundToInt()}%")
+                    Slider(
+                        value = groupBackgroundOpacity,
+                        onValueChange = { groupBackgroundOpacity = it },
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    onAction(PockRefAction.SetSelectedGroupAppearance(groupBackgroundColor, groupBackgroundOpacity))
+                    showGroupAppearance = false
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                Button(onClick = { showGroupAppearance = false }) { Text("取消") }
+            },
+        )
+    }
 }
 
 
@@ -3418,6 +3634,7 @@ private fun GifFrameControlBar(
             )
         }
     }
+
 }
 
 
@@ -7898,7 +8115,7 @@ private fun PockRefCanvas(
                             // Only direct drag is blocked.
                             val hitImage = s.images.firstOrNull { it.id == hitId }
                             val moveEnabled = isGestureEnabled(s.gestureToggles, GestureId.MOVE_IMAGE)
-                            val imageLocked = hitImage?.locked == true
+                            val imageLocked = hitImage?.let { s.isImageLocked(it.id) } == true
                             when {
                                 !imageLocked && moveEnabled -> {
                                     activeDragImageId = hitId
@@ -8952,7 +9169,23 @@ private fun PockRefCanvas(
                     }
                     if (effectiveTapId != null) {
                         if (activeDragImageId != null && dragStarted) {
-                            currentOnAction(PockRefAction.CommitImageDrag)
+                            val draggedIds = currentState.transientDragImageIds
+                            val targetGroup = groupDropTargetAt(
+                                state = currentState,
+                                screenPoint = downPos + totalDrag,
+                                viewportSize = Size(size.width.toFloat(), size.height.toFloat()),
+                                draggingImageIds = draggedIds,
+                            )
+                            if (targetGroup != null) {
+                                currentOnAction(
+                                    PockRefAction.AddImagesToGroupAfterDrag(
+                                        groupId = targetGroup.id,
+                                        imageIds = draggedIds,
+                                    ),
+                                )
+                            } else {
+                                currentOnAction(PockRefAction.CommitImageDrag)
+                            }
                         } else if (isTap) {
                             val tappedId = effectiveTapId
                             // V_NOW: use [lastTapImageId] instead
@@ -8995,7 +9228,14 @@ private fun PockRefCanvas(
                                         "dt=${upTime - lastTapTime}ms " +
                                         "currentFittedId=${currentState.fittedImageId}",
                                 )
-                                currentOnAction(PockRefAction.FitImageToScreen(tappedId))
+                                val group = if (currentState.editingGroupId == null) {
+                                    currentState.groupContaining(tappedId)
+                                } else null
+                                if (group != null) {
+                                    currentOnAction(PockRefAction.EnterGroup(group.id, tappedId))
+                                } else {
+                                    currentOnAction(PockRefAction.FitImageToScreen(tappedId))
+                                }
                                 currentOnAction(PockRefAction.DismissSelectionSheet)
                                 lastTapTime = 0L
                                 lastTapPos = Offset.Zero
@@ -9128,7 +9368,14 @@ private fun PockRefCanvas(
                             // double-tap means focus/unfocus.
                             pendingSheetJob?.cancel()
                             pendingSheetJob = null
-                            currentOnAction(PockRefAction.FitImageToScreen(tappedId))
+                            val group = if (currentState.editingGroupId == null) {
+                                currentState.groupContaining(tappedId)
+                            } else null
+                            if (group != null) {
+                                currentOnAction(PockRefAction.EnterGroup(group.id, tappedId))
+                            } else {
+                                currentOnAction(PockRefAction.FitImageToScreen(tappedId))
+                            }
                             currentOnAction(PockRefAction.DismissSelectionSheet)
                             lastTapTime = 0L
                             lastTapPos = Offset.Zero
@@ -9189,60 +9436,86 @@ private fun PockRefCanvas(
                             lastTapImageId = tappedId
                         }
                     } else if (isTap && !lassoActive && !boxSelectDragging) {
-                        // Tap on empty canvas. Two cases:
-                        //   - single tap: clear the current selection
-                        //     via the dedicated [Deselect] action
-                        //     (rather than SelectImage(null) — the
-                        //     intent is explicit and the reducer
-                        //     doesn't need a "if (imageId == null)..."
-                        //     branch).
-                        //   - double tap: reset the canvas to
-                        //     100% zoom / 0 offset (the user is
-                        //     saying "I'm lost, take me home"). The
-                        //     second tap ALSO deselects so the user
-                        //     doesn't end up with a selection that
-                        //     "stuck" through the reset.
-                        val isDoubleTapOnEmpty = (upTime - lastEmptyTapTime) < 400L &&
-                            (lastEmptyTapPos - downPos).getDistance() < doubleTapMaxDistPx
-                        if (isDoubleTapOnEmpty && isGestureEnabled(currentState.gestureToggles, GestureId.DOUBLE_TAP_EMPTY)) {
-                            // V5: was ResetView (force 100%
-                            // zoom / 0 offset — "go home"). User
-                            // asked for double-tap-empty to be
-                            // the smart fit-to-screen behavior
-                            // instead: compute the optimal scale
-                            // from the content AABB + viewport
-                            // size, scale down if content is
-                            // bigger than the window, keep 1.0
-                            // if content is smaller (don't
-                            // upscale tiny content to fill), and
-                            // center the result. The 2f canvas
-                            // edge padding matches the
-                            // auto-layout's edgePadding so the
-                            // two flows look identical.
-                            currentOnAction(PockRefAction.FitToScreen)
-                            currentOnAction(PockRefAction.Deselect)
-                            // S Pen double-tap exit: if the canvas
-                            // is currently in BOX or MULTI mode,
-                            // the user's "double-tap on empty" is
-                            // also a clear signal to go back to
-                            // SINGLE. (FitToScreen + Deselect
-                            // handle the canvas and selection;
-                            // this handles the interaction mode.)
-                            if (currentState.boxSelectMode || currentState.multiSelectMode) {
-                                currentOnAction(
-                                    PockRefAction.SetSelectionMode(SelectionMode.SINGLE),
-                                )
+                        val editingGroupId = currentState.editingGroupId
+                        if (editingGroupId != null) {
+                            val group = currentState.groups.firstOrNull { it.id == editingGroupId }
+                            val members = currentState.images.filter { image ->
+                                group?.imageIds?.contains(image.id) == true
                             }
+                            val scale = currentState.canvasScale.coerceAtLeast(0.001f)
+                            val canvasPoint = Offset(
+                                x = (downPos.x - size.width / 2f - currentState.canvasOffset.x) / scale,
+                                y = (downPos.y - size.height / 2f - currentState.canvasOffset.y) / scale,
+                            )
+                            val bounds = group?.canvasBounds(
+                                currentState.images,
+                                GROUP_CANVAS_BOUNDS_PADDING,
+                            )
+                            val insideGroup = bounds?.contains(canvasPoint.x, canvasPoint.y) == true
+                            currentOnAction(
+                                if (insideGroup) PockRefAction.ClearGroupSelection
+                                else PockRefAction.ExitGroup,
+                            )
                             lastTapTime = 0L
                             lastTapPos = Offset.Zero
                             lastEmptyTapTime = 0L
                             lastEmptyTapPos = Offset.Zero
                         } else {
-                            currentOnAction(PockRefAction.Deselect)
-                            lastTapTime = 0L
-                            lastTapPos = Offset.Zero
-                            lastEmptyTapTime = upTime
-                            lastEmptyTapPos = downPos
+                            // Tap on empty canvas. Two cases:
+                            //   - single tap: clear the current selection
+                            //     via the dedicated [Deselect] action
+                            //     (rather than SelectImage(null) — the
+                            //     intent is explicit and the reducer
+                            //     doesn't need a "if (imageId == null)..."
+                            //     branch).
+                            //   - double tap: reset the canvas to
+                            //     100% zoom / 0 offset (the user is
+                            //     saying "I'm lost, take me home"). The
+                            //     second tap ALSO deselects so the user
+                            //     doesn't end up with a selection that
+                            //     "stuck" through the reset.
+                            val isDoubleTapOnEmpty = (upTime - lastEmptyTapTime) < 400L &&
+                                (lastEmptyTapPos - downPos).getDistance() < doubleTapMaxDistPx
+                            if (isDoubleTapOnEmpty && isGestureEnabled(currentState.gestureToggles, GestureId.DOUBLE_TAP_EMPTY)) {
+                                // V5: was ResetView (force 100%
+                                // zoom / 0 offset — "go home"). User
+                                // asked for double-tap-empty to be
+                                // the smart fit-to-screen behavior
+                                // instead: compute the optimal scale
+                                // from the content AABB + viewport
+                                // size, scale down if content is
+                                // bigger than the window, keep 1.0
+                                // if content is smaller (don't
+                                // upscale tiny content to fill), and
+                                // center the result. The 2f canvas
+                                // edge padding matches the
+                                // auto-layout's edgePadding so the
+                                // two flows look identical.
+                                currentOnAction(PockRefAction.FitToScreen)
+                                currentOnAction(PockRefAction.Deselect)
+                                // S Pen double-tap exit: if the canvas
+                                // is currently in BOX or MULTI mode,
+                                // the user's "double-tap on empty" is
+                                // also a clear signal to go back to
+                                // SINGLE. (FitToScreen + Deselect
+                                // handle the canvas and selection;
+                                // this handles the interaction mode.)
+                                if (currentState.boxSelectMode || currentState.multiSelectMode) {
+                                    currentOnAction(
+                                        PockRefAction.SetSelectionMode(SelectionMode.SINGLE),
+                                    )
+                                }
+                                lastTapTime = 0L
+                                lastTapPos = Offset.Zero
+                                lastEmptyTapTime = 0L
+                                lastEmptyTapPos = Offset.Zero
+                            } else {
+                                currentOnAction(PockRefAction.Deselect)
+                                lastTapTime = 0L
+                                lastTapPos = Offset.Zero
+                                lastEmptyTapTime = upTime
+                                lastEmptyTapPos = downPos
+                            }
                         }
                     }
                     // Multi-finger tap detection. Distinct from
@@ -9439,7 +9712,27 @@ private fun PockRefCanvas(
             viewportHeight = size.height.toFloat(),
         )
 
+        val groupByFirstMember = state.groups.mapNotNull { group ->
+            val members = state.images.filter { it.id in group.imageIds }
+            members.minByOrNull { it.zIndex }?.id?.let { it to group }
+        }.toMap()
+
         sortedImages.forEach { image ->
+            groupByFirstMember[image.id]?.let { group ->
+                val members = state.images.filter { it.id in group.imageIds }
+                drawSceneGroupContainer(
+                    group = group,
+                    images = members,
+                    isSelected = false,
+                    centerOffset = centerOffset,
+                    canvasScale = state.canvasScale,
+                    canvasOffset = renderCanvasOffset,
+                    transientDragIds = state.transientDragImageIds,
+                    transientDragDelta = state.transientDragDelta,
+                    drawBackground = true,
+                    drawOutline = false,
+                )
+            }
             if (image.id !in forcedDrawIds) {
                 val aabb = imageWorldAabb(image)
                 if (!rectsIntersect(aabb, viewRect)) return@forEach
@@ -9528,6 +9821,27 @@ private fun PockRefCanvas(
                     centerOffset = centerOffset,
                     canvasScale = state.canvasScale,
                     canvasOffset = renderCanvasOffset,
+                )
+            }
+        }
+
+        // Draw outlines after all members so the group affordance remains
+        // visible even when a member covers its own edge.
+        state.groups.forEach { group ->
+            val members = state.images.filter { it.id in group.imageIds }
+            if (members.isNotEmpty()) {
+                drawSceneGroupContainer(
+                    group = group,
+                    images = members,
+                    isSelected = group.id in state.selectedGroupIds ||
+                        group.id == state.editingGroupId || group in state.selectedGroups,
+                    centerOffset = centerOffset,
+                    canvasScale = state.canvasScale,
+                    canvasOffset = renderCanvasOffset,
+                    transientDragIds = state.transientDragImageIds,
+                    transientDragDelta = state.transientDragDelta,
+                    drawBackground = false,
+                    drawOutline = true,
                 )
             }
         }
@@ -10238,6 +10552,99 @@ private fun DrawScope.drawImagePlaceholder(
         size = Size(width, height),
         style = Stroke(width = 1f),
     )
+}
+
+private fun DrawScope.drawSceneGroupContainer(
+    group: SceneGroup,
+    images: List<SceneImage>,
+    isSelected: Boolean,
+    centerOffset: Offset,
+    canvasScale: Float,
+    canvasOffset: Offset,
+    transientDragIds: Set<String> = emptySet(),
+    transientDragDelta: Offset = Offset.Zero,
+    drawBackground: Boolean = true,
+    drawOutline: Boolean = true,
+) {
+    // Group bounds must follow the live drag presentation just like the
+    // member images. The gesture does not write the final positions into
+    // state until it ends, so using the committed positions here makes the
+    // frame appear to lag behind a dragged group.
+    val displayedImages = if (transientDragIds.isEmpty() || transientDragDelta == Offset.Zero) {
+        images
+    } else {
+        images.map { image ->
+            if (image.id in transientDragIds) {
+                image.copy(center = image.center + transientDragDelta)
+            } else {
+                image
+            }
+        }
+    }
+    val bounds = group.canvasBounds(displayedImages, GROUP_CANVAS_BOUNDS_PADDING) ?: return
+    val left = centerOffset.x + canvasOffset.x + bounds.left * canvasScale
+    val top = centerOffset.y + canvasOffset.y + bounds.top * canvasScale
+    val width = bounds.width() * canvasScale
+    val height = bounds.height() * canvasScale
+    // Keep the group frame square to match the iOS canvas affordance.
+    val corner = CornerRadius.Zero
+    val frameSize = Size(width, height)
+    if (drawBackground && group.backgroundOpacity > 0f) {
+        drawRoundRect(
+            color = group.backgroundColor.copy(alpha = group.backgroundOpacity),
+            topLeft = Offset(left, top),
+            size = frameSize,
+            cornerRadius = corner,
+        )
+    }
+    if (drawOutline) {
+        drawRoundRect(
+            color = if (isSelected) Color(0xFFBDEBFF) else Color(0xFF90A4AE).copy(alpha = 0.72f),
+            topLeft = Offset(left, top),
+            size = frameSize,
+            cornerRadius = corner,
+            style = Stroke(width = if (isSelected) max(2.5f, canvasScale * 2.5f) else max(1.5f, canvasScale * 1.5f)),
+        )
+
+        // Keep the group discoverable even after the selection is cleared.
+        // iOS uses the same always-present name affordance; a small light
+        // capsule keeps the label legible over both light and dark boards.
+        val name = group.name.trim()
+        if (name.isNotEmpty()) {
+            val textSize = 12.dp.toPx()
+            val horizontalPadding = 6.dp.toPx()
+            val verticalPadding = 3.dp.toPx()
+            val gap = 4.dp.toPx()
+            val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color(0xFF23313D).toArgb()
+                this.textSize = textSize
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+            }
+            val labelWidth = textPaint.measureText(name) + horizontalPadding * 2f
+            val labelHeight = textSize + verticalPadding * 2f
+            val labelTop = if (top >= labelHeight + gap) {
+                top - labelHeight - gap
+            } else {
+                top + gap
+            }
+            val labelLeft = left.coerceIn(0f, (size.width - labelWidth).coerceAtLeast(0f))
+            val labelRect = RectF(labelLeft, labelTop, labelLeft + labelWidth, labelTop + labelHeight)
+            drawRoundRect(
+                color = Color.White.copy(alpha = if (isSelected) 0.92f else 0.78f),
+                topLeft = Offset(labelRect.left, labelRect.top),
+                size = Size(labelRect.width(), labelRect.height()),
+                cornerRadius = CornerRadius(5.dp.toPx()),
+            )
+            drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText(
+                    name,
+                    labelRect.left + horizontalPadding,
+                    labelRect.top + verticalPadding + textSize,
+                    textPaint,
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -11275,6 +11682,9 @@ private fun hitTestImagesAt(
     edgeInsetPx: Float = 0f,
 ): List<String> {
     return state.images.sortedByDescending { it.zIndex }.mapNotNull { image ->
+        if (state.editingGroupId != null &&
+            state.groupContaining(image.id)?.id != state.editingGroupId
+        ) return@mapNotNull null
         val mappedCenter = Offset(
             point.x - (viewportSize.width / 2f) - state.canvasOffset.x,
             point.y - (viewportSize.height / 2f) - state.canvasOffset.y,
@@ -11387,6 +11797,43 @@ internal fun worldViewportRect(
  * fine for culling because it never rejects a visible image. We avoid the
  * extra trig of a rotated AABB on the hot draw path.
  */
+private const val GROUP_CANVAS_BOUNDS_PADDING = 12f
+
+private fun groupDropTargetAt(
+    state: PockRefUiState,
+    screenPoint: Offset,
+    viewportSize: Size,
+    draggingImageIds: Set<String>,
+): SceneGroup? {
+    if (
+        state.editingGroupId != null ||
+            state.requiresGroupFlattening ||
+            draggingImageIds.isEmpty() ||
+            draggingImageIds.any { state.groupContaining(it) != null }
+    ) return null
+
+    val scale = state.canvasScale.coerceAtLeast(0.0001f)
+    val canvasPoint = Offset(
+        x = (screenPoint.x - viewportSize.width / 2f - state.canvasOffset.x) / scale,
+        y = (screenPoint.y - viewportSize.height / 2f - state.canvasOffset.y) / scale,
+    )
+    return state.groups.mapIndexedNotNull { index, group ->
+        val members = state.images.filter { it.id in group.imageIds }
+        val bounds = group.canvasBounds(state.images, GROUP_CANVAS_BOUNDS_PADDING)
+        if (
+            group.positionLocked ||
+                members.isEmpty() ||
+                members.any { it.locked } ||
+                bounds == null ||
+                !bounds.contains(canvasPoint.x, canvasPoint.y)
+        ) {
+            null
+        } else {
+            Triple(group, members.maxOfOrNull { it.zIndex } ?: Int.MIN_VALUE, index)
+        }
+    }.maxWithOrNull(compareBy<Triple<SceneGroup, Int, Int>> { it.second }.thenBy { it.third })?.first
+}
+
 internal fun imageWorldAabb(image: SceneImage): Rect {
     val halfW = (image.displaySize.width * image.scale) / 2f
     val halfH = (image.displaySize.height * image.scale) / 2f
