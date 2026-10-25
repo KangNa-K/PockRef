@@ -423,10 +423,7 @@ private data class MinimapColors(
             // [Dimens.ChromeCornerRadius] for its own
             // clip, so the entire card has a single uniform
             // corner radius from outside to inside.
-            .background(
-                color = colors.panelBackground,
-                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-            )
+            .glassMaterial(RoundedCornerShape(Dimens.ChromeCornerRadius))
             .border(
                 width = 1.dp,
                 color = colors.panelBorder,
@@ -1395,7 +1392,6 @@ internal fun CollapsedMinimapIcon(
     // iOS PiP capsule: 50% corner radius gives a true
     // pill / stadium shape, not a rounded rectangle.
     val capsuleShape = RoundedCornerShape(percent = 50)
-    val barColor = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha)
     val borderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
 
     val barAlignment = when (edge) {
@@ -1552,10 +1548,7 @@ internal fun CollapsedMinimapIcon(
                     transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
                     shape = capsuleShape
                 }
-                .background(
-                    color = barColor,
-                    shape = capsuleShape,
-                )
+                .glassMaterial(capsuleShape)
                 .border(
                     width = 0.5.dp,
                     color = borderColor,

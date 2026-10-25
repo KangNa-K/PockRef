@@ -164,6 +164,7 @@ private val DarkColors = darkColorScheme(
 fun PockRefTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     dynamicColor: Boolean = false,
+    frostedGlassEnabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val useDarkTheme = when (themeMode) {
@@ -183,6 +184,8 @@ fun PockRefTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
-        content = content,
+        content = {
+            com.pockref.app.ui.GlassBackdropHost(enabled = frostedGlassEnabled, content = content)
+        },
     )
 }

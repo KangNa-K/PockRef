@@ -18,6 +18,7 @@ class AppPreferencesInstrumentedTest {
     @After
     fun cleanup() {
         AppPreferences(context).apply {
+            frostedGlassEnabled = true
             defaultBackgroundPreset = BackgroundPreset.DefaultPreset
             singleFingerCanvasPanEnabled = false
             defaultSavePathEnabled = false
@@ -64,6 +65,8 @@ class AppPreferencesInstrumentedTest {
 
     @Test
     fun defaultSavePathSwitchPersistsAcrossInstances() {
+        // Finish the legacy migration before testing an explicit user choice.
+        AppPreferences(context).defaultSavePathEnabled
         AppPreferences(context).defaultSavePathEnabled = true
 
         assertEquals(true, AppPreferences(context).defaultSavePathEnabled)
@@ -94,4 +97,52 @@ class AppPreferencesInstrumentedTest {
         )
         assertEquals("Pictures", prefs2.defaultSaveDirectoryName)
     }
+
+    @Test
+    fun frostedGlassPreferencePersistsAcrossInstances() {
+        val initial = AppPreferences(context).frostedGlassEnabled
+        try {
+            AppPreferences(context).frostedGlassEnabled = false
+            assertEquals(false, AppPreferences(context).frostedGlassEnabled)
+            AppPreferences(context).frostedGlassEnabled = true
+            assertEquals(true, AppPreferences(context).frostedGlassEnabled)
+        } finally {
+            AppPreferences(context).frostedGlassEnabled = initial
+        }
+    }
+
+    @Test
+    fun frostedGlassDefaultsToEnabledWhenUnset() {
+        context.getSharedPreferences("pockref_settings", android.content.Context.MODE_PRIVATE)
+            .edit().remove("frosted_glass_enabled").commit()
+        assertEquals(true, AppPreferences(context).frostedGlassEnabled)
+        assertEquals(true, com.pockref.app.model.PockRefUiState().frostedGlassEnabled)
+    }
+
+    @Test
+    fun frostedGlassActionUpdatesStateAndRestoresAfterViewModelRecreation() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val application = context.applicationContext as android.app.Application
+            val store = androidx.lifecycle.ViewModelStore()
+            try {
+                AppPreferences(context).frostedGlassEnabled = true
+                val first = com.pockref.app.ui.PockRefViewModel(application)
+                store.put("first", first)
+                first.onAction(com.pockref.app.ui.PockRefAction.SetFrostedGlassEnabled(false))
+                assertEquals(false, first.uiState.value.frostedGlassEnabled)
+                assertEquals(false, AppPreferences(context).frostedGlassEnabled)
+                val restored = com.pockref.app.ui.PockRefViewModel(application)
+                store.put("restored", restored)
+                assertEquals(false, restored.uiState.value.frostedGlassEnabled)
+                restored.onAction(com.pockref.app.ui.PockRefAction.SetFrostedGlassEnabled(true))
+                assertEquals(true, restored.uiState.value.frostedGlassEnabled)
+                assertEquals(true, AppPreferences(context).frostedGlassEnabled)
+            } finally {
+                store.clear()
+                AppPreferences(context).frostedGlassEnabled = true
+            }
+        }
+    }
+
 }

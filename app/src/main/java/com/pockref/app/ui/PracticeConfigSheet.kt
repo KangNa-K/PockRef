@@ -168,6 +168,9 @@ fun PracticeConfigSheet(
     }
 
     ModalBottomSheet(
+            modifier = Modifier.glassMaterial(MaterialTheme.shapes.extraLarge, GlassRole.Popup),
+            containerColor = androidx.compose.ui.graphics.Color.Transparent,
+            tonalElevation = 0.dp,
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
@@ -310,7 +313,7 @@ private fun CustomDurationDialog(
         )
     }
 
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(

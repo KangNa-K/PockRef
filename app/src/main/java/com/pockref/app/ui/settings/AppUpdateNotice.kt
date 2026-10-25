@@ -1,5 +1,7 @@
 package com.pockref.app.ui.settings
 
+import com.pockref.app.ui.GlassAlertDialog
+
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -31,7 +33,7 @@ internal fun AppUpdateNotice(controller: AppUpdateController, compact: Boolean, 
         }
     }
     if (details) {
-        AlertDialog(
+        GlassAlertDialog(
             onDismissRequest = { details = false },
             title = { Text("新版本 ${manifest.versionName}") },
             text = {

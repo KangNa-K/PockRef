@@ -662,6 +662,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     editingGroupId = null,
                     markupStrokes = scene.markupStrokes,
                     markupTexts = scene.markupTexts,
+                    markupSourceMetadata = scene.markupSourceMetadata,
+                    markupCompatibilityWarning = scene.markupCompatibilityWarning,
                     sceneDefaultSpacing = scene.defaultSpacing,
                     sceneDefaultAlignment = scene.defaultAlignment,
                     markupVisible = true,
@@ -720,6 +722,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 editingGroupId = null,
                 markupStrokes = scene.markupStrokes,
                 markupTexts = scene.markupTexts,
+                    markupSourceMetadata = scene.markupSourceMetadata,
+                    markupCompatibilityWarning = scene.markupCompatibilityWarning,
                 sceneDefaultSpacing = scene.defaultSpacing,
                 sceneDefaultAlignment = scene.defaultAlignment,
                 markupVisible = true,
@@ -2003,6 +2007,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 editingGroupId = null,
                 markupStrokes = emptyList(),
                 markupTexts = emptyList(),
+                markupSourceMetadata = null,
+                markupCompatibilityWarning = null,
                 markupVisible = true,
                 markupModeActive = false,
                 draftMarkupStroke = null,
@@ -2612,26 +2618,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         }
                     }
 
-                    markupStrokes.forEach { stroke ->
-                        renderMarkupStrokeToCanvas(
-                            canvas = canvas,
-                            stroke = stroke,
-                            minX = minX,
-                            minY = minY,
-                            scale = scale,
-                            exportDensity = exportDensity,
-                        )
-                    }
-                    markupTexts.forEach { item ->
-                        renderMarkupTextToCanvas(
-                            canvas = canvas,
-                            item = item,
-                            minX = minX,
-                            minY = minY,
-                            scale = scale,
-                            exportDensity = exportDensity,
-                        )
-                    }
+                    val markupSave = canvas.save()
+                    try {
+                        val factor = scale * exportDensity
+                        canvas.scale(factor, factor)
+                        canvas.translate(-minX, -minY)
+                        SharedMarkupRenderer.draw(canvas, markupStrokes, markupTexts)
+                    } finally { canvas.restoreToCount(markupSave) }
 
                     // Write PNG to URI
                     val resolver = mainVm.contentResolver
@@ -2901,7 +2894,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         include: (Float, Float) -> Unit,
     ) {
         val padding = (stroke.lineWidth / 2f).coerceAtLeast(1f)
-        stroke.points.forEach { point ->
+        markupPolylines(stroke).flatten().forEach { point ->
             include(point.x - padding, point.y - padding)
             include(point.x + padding, point.y + padding)
         }
@@ -2911,14 +2904,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         item: CanvasMarkupText,
         include: (Float, Float) -> Unit,
     ) {
-        val lines = item.text.lines().filter { it.isNotBlank() }
-        if (lines.isEmpty()) return
-        val fontSize = item.fontSize.coerceAtLeast(1f)
-        val width = lines.maxOf { it.length }.coerceAtLeast(1) * fontSize * 0.6f
-        val lineHeight = fontSize * 1.18f
-        val height = (lines.size * lineHeight).coerceAtLeast(fontSize)
-        include(item.position.x - width / 2f, item.position.y - height / 2f - fontSize * 0.25f)
-        include(item.position.x + width / 2f, item.position.y + height / 2f + fontSize * 0.25f)
+        markupTextScreenBounds(item, Offset.Zero, Offset.Zero, 1f)?.let {
+            include(it.left,it.top); include(it.right,it.bottom)
+        }
     }
 
     private fun renderMarkupStrokeToCanvas(
@@ -2929,42 +2917,12 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         scale: Float,
         exportDensity: Float,
     ) {
-        if (!stroke.isRenderable) return
-        val factor = exportDensity * scale
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = stroke.color.toArgb()
-            style = android.graphics.Paint.Style.STROKE
-            strokeCap = android.graphics.Paint.Cap.ROUND
-            strokeJoin = android.graphics.Paint.Join.ROUND
-            strokeWidth = (stroke.lineWidth * factor).coerceAtLeast(1f)
-        }
-        val mapped = stroke.points.map { point ->
-            android.graphics.PointF(
-                (point.x - minX) * factor,
-                (point.y - minY) * factor,
-            )
-        }
-        val first = mapped.firstOrNull() ?: return
-        val path = android.graphics.Path().apply {
-            moveTo(first.x, first.y)
-            if (mapped.size == 2) {
-                lineTo(mapped[1].x, mapped[1].y)
-            } else {
-                for (index in 1 until mapped.lastIndex) {
-                    val current = mapped[index]
-                    val next = mapped[index + 1]
-                    quadTo(
-                        current.x,
-                        current.y,
-                        (current.x + next.x) / 2f,
-                        (current.y + next.y) / 2f,
-                    )
-                }
-                val last = mapped.last()
-                lineTo(last.x, last.y)
-            }
-        }
-        canvas.drawPath(path, paint)
+        val save = canvas.save()
+        try {
+            val factor = scale * exportDensity
+            canvas.scale(factor,factor); canvas.translate(-minX,-minY)
+            SharedMarkupRenderer.drawStroke(canvas,stroke)
+        } finally { canvas.restoreToCount(save) }
     }
 
     private fun renderMarkupTextToCanvas(
@@ -2975,23 +2933,14 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         scale: Float,
         exportDensity: Float,
     ) {
-        val lines = item.text.lines().filter { it.isNotBlank() }
-        if (lines.isEmpty()) return
-        val factor = exportDensity * scale
-        val x = (item.position.x - minX) * factor
-        val y = (item.position.y - minY) * factor
-        val textSize = (item.fontSize * factor).coerceAtLeast(8f)
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = item.color.toArgb()
-            this.textSize = textSize
-            textAlign = android.graphics.Paint.Align.CENTER
-        }
-        val lineHeight = textSize * 1.18f
-        val firstBaseline = y - (lineHeight * (lines.size - 1) / 2f)
-        lines.forEachIndexed { index, line ->
-            canvas.drawText(line, x, firstBaseline + index * lineHeight, paint)
-        }
+        val save = canvas.save()
+        try {
+            val factor = scale * exportDensity
+            canvas.scale(factor,factor); canvas.translate(-minX,-minY)
+            SharedMarkupRenderer.drawText(canvas,item)
+        } finally { canvas.restoreToCount(save) }
     }
+
 }
 
 internal data class ImportedSceneMerge(

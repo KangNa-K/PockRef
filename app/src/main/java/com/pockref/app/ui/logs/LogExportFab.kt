@@ -1,5 +1,7 @@
 package com.pockref.app.ui.logs
 
+import com.pockref.app.ui.glassMaterial
+
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -132,9 +134,7 @@ fun LogExportFab(
         modifier = modifier
             .size(Dimens.BottomPanelChromeSize)
             .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
-            .background(
-                MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-            )
+            .glassMaterial(RoundedCornerShape(Dimens.ChromeCornerRadius))
             .border(
                 1.dp,
                 MaterialTheme.colorScheme.outlineVariant,

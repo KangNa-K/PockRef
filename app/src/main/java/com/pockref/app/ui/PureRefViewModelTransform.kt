@@ -148,6 +148,8 @@ internal sealed interface HistoryEntry {
         val groups: List<SceneGroup>,
         val markupStrokes: List<CanvasMarkupStroke>,
         val markupTexts: List<CanvasMarkupText>,
+        val markupSourceMetadata: String? = null,
+        val markupCompatibilityWarning: String? = null,
     ) : HistoryEntry
 
     data class Diff(val diff: SceneDiff) : HistoryEntry
@@ -357,6 +359,8 @@ internal fun PockRefUiState.toHistoryEntry(): HistoryEntry.Snapshot =
         groups = groups,
         markupStrokes = markupStrokes,
         markupTexts = markupTexts,
+        markupSourceMetadata = markupSourceMetadata,
+        markupCompatibilityWarning = markupCompatibilityWarning,
     )
 
 /**
@@ -2042,6 +2046,8 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                         groups = entry.groups,
                         markupStrokes = entry.markupStrokes,
                         markupTexts = entry.markupTexts,
+                        markupSourceMetadata = entry.markupSourceMetadata,
+                        markupCompatibilityWarning = entry.markupCompatibilityWarning,
                         markupModeActive = false,
                         draftMarkupStroke = null,
                         markupSessionBaseStrokes = null,

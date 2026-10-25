@@ -4,24 +4,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.pockref.app.data.ThemeMode
 import com.pockref.app.model.PockRefUiState
+import com.pockref.app.ui.CompactSegmentedControl
 import com.pockref.app.ui.PockRefAction
 
 /**
  * "外观" tab — visual look-and-feel:
  * -主题 (system / light / dark segmented row)
+ * -毛玻璃效果 (persistent toolbar and popup backdrop-blur switch)
  * -背景颜色 (7 preset swatches + inline HSV wheel on the
  * "Custom" chip)
  *
@@ -31,7 +27,6 @@ import com.pockref.app.ui.PockRefAction
  * internal height (200dp) so it doesn't fight the LazyColumn for
  * vertical space.
  */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsAppearanceTab(
  state: PockRefUiState,
@@ -54,27 +49,27 @@ internal fun SettingsAppearanceTab(
  ThemeMode.LIGHT to "浅色",
  ThemeMode.DARK to "深色",
  )
- SingleChoiceSegmentedButtonRow {
- themeOptions.forEachIndexed { index, (mode, label) ->
- SegmentedButton(
- selected = state.themeMode == mode,
- onClick = { onAction(PockRefAction.SetThemeMode(mode)) },
- shape = SegmentedButtonDefaults.itemShape(
- index = index,
- count = themeOptions.size,
- ),
- modifier = Modifier.heightIn(min =56.dp),
- icon = { },
- ) {
- Text(
- text = label,
- maxLines =1,
- overflow = TextOverflow.Ellipsis,
+ CompactSegmentedControl(
+ options = themeOptions.map { it.second },
+ selectedIndex = themeOptions.indexOfFirst { it.first == state.themeMode },
+ onOptionClick = { index ->
+ onAction(PockRefAction.SetThemeMode(themeOptions[index].first))
+ },
+ modifier = Modifier.testTag("theme-mode-toggle"),
  )
  }
  }
- }
- }
+ item {
+ SettingsToggleRow(
+ title = "毛玻璃效果",
+ subtitle = if (android.os.Build.VERSION.SDK_INT >= 31) {
+ "模糊弹窗和工具栏后方的内容，关闭后使用不透明背景"
+ } else {
+ "当前系统不支持背景模糊，将使用不透明背景"
+ },
+ checked = state.frostedGlassEnabled,
+ onCheckedChange = { onAction(PockRefAction.SetFrostedGlassEnabled(it)) },
+ )
  }
  //背景颜色
  item {
@@ -111,11 +106,6 @@ internal fun SettingsAppearanceTab(
  }
  }
  }
-    //小地图显示
-    item {
-        androidx.compose.material3.HorizontalDivider()
-        SettingsMinimapSection(state = state, onAction = onAction)
-    }
     // V_NOW (2026-06-16 user feedback "去掉设置里的启动
     // 页显示导出日志的开关"): the start-page log-export FAB
     // is now an easter-egg feature — hidden by default, made

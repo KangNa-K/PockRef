@@ -23,6 +23,7 @@ import com.pockref.app.data.PurSceneCodec
 import com.pockref.app.data.RecoverySessionManager
 import com.pockref.app.data.SceneImageDecoder
 import com.pockref.app.model.BackgroundPreset
+import com.pockref.app.model.CanvasMarkupTool
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.decodeRecentScenes
@@ -230,6 +231,9 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     internal val undoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
     internal val redoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
     internal val markupHistory = MarkupHistory()
+    private var markupGestureBase: MarkupHistorySnapshot? = null
+    private var markupGesturePoint: Offset? = null
+    private var markupHandleGesture: Triple<PockRefUiState, MarkupHandle, Offset>? = null
     internal var sceneGestureActive: Boolean = false
     internal var gestureUndoRecorded: Boolean = false
         // Resetting the flag (e.g. by loadScene in PockRefViewModelScene, which
@@ -274,6 +278,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             backgroundColor = appPrefs.defaultBackgroundPreset.color,
             backgroundCustomColor = appPrefs.defaultBackgroundPreset.color,
             themeMode = appPrefs.themeMode,
+            frostedGlassEnabled = appPrefs.frostedGlassEnabled,
             // V_NOW: spenMode pref → uiState. The detector in
             // MainActivity reads the pref directly (not the
             // uiState) on construction — see MainActivity.onCreate
@@ -686,6 +691,10 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             sb.append(group.positionLocked)
         }
         sb.append(scene.requiresGroupFlattening)
+        sb.append(scene.markupSourceMetadata)
+        sb.append(scene.markupCompatibilityWarning)
+        sb.append(scene.markupStrokes.hashCode())
+        sb.append(scene.markupTexts.hashCode())
         sb.append(scene.markupStrokes.size)
         scene.markupStrokes.forEach { stroke ->
             sb.append(stroke.id)
@@ -1028,6 +1037,28 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
             is PockRefAction.SetMarkupModeActive -> setMarkupModeActive(action.active)
+            is PockRefAction.SetMarkupTool -> {
+                cancelMarkupStroke()
+                _uiState.update { it.copy(markupTool = action.tool, selectedMarkupId = null, selectedMarkupIds = emptySet()) }
+            }
+            is PockRefAction.SetMarkupColor -> {
+                _uiState.update { it.copy(markupColor = action.color) }
+                editSelectedMarkup { state, ids -> state.copy(
+                    markupStrokes = state.markupStrokes.map { if (it.id in ids && !it.locked) it.copy(color = action.color) else it },
+                    markupTexts = state.markupTexts.map { if (it.id in ids && !it.locked) it.copy(color = action.color) else it }) }
+            }
+            is PockRefAction.SetMarkupWidth -> if (action.width.isFinite()) {
+                val width = action.width.coerceIn(1f, 40f)
+                _uiState.update { it.copy(markupLineWidth = width) }
+                editSelectedMarkup { state, ids -> state.copy(markupStrokes = state.markupStrokes.map {
+                    if (it.id in ids && !it.locked) it.copy(lineWidth = (width / state.canvasScale.coerceAtLeast(0.001f)).coerceIn(0.01f, 10000f)) else it
+                }) }
+            }
+            PockRefAction.DeleteSelectedMarkup -> editSelectedMarkup { state, ids -> state.copy(
+                markupStrokes = state.markupStrokes.filterNot { it.id in ids && !it.locked },
+                markupTexts = state.markupTexts.filterNot { it.id in ids && !it.locked }, selectedMarkupId = null, selectedMarkupIds = emptySet()) }
+            PockRefAction.DuplicateSelectedMarkup -> editSelectedMarkup { state, _ -> duplicateMarkupSelection(state) }
+            is PockRefAction.TransformSelectedMarkup -> transformSelectedMarkup(action.scale, action.rotation)
             is PockRefAction.BeginMarkupStroke -> beginMarkupStroke(action.point)
             is PockRefAction.UpdateMarkupStroke -> updateMarkupStroke(action.point)
             PockRefAction.CommitMarkupStroke -> commitMarkupStroke()
@@ -1040,7 +1071,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(pendingMarkupTextValue = action.value)
             }
             is PockRefAction.SetPendingMarkupTextFontSize -> _uiState.update {
-                it.copy(pendingMarkupTextFontSize = action.size.coerceIn(24f, 240f))
+                if (action.size.isFinite()) it.copy(pendingMarkupTextFontSize = action.size.coerceIn(1f, 2000f)) else it
             }
             PockRefAction.CommitMarkupText -> commitMarkupText()
             PockRefAction.CancelMarkupText -> _uiState.update {
@@ -1529,6 +1560,10 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.SetBackgroundColor -> setBackgroundColor(action.color)
             is PockRefAction.ShowBackgroundPicker -> setBackgroundPickerVisible(action.show)
             is PockRefAction.SetThemeMode -> setThemeMode(action.mode)
+            is PockRefAction.SetFrostedGlassEnabled -> {
+                appPrefs.frostedGlassEnabled = action.enabled
+                _uiState.update { it.copy(frostedGlassEnabled = action.enabled) }
+            }
             PockRefAction.ConsumeError -> consumeError()
             is PockRefAction.SetHover -> setHover(action.imageId, action.position)
             PockRefAction.ClearHover -> clearHover()
@@ -2346,6 +2381,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         }
 
     internal fun undoMarkupStep() {
+        cancelMarkupStroke()
         val current = _uiState.value
         if (!current.markupModeActive) return
         val snapshot = markupHistory.undo(current.toMarkupHistorySnapshot()) ?: return
@@ -2353,6 +2389,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     internal fun redoMarkupStep() {
+        cancelMarkupStroke()
         val current = _uiState.value
         if (!current.markupModeActive) return
         val snapshot = markupHistory.redo(current.toMarkupHistorySnapshot()) ?: return
@@ -2361,10 +2398,16 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun setMarkupModeActive(active: Boolean) {
         if (active) {
+            _uiState.value.markupCompatibilityWarning?.let { reportError(it); return }
+            if (_uiState.value.markupModeActive) return
             markupHistory.clear()
             _uiState.update { current ->
                 current.copy(
                     markupModeActive = true,
+                    markupVisible = true,
+                    selectedMarkupId = null,
+                    selectedMarkupIds = emptySet(),
+                    markupLassoPoints = emptyList(),
                     bottomRightPanelExpanded = false,
                     selectedImageId = null,
                     selectedImageIds = emptySet(),
@@ -2387,11 +2430,16 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             return
         }
 
+        commitMarkupStroke()
+        if (_uiState.value.pendingMarkupTextPosition != null) commitMarkupText()
         val beforeState = _uiState.value
         val baseStrokes = beforeState.markupSessionBaseStrokes
         val baseTexts = beforeState.markupSessionBaseTexts
         val afterState = beforeState.copy(
             markupModeActive = false,
+            selectedMarkupId = null,
+            selectedMarkupIds = emptySet(),
+            markupLassoPoints = emptyList(),
             draftMarkupStroke = null,
             markupSessionBaseStrokes = null,
             markupSessionBaseTexts = null,
@@ -2423,17 +2471,84 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     internal fun beginMarkupStroke(point: Offset) {
+        val state = _uiState.value
+        if (!state.markupModeActive || state.markupCompatibilityWarning != null || !validMarkupPoint(point)) return
+        if (state.markupTool == CanvasMarkupTool.SELECT) {
+            hitMarkupHandle(state, point)?.let { handle ->
+                markupGestureBase = state.toMarkupHistorySnapshot()
+                markupHandleGesture = Triple(state, handle, point)
+                return
+            }
+        }
+        if (state.markupTool == CanvasMarkupTool.LASSO) {
+            _uiState.update { it.copy(markupLassoPoints = listOf(point), selectedMarkupId = null, selectedMarkupIds = emptySet()) }
+            return
+        }
+        if (state.markupTool == CanvasMarkupTool.TEXT) {
+            val text = hitTestMarkupText(state.markupTexts, point, Offset.Zero, Offset.Zero, 1f)
+            if (text != null) editMarkupText(text.id) else {
+                requestMarkupText()
+                _uiState.update { it.copy(pendingMarkupTextPosition = point) }
+            }
+            return
+        }
+        if (state.markupTool in setOf(CanvasMarkupTool.SELECT, CanvasMarkupTool.ERASER, CanvasMarkupTool.INK_ERASER)) {
+            markupGestureBase = state.toMarkupHistorySnapshot()
+            markupGesturePoint = point
+            val text = hitTestMarkupText(state.markupTexts, point, Offset.Zero, Offset.Zero, 1f)
+            val stroke = state.markupStrokes.asReversed().sortedByDescending { it.zOrder }
+                .firstOrNull { hitMarkupStroke(it, point, 14f/state.canvasScale.coerceAtLeast(0.001f)) }
+            val hit = if (text != null && (stroke == null || text.zOrder >= stroke.zOrder)) text.id else stroke?.id
+            val ids = if (hit != null && hit in state.markupSelection) state.markupSelection else setOfNotNull(hit)
+            _uiState.update { it.copy(selectedMarkupId = hit, selectedMarkupIds = ids) }
+            if (state.markupTool == CanvasMarkupTool.ERASER || state.markupTool == CanvasMarkupTool.INK_ERASER) eraseMarkupAt(point)
+            return
+        }
         _uiState.update { current ->
             if (!current.markupModeActive) current else current.copy(
                 draftMarkupStroke = CanvasMarkupStroke(
-                    lineWidth = (4f / current.canvasScale).coerceIn(1f, 80f),
+                    color = current.markupColor,
+                    lineWidth = (current.markupLineWidth / current.canvasScale).coerceIn(0.01f, 10000f),
                     points = listOf(point),
+                    kind = current.markupTool.name.lowercase(),
+                    opacity = if (current.markupTool == CanvasMarkupTool.HIGHLIGHTER) 0.35f else 1f,
+                    zOrder = (current.markupStrokes.map { it.zOrder } + current.markupTexts.map { it.zOrder }).maxOrNull()?.plus(1) ?: 0,
                 ),
             )
         }
     }
 
     internal fun updateMarkupStroke(point: Offset) {
+        if (!validMarkupPoint(point)) return
+        val state = _uiState.value
+        markupHandleGesture?.let { (base, handle, start) ->
+            val transformed = dragMarkupHandle(base, handle, start, point)
+            _uiState.value = state.copy(markupStrokes = transformed.markupStrokes, markupTexts = transformed.markupTexts)
+            return
+        }
+        if (state.markupLassoPoints.isNotEmpty()) {
+            if ((point-state.markupLassoPoints.last()).getDistance() >= 2f/state.canvasScale.coerceAtLeast(0.001f) &&
+                state.markupLassoPoints.size < 8192) {
+                _uiState.update { it.copy(markupLassoPoints = it.markupLassoPoints + point) }
+            }
+            return
+        }
+        if (markupGestureBase != null) {
+            val previousPoint = markupGesturePoint ?: point
+            val delta = point - previousPoint
+            markupGesturePoint = point
+            if (state.markupTool == CanvasMarkupTool.ERASER || state.markupTool == CanvasMarkupTool.INK_ERASER) eraseMarkupAt(point, previousPoint)
+            else if (state.markupTool == CanvasMarkupTool.SELECT) {
+                val ids = state.markupSelection
+                val next = state.copy(
+                    markupStrokes = state.markupStrokes.map { stroke -> if (stroke.id in ids && !stroke.locked) stroke.copy(points = stroke.points.map { p -> p+delta }) else stroke },
+                    markupTexts = state.markupTexts.map { text -> if (text.id in ids && !text.locked) text.copy(position = text.position+delta) else text })
+                if (next.markupStrokes.all { it.points.all(::validMarkupPoint) } && next.markupTexts.all { validMarkupPoint(it.position) }) {
+                    _uiState.value = next
+                }
+            }
+            return
+        }
         _uiState.update { current ->
             val draft = current.draftMarkupStroke
             if (!current.markupModeActive || draft == null) {
@@ -2445,19 +2560,35 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 if (last != null && (last - point).getDistance() < minWorldDistance) {
                     current
                 } else {
-                    current.copy(draftMarkupStroke = draft.copy(points = draft.points + point))
+                    current.copy(draftMarkupStroke = draft.copy(points = if (draft.kind in setOf("line", "arrow", "rectangle", "ellipse")) listOf(draft.points.first(), point) else draft.points + point))
                 }
             }
         }
     }
 
     internal fun commitMarkupStroke() {
+        markupHandleGesture = null
+        val selectionState = _uiState.value
+        if (selectionState.markupLassoPoints.isNotEmpty()) {
+            val ids = selectMarkupInLasso(selectionState, selectionState.markupLassoPoints)
+            _uiState.value = selectionState.copy(selectedMarkupIds = ids, selectedMarkupId = ids.firstOrNull(),
+                markupLassoPoints = emptyList(), markupTool = CanvasMarkupTool.SELECT)
+            return
+        }
+        markupGestureBase?.let { before ->
+            val current = _uiState.value
+            if (before != current.toMarkupHistorySnapshot()) markupHistory.record(before)
+            markupGestureBase = null
+            markupGesturePoint = null
+            _uiState.value = syncVisibleHistoryFlags(current)
+            return
+        }
         _uiState.update { current ->
             val draft = current.draftMarkupStroke
             if (!current.markupModeActive || draft == null) {
                 current
             } else {
-                val committed = regularizeMarkupStrokeForCommit(draft)
+                val committed = if (draft.kind == "pen" || draft.kind == "highlighter") regularizeMarkupStrokeForCommit(draft) else draft
                 if (committed.isRenderable) {
                     markupHistory.record(current.toMarkupHistorySnapshot())
                 }
@@ -2472,16 +2603,50 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     internal fun cancelMarkupStroke() {
-        _uiState.update { it.copy(draftMarkupStroke = null) }
+        markupHandleGesture = null
+        val before = markupGestureBase
+        markupGestureBase = null
+        markupGesturePoint = null
+        _uiState.update { (if (before == null) it else it.restoreMarkupHistorySnapshot(before)).copy(draftMarkupStroke = null, markupLassoPoints = emptyList()) }
+    }
+
+    private fun eraseMarkupAt(point: Offset, from: Offset = point) {
+        _uiState.update { state ->
+            val tolerance = 16f/state.canvasScale.coerceAtLeast(0.001f)
+            if (state.markupTool == CanvasMarkupTool.INK_ERASER) return@update state.copy(
+                markupStrokes = state.markupStrokes.flatMap { eraseMarkupInk(it, from, point, tolerance) },
+                selectedMarkupId = null, selectedMarkupIds = emptySet())
+            state.copy(markupStrokes = state.markupStrokes.filterNot { hitMarkupStrokeAlongSegment(it,from,point,tolerance) },
+                markupTexts = state.markupTexts.filterNot { hitMarkupTextAlongSegment(it,from,point) },
+                selectedMarkupId = null, selectedMarkupIds = emptySet())
+        }
+    }
+
+    private fun editSelectedMarkup(transform: (PockRefUiState, Set<String>) -> PockRefUiState) {
+        val current = _uiState.value
+        if (!current.markupModeActive || current.markupCompatibilityWarning != null) return
+        val ids = current.markupSelection
+        if (ids.isEmpty()) return
+        val next = transform(current,ids)
+        if (next.toMarkupHistorySnapshot() != current.toMarkupHistorySnapshot()) markupHistory.record(current.toMarkupHistorySnapshot())
+        _uiState.value = syncVisibleHistoryFlags(next)
+    }
+
+    private fun transformSelectedMarkup(scale: Float, rotation: Float) {
+        editSelectedMarkup { state, _ -> transformMarkupSelection(state, scale, rotation) }
     }
 
     internal fun cancelMarkupSession() {
+        cancelMarkupStroke()
         markupHistory.clear()
         _uiState.update { current ->
             current.copy(
                 markupStrokes = current.markupSessionBaseStrokes ?: current.markupStrokes,
                 markupTexts = current.markupSessionBaseTexts ?: current.markupTexts,
                 markupModeActive = false,
+                selectedMarkupId = null,
+                selectedMarkupIds = emptySet(),
+                markupLassoPoints = emptyList(),
                 draftMarkupStroke = null,
                 markupSessionBaseStrokes = null,
                 markupSessionBaseTexts = null,
@@ -2495,6 +2660,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun requestMarkupText() {
         val current = _uiState.value
+        current.markupCompatibilityWarning?.let { reportError(it); return }
         val viewportCenter = Offset(
             x = -current.canvasOffset.x / current.canvasScale,
             y = -current.canvasOffset.y / current.canvasScale,
@@ -2512,12 +2678,13 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun editMarkupText(textId: String) {
         val current = _uiState.value
-        val text = current.markupTexts.firstOrNull { it.id == textId } ?: return
+        current.markupCompatibilityWarning?.let { reportError(it); return }
+        val text = current.markupTexts.firstOrNull { it.id == textId && !it.locked } ?: return
         _uiState.update {
             it.copy(
                 pendingMarkupTextPosition = text.position,
                 pendingMarkupTextValue = text.text,
-                pendingMarkupTextFontSize = text.fontSize.coerceIn(24f, 240f),
+                pendingMarkupTextFontSize = text.fontSize.coerceIn(0.01f, 10000f),
                 editingMarkupTextId = text.id,
                 bottomRightPanelExpanded = false,
             )
@@ -2543,6 +2710,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun moveMarkupText(textId: String, delta: Offset) {
         val current = _uiState.value
+        if (current.markupCompatibilityWarning != null) return
         if (current.markupModeActive) {
             if (sceneGestureActive && !gestureUndoRecorded) {
                 markupHistory.record(current.toMarkupHistorySnapshot())

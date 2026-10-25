@@ -36,6 +36,12 @@ class AppPreferences(context: Context) {
             prefs.edit().putString(KEY_DEFAULT_BG_PRESET, value.name).apply()
         }
 
+    var frostedGlassEnabled: Boolean
+        get() = prefs.getBoolean(KEY_FROSTED_GLASS_ENABLED, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_FROSTED_GLASS_ENABLED, value).apply()
+        }
+
     var themeMode: ThemeMode
         get() {
             val stored = prefs.getString(KEY_THEME_MODE, null) ?: return ThemeMode.LIGHT
@@ -298,7 +304,7 @@ class AppPreferences(context: Context) {
      * can flip collapsed without also touching dockEdge.
      */
     var minimapCollapsed: Boolean
-        get() = prefs.getBoolean(KEY_MINIMAP_COLLAPSED, false)
+        get() = prefs.getBoolean(KEY_MINIMAP_COLLAPSED, true)
         set(value) {
             prefs.edit().putBoolean(KEY_MINIMAP_COLLAPSED, value).apply()
         }
@@ -514,6 +520,7 @@ class AppPreferences(context: Context) {
         private const val PREFS_NAME = "pockref_settings"
         private const val KEY_DEFAULT_BG_PRESET = "default_background_preset"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_FROSTED_GLASS_ENABLED = "frosted_glass_enabled"
         private const val KEY_EDGE_SNAP_ENABLED = "edge_snap_enabled"
         private const val KEY_ROTATION_SNAP_ENABLED = "rotation_snap_enabled"
         private const val KEY_DISABLED_GESTURE_IDS = "disabled_gesture_ids"

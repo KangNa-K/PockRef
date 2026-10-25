@@ -102,6 +102,7 @@ class MainActivity : ComponentActivity() {
      * silently ignored here.
      */
     private fun dispatchSpenEvent(event: SpenButtonDetector.ButtonEvent) {
+        if (viewModel.uiState.value.markupModeActive) return
         when (event) {
             SpenButtonDetector.ButtonEvent.BoxStart -> {
                 viewModel.onAction(PockRefAction.SetSelectionMode(SelectionMode.BOX))
@@ -183,7 +184,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
-            PockRefTheme(themeMode = state.themeMode) {
+            PockRefTheme(themeMode = state.themeMode, frostedGlassEnabled = state.frostedGlassEnabled) {
                 PockRefApp(
                     state = state,
                     updateController = viewModel.appUpdateController,

@@ -338,7 +338,7 @@ fun BulkDeleteConfirmDialog(
         validScenes.map { it.uri }.toSet(),
     )
     val count = validSelection.size
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = { onAction(PockRefAction.DismissBulkDeleteConfirm) },
         title = { Text("删除最近文件") },
         text = {

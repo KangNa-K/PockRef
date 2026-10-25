@@ -940,7 +940,7 @@ private fun RecentFileTile(
     }
     if (showRenameDialog) {
         var newName by remember { mutableStateOf(displayLabel(entry.label)) }
-        AlertDialog(
+        GlassAlertDialog(
             onDismissRequest = { showRenameDialog = false },
             title = { Text("重命名") },
             text = {

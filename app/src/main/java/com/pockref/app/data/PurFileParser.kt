@@ -335,8 +335,12 @@ class PurFileParser {
                 val images = FileOutputStream(imageFile).use { output ->
                     readV2SceneImages(db, output, privateMetadata)
                 }
-                val notes = readV2Notes(db)
-                val drawings = readV2DrawingImages(db)
+                val shared = privateMetadata?.let(SharedMarkupCodec::decode)
+                val nativeIDs = privateMetadata?.optJSONArray("sharedMarkupNativeItemIDs")?.let { ids ->
+                    (0 until ids.length()).map { ids.getLong(it).toString() }.toSet()
+                } ?: emptySet()
+                val notes = readV2Notes(db).filterNot { shared != null && shared.warning == null && it.id.removePrefix("pur-v2-note-") in nativeIDs }
+                val drawings = readV2DrawingImages(db).filterNot { shared != null && shared.warning == null && it.id.removePrefix("pur-v2-drawing-") in nativeIDs }
                 val groupRead = readV2SceneGroups(db)
                 val groups = mergeV2Groups(groupRead.groups, privateMetadata)
                 val name = privateMetadata?.optString("displayName")?.takeIf { it.isNotBlank() }
@@ -349,7 +353,10 @@ class PurFileParser {
                     images = (images + drawings).sortedBy { it.zIndex },
                     groups = groups,
                     requiresGroupFlattening = groupRead.requiresFlattening,
-                    markupTexts = notes,
+                    markupTexts = (shared?.texts ?: emptyList()) + notes,
+                    markupStrokes = shared?.strokes ?: emptyList(),
+                    markupSourceMetadata = privateMetadata?.toString(),
+                    markupCompatibilityWarning = shared?.warning,
                     defaultSpacing = readV2DefaultSpacing(privateMetadata),
                     defaultAlignment = readV2DefaultAlignment(privateMetadata),
                 )
@@ -370,17 +377,21 @@ class PurFileParser {
         val requiresFlattening: Boolean,
     )
 
-    private fun readV2PockRefMetadata(db: SQLiteDatabase): JSONObject? = runCatching {
-        db.rawQuery("SELECT json FROM pockref_metadata ORDER BY id LIMIT 1", emptyArray()).use { cursor ->
+    private fun readV2PockRefMetadata(db: SQLiteDatabase): JSONObject? {
+        val exists = db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pockref_metadata'", null)
+            .use { it.moveToFirst() }
+        if (!exists) return null
+        return db.rawQuery("SELECT json FROM pockref_metadata ORDER BY id LIMIT 1", emptyArray()).use { cursor ->
             if (!cursor.moveToFirst() || cursor.isNull(0)) return@use null
             val bytes = if (cursor.getType(0) == android.database.Cursor.FIELD_TYPE_BLOB) {
                 cursor.getBlob(0)
             } else {
                 cursor.getString(0).toByteArray(Charsets.UTF_8)
             }
+            require(bytes.size <= 32 * 1024 * 1024) { "标记元数据超出安全限制" }
             JSONObject(String(bytes, Charsets.UTF_8))
         }
-    }.getOrNull()
+    }
 
     private fun readV2BackgroundColor(metadata: JSONObject?): Color {
         val value = metadata?.optJSONObject("backgroundColor") ?: return Color(0xFF111111)
@@ -631,13 +642,19 @@ class PurFileParser {
         imageOutput: FileOutputStream,
         privateMetadata: JSONObject?,
     ): List<SceneImage> {
+        val columns = db.rawQuery("PRAGMA table_info(items)",null).use { cursor ->
+            buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+        }
+        val nameColumn = if ("name" in columns) "it.name" else "NULL"
+        val parentTransform = if ("parent" in columns) "parent_group.transform" else "NULL"
+        val parentJoin = if ("parent" in columns) "LEFT JOIN items parent_group ON parent_group.id = it.parent" else ""
         val sql = """
             SELECT ii.id, ii.image, im.width, im.height, im.format, it.opacity, it.z, it.locked,
-                   it.transform, ii.image_transform, parent_group.transform, it.name
+                   it.transform, ii.image_transform, $parentTransform, $nameColumn
             FROM items_images ii
             JOIN images im ON im.id = ii.image
             JOIN items it ON it.id = ii.id
-            LEFT JOIN items parent_group ON parent_group.id = it.parent
+            $parentJoin
             WHERE im.data IS NOT NULL
             ORDER BY it.z, ii.id
         """.trimIndent()

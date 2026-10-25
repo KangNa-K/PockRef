@@ -50,6 +50,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.asImageBitmap
@@ -530,6 +531,9 @@ private fun PracticePausedView(
 
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
+            modifier = Modifier.glassMaterial(MaterialTheme.shapes.extraLarge, GlassRole.Popup),
+            containerColor = androidx.compose.ui.graphics.Color.Transparent,
+            tonalElevation = 0.dp,
             onDismissRequest = { onAction(PockRefAction.ResumePractice) },
             sheetState = sheetState,
         ) {
@@ -617,7 +621,7 @@ private fun PracticeFinishedOverlay(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
         ) {
-            Surface(
+            GlassSurface(
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 // P1 (2026-06-11 chrome unify): dialog
                 // tier (24dp). 4dp tighter than the M3
@@ -703,9 +707,9 @@ private fun CountdownBadge(
         state.phase == PracticePhase.REST -> "休息 " + formatMmSs(state.remainingMs)
         else -> formatMmSs(state.remainingMs)
     }
-    Surface(
-        color = MaterialTheme.colorScheme.inverseSurface,
-        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+    GlassSurface(
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         // P1 (2026-06-11 chrome unify): card tier (16dp).
         // 4dp tighter than the dialog tier so the
         // small inline badge doesn't visually compete
@@ -761,7 +765,7 @@ private fun PracticeImageLayer(
         bitmap = bitmap.asImageBitmap(),
         contentDescription = null,
         contentScale = ContentScale.Fit,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().glassBackdropSource().background(Color.Black),
         alpha = alpha,
     )
 }

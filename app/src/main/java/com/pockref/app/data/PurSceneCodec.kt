@@ -84,6 +84,7 @@ class PurSceneCodec {
         // The private checkpoint format carries both group flags.  Keep the
         // legacy desktop metadata block below on its original one-byte shape.
         output.writeSceneGroupsBlock(scene.groups, includeMovesAsUnit = true)
+        output.writeStringUtf8(SharedMarkupCodec.metadata(scene.markupStrokes, scene.markupTexts, scene.markupSourceMetadata).toString())
     }
 
     fun writeDesktopCompatible(scene: PockRefScene, output: OutputStream, workDir: File) {
@@ -99,6 +100,7 @@ class PurSceneCodec {
 
     /** Write the native PureRef 2.x container, including native group membership. */
     fun writePureRefCompatible(scene: PockRefScene, output: OutputStream, workDir: File) {
+        require(scene.markupCompatibilityWarning == null) { scene.markupCompatibilityWarning.orEmpty() }
         PurV2SceneWriter(workDir, ::resolveImageBytes).write(scene, output)
     }
 
@@ -397,19 +399,15 @@ class PurSceneCodec {
 
         strokes.forEach { stroke ->
             val padding = stroke.lineWidth.coerceAtLeast(1f) * 2f
-            stroke.points.forEach { point ->
+            com.pockref.app.ui.markupPolylines(stroke).flatten().forEach { point ->
                 include(point.x - padding, point.y - padding)
                 include(point.x + padding, point.y + padding)
             }
         }
         texts.forEach { text ->
-            val lines = text.text.lines().filter { it.isNotBlank() }
-            if (lines.isEmpty()) return@forEach
-            val fontSize = text.fontSize.coerceAtLeast(1f)
-            val width = lines.maxOf { it.length }.coerceAtLeast(1) * fontSize * 0.7f
-            val height = (lines.size * fontSize * 1.25f).coerceAtLeast(fontSize)
-            include(text.position.x - width / 2f - fontSize * 0.2f, text.position.y - height / 2f - fontSize * 0.35f)
-            include(text.position.x + width / 2f + fontSize * 0.2f, text.position.y + height / 2f + fontSize * 0.35f)
+            com.pockref.app.ui.markupTextScreenBounds(text,Offset.Zero,Offset.Zero,1f)?.let {
+                include(it.left,it.top); include(it.right,it.bottom)
+            }
         }
 
         if (!minX.isFinite() || !minY.isFinite() || !maxX.isFinite() || !maxY.isFinite()) return null
@@ -435,66 +433,9 @@ class PurSceneCodec {
             val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
             val factor = density
-            strokes.forEach { stroke ->
-                if (!stroke.isRenderable) return@forEach
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = stroke.color.toArgb()
-                    style = Paint.Style.STROKE
-                    strokeCap = Paint.Cap.ROUND
-                    strokeJoin = Paint.Join.ROUND
-                    strokeWidth = (stroke.lineWidth * factor).coerceAtLeast(1f)
-                }
-                val first = stroke.points.firstOrNull() ?: return@forEach
-                val path = Path().apply {
-                    moveTo((first.x - minX) * factor, (first.y - minY) * factor)
-                    if (stroke.points.size == 2) {
-                        val point = stroke.points[1]
-                        lineTo((point.x - minX) * factor, (point.y - minY) * factor)
-                    } else {
-                        for (index in 1 until stroke.points.lastIndex) {
-                            val current = stroke.points[index]
-                            val next = stroke.points[index + 1]
-                            quadTo(
-                                (current.x - minX) * factor,
-                                (current.y - minY) * factor,
-                                ((current.x + next.x) / 2f - minX) * factor,
-                                ((current.y + next.y) / 2f - minY) * factor,
-                            )
-                        }
-                        val last = stroke.points.last()
-                        lineTo((last.x - minX) * factor, (last.y - minY) * factor)
-                    }
-                }
-                canvas.drawPath(path, paint)
-            }
-            texts.forEach { text ->
-                val lines = text.text.lines().filter { it.isNotBlank() }
-                if (lines.isEmpty()) return@forEach
-                val textSize = (text.fontSize * factor).coerceAtLeast(8f)
-                val x = (text.position.x - minX) * factor
-                val y = (text.position.y - minY) * factor
-                val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.White.toArgb()
-                    this.textSize = textSize
-                    textAlign = Paint.Align.CENTER
-                    style = Paint.Style.STROKE
-                    strokeWidth = (textSize * 0.12f).coerceAtLeast(2f)
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                }
-                val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = text.color.toArgb()
-                    this.textSize = textSize
-                    textAlign = Paint.Align.CENTER
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                }
-                val lineHeight = textSize * 1.18f
-                val firstBaseline = y - (lineHeight * (lines.size - 1) / 2f)
-                lines.forEachIndexed { index, line ->
-                    val baseline = firstBaseline + index * lineHeight
-                    canvas.drawText(line, x, baseline, outlinePaint)
-                    canvas.drawText(line, x, baseline, fillPaint)
-                }
-            }
+            canvas.scale(factor,factor)
+            canvas.translate(-minX,-minY)
+            com.pockref.app.ui.SharedMarkupRenderer.draw(canvas,strokes,texts)
             ByteArrayOutputStream().use { output ->
                 val compressed = bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
                 bitmap.recycle()
@@ -758,16 +699,12 @@ class PurSceneCodec {
             }
 
             if (looksLikeDesktopPur(raf, header)) {
-                try {
-                    val scene = purFileParser.parseFromFile(file)
-                    val extendedScene = applyLegacySceneExtension(file, scene)
-                    bindLazySource(file)
-                    return extendedScene
-                } catch (e: Exception) {
-                    Log.w(TAG, "Structured desktop .pur parser failed, trying embedded image fallback", e)
-                    tryReadEmbeddedImagesFallback(file, fileLen)?.let { return it }
-                    throw e
-                }
+                // A recognized scene must parse completely. Image-only recovery would
+                // silently discard editable objects and permit overwriting the source.
+                val scene = purFileParser.parseFromFile(file)
+                val extendedScene = applyLegacySceneExtension(file, scene)
+                bindLazySource(file)
+                return extendedScene
             }
 
             if (looksLikeLegacyPur(header, fileLen)) {
@@ -781,7 +718,6 @@ class PurSceneCodec {
                         applyLegacySceneExtension(file, scene)
                     } catch (e2: Exception) {
                         Log.w(TAG, "Desktop parser failed for large legacy file", e2)
-                        tryReadEmbeddedImagesFallback(file, fileLen)?.let { return it }
                         throw e2
                     }
                 }
@@ -847,7 +783,9 @@ class PurSceneCodec {
     private fun applyLegacySceneExtension(file: File, scene: PockRefScene): PockRefScene {
         val extension = readLegacySceneExtensionFromFile(file)
         val backgroundColor = readLegacyBackgroundColorFromFile(file)
-        if (extension == null && backgroundColor == null) return scene
+        val iosMetadata = readIosLegacyMarkupMetadata(file, purFileParser)
+        val shared = iosMetadata?.let(SharedMarkupCodec::decode)
+        if (extension == null && backgroundColor == null && iosMetadata == null) return scene
         val imageStatesByLegacyIndex = extension?.imageStates
             ?.associateBy { it.legacyIndex }
             .orEmpty()
@@ -878,8 +816,10 @@ class PurSceneCodec {
             },
             defaultSpacing = extension?.defaultSpacing ?: scene.defaultSpacing,
             defaultAlignment = extension?.defaultAlignment ?: scene.defaultAlignment,
-            markupStrokes = extension?.markupStrokes ?: scene.markupStrokes,
-            markupTexts = extension?.markupTexts ?: scene.markupTexts,
+            markupStrokes = shared?.strokes ?: extension?.markupStrokes ?: scene.markupStrokes,
+            markupTexts = shared?.texts ?: extension?.markupTexts ?: scene.markupTexts,
+            markupSourceMetadata = iosMetadata?.toString() ?: scene.markupSourceMetadata,
+            markupCompatibilityWarning = shared?.warning ?: scene.markupCompatibilityWarning,
             groups = extension?.groups ?: scene.groups,
             backgroundColor = backgroundColor ?: scene.backgroundColor,
             backgroundColorIsPersisted = backgroundColor != null || scene.backgroundColorIsPersisted,
@@ -1298,6 +1238,8 @@ class PurSceneCodec {
         val (markupStrokes, markupTexts) = readMarkupTail(data)
         val (defaultSpacing, defaultAlignment) = readSceneSettingsTail(data)
         val groups = if (version >= 5) readSceneGroupsTail(data, includeMovesAsUnit = version >= 6) else emptyList()
+        val sharedMetadata = if (version >= 7) data.readStringUtf8() else null
+        val shared = sharedMetadata?.let { SharedMarkupCodec.decode(org.json.JSONObject(it)) }
         return PockRefScene(
             version = version,
             name = name,
@@ -1305,8 +1247,10 @@ class PurSceneCodec {
             backgroundColorIsPersisted = true,
             images = images,
             groups = groups,
-            markupStrokes = markupStrokes,
-            markupTexts = markupTexts,
+            markupStrokes = shared?.strokes ?: markupStrokes,
+            markupTexts = shared?.texts ?: markupTexts,
+            markupSourceMetadata = sharedMetadata,
+            markupCompatibilityWarning = shared?.warning,
             defaultSpacing = defaultSpacing,
             defaultAlignment = defaultAlignment,
         )
@@ -1387,6 +1331,8 @@ class PurSceneCodec {
         } else {
             emptyList()
         }
+        val sharedMetadata = if (version >= 7) raf.readStringUtf8() else null
+        val shared = sharedMetadata?.let { SharedMarkupCodec.decode(org.json.JSONObject(it)) }
         return PockRefScene(
             version = version,
             name = name,
@@ -1394,8 +1340,10 @@ class PurSceneCodec {
             backgroundColorIsPersisted = true,
             images = images,
             groups = groups,
-            markupStrokes = markupStrokes,
-            markupTexts = markupTexts,
+            markupStrokes = shared?.strokes ?: markupStrokes,
+            markupTexts = shared?.texts ?: markupTexts,
+            markupSourceMetadata = sharedMetadata,
+            markupCompatibilityWarning = shared?.warning,
             defaultSpacing = defaultSpacing,
             defaultAlignment = defaultAlignment,
         )
@@ -2329,7 +2277,7 @@ class PurSceneCodec {
 
     companion object {
         private const val TAG = "PurSceneCodec"
-        private const val CUSTOM_SCENE_VERSION = 6
+        private const val CUSTOM_SCENE_VERSION = 7
         private const val HEADER_MIN_SIZE = 0x6C
         private const val EMBEDDED_IMAGE_FALLBACK_MAX_BYTES = 64L * 1024L * 1024L
         private const val DESKTOP_MARKUP_OVERLAY_MAX_SIDE = 4096f
