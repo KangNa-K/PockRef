@@ -180,7 +180,7 @@ sealed interface PockRefAction {
       val backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode,
       val imageIds: Set<String>? = null,
   ) : PockRefAction
-    data class UpdateCanvasViewport(val width: Float, val height: Float) : PockRefAction
+    data class UpdateCanvasViewport(val width: Float, val height: Float, val originInWindow: Offset? = null) : PockRefAction
     data class ImportImages(val uris: List<Uri>) : PockRefAction
     /**
      * Import an image from the system clipboard. The ViewModel
@@ -676,7 +676,7 @@ sealed interface PockRefAction {
 
     data class SetDragOver(val isOver: Boolean) : PockRefAction
 
-    data class DropImages(val uris: List<Uri>, val dragPermission: android.view.DragAndDropPermissions? = null) : PockRefAction
+    data class DropImages(val uris: List<Uri>, val dragPermission: android.view.DragAndDropPermissions? = null, val positionInWindow: Offset? = null) : PockRefAction
 
     data class SetTopToolbarExpanded(val expanded: Boolean) : PockRefAction
 

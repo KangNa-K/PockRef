@@ -9,6 +9,17 @@ import org.junit.Test
 import java.io.File
 
 class SharedMarkupCodecTest {
+    @Test fun nativeNotePaddingSurvivesSaveReload() {
+        val text = com.pockref.app.model.CanvasMarkupText(text = "WDAD", position = Offset(120f, -80f),
+            fontSize = 44f, boxSize = com.pockref.app.model.Size2D(164f, 168f), textPadding = 32f)
+        val root = SharedMarkupCodec.metadata(emptyList(), listOf(text), null)
+        val restored = checkNotNull(SharedMarkupCodec.decode(root)).texts.single()
+        assertEquals(text.position, restored.position)
+        assertEquals(text.boxSize, restored.boxSize)
+        assertEquals(text.fontSize, restored.fontSize, 0.001f)
+        assertEquals(32f, restored.textPadding, 0.001f)
+    }
+
     private fun fixture(): JSONObject = JSONObject().put("annotationDocument", JSONObject(
         checkNotNull(javaClass.getResource("/markup/ios-v1.json")).readText()))
 

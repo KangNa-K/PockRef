@@ -15,6 +15,23 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class MarkupTextRenderingTest {
+    @Test
+    fun centeredImportedBoxAnchorsGlyphsAtItsTopLeftAfterRotation() {
+        val bitmap = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888)
+        try {
+            val note = CanvasMarkupText(text = "Test", position = Offset(160f, 120f),
+                fontSize = 20f, boxSize = Size2D(160f, 80f), rotation = (Math.PI / 2).toFloat())
+            SharedMarkupRenderer.drawText(Canvas(bitmap), note)
+            val painted = mutableListOf<Pair<Int, Int>>()
+            for (y in 0 until bitmap.height) for (x in 0 until bitmap.width) {
+                if (AndroidColor.alpha(bitmap.getPixel(x, y)) > 0) painted += x to y
+            }
+            assertTrue(painted.isNotEmpty())
+            assertTrue("Rotated text must start at the rotated box corner, not at the item center",
+                painted.all { (x, y) -> x in 170..200 && y in 40..95 })
+        } finally { bitmap.recycle() }
+    }
+
     private val text = CanvasMarkupText(
         text = "文本\nText",
         position = Offset(160f, 120f),

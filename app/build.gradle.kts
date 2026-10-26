@@ -15,8 +15,8 @@ android {
         applicationId = "com.pockref.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 41
-        versionName = "2.4.0"
+        versionCode = 43
+        versionName = "2.4.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

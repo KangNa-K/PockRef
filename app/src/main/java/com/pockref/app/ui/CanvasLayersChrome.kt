@@ -145,11 +145,7 @@ internal fun androidx.compose.foundation.layout.BoxScope.CanvasLayersChrome(
                                 onClick = { onAction(PockRefAction.SelectImage(image.id)) },
                                 onDoubleClick = {
                                     onAction(PockRefAction.SelectImage(image.id))
-                                    // List navigation always focuses; it must not toggle
-                                    // an already-focused image back to the previous view.
-                                    if (state.fittedImageId != image.id) {
-                                        onAction(PockRefAction.FitImageToScreen(image.id))
-                                    }
+                                    onAction(PockRefAction.FitImageToScreen(image.id))
                                 },
                             )
                         }

@@ -395,9 +395,9 @@ class MainActivity : ComponentActivity() {
                     clipData.getItemAt(i).uri?.let { uris.add(it) }
                 }
                 if (uris.isNotEmpty()) {
-                    viewModel.onAction(PockRefAction.DropImages(uris, permission))
+                    viewModel.onAction(PockRefAction.DropImages(uris, permission, androidx.compose.ui.geometry.Offset(event.x, event.y)))
                 } else {
-                    permission.release()
+                    permission?.release()
                 }
                 viewModel.onAction(PockRefAction.SetDragOver(false))
                 uris.isNotEmpty()

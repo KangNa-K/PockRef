@@ -1509,7 +1509,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     imageIds = action.imageIds,
                 )
             }
-            is PockRefAction.UpdateCanvasViewport -> sceneController.updateCanvasViewport(action.width, action.height)
+            is PockRefAction.UpdateCanvasViewport -> sceneController.updateCanvasViewport(action.width, action.height, action.originInWindow)
             is PockRefAction.SetSceneName -> sceneController.setSceneName(action.value)
             is PockRefAction.EnterCropMode -> sceneController.enterCropMode()
             PockRefAction.CancelCrop -> sceneController.cancelCrop()
@@ -1569,7 +1569,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.ClearHover -> clearHover()
             is PockRefAction.SetHoverPreview -> setHoverPreview(action.imageId)
             is PockRefAction.SetDragOver -> setDragOver(action.isOver)
-            is PockRefAction.DropImages -> sceneController.dropImages(action.uris, action.dragPermission)
+            is PockRefAction.DropImages -> sceneController.dropImages(action.uris, action.dragPermission, action.positionInWindow)
             is PockRefAction.SetTopToolbarExpanded -> setTopToolbarExpanded(action.expanded)
             is PockRefAction.SetBottomRightPanelExpanded -> setBottomRightPanelExpanded(action.expanded)
             is PockRefAction.SetMinimapPosition -> setMinimapPosition(action.x, action.y)

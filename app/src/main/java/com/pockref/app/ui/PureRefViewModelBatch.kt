@@ -819,6 +819,16 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
             return
         }
 
+        // A single selected group (or its editor) means arrange its contents,
+        // not resize the unchanged group as one giant image.
+        layoutSelectedGroupMembers(currentState)?.let { laidOut ->
+            if (laidOut != allImages) {
+                mainVm.mutateScene { copy(images = laidOut) }
+                fitToScreen()
+            }
+            return
+        }
+
         // Treat each native group as one layout unit. Moving the members as
         // independent images would visually split a group during auto-layout.
         if (currentState.groups.isNotEmpty() && executeGroupAwareAutoLayout(currentState)) {

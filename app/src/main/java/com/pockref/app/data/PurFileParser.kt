@@ -6,6 +6,9 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -722,6 +725,21 @@ class PurFileParser {
     }
 
     private fun readV2Notes(db: SQLiteDatabase): List<CanvasMarkupText> {
+        val hasParent = db.rawQuery("PRAGMA table_info(items)", null).use { cursor ->
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+            var found = false
+            while (cursor.moveToNext()) if (cursor.getString(nameIndex) == "parent") found = true
+            found
+        }
+        val itemTransforms = mutableMapOf<Long, Pair<Long, V2Transform>>()
+        if (hasParent) {
+            db.rawQuery("SELECT id, parent, transform FROM items", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    itemTransforms[cursor.getLong(0)] = cursor.getLong(1) to
+                        (v2TransformFrom(sqliteTextPayload(cursor, 2)) ?: V2Transform())
+                }
+            }
+        }
         val sql = """
             SELECT n.id, n.text, n.fixed_size, n.background_color, it.opacity, it.z,
                    it.locked, it.transform
@@ -737,13 +755,37 @@ class PurFileParser {
                 val text = pureRefNotePlainText(html)
                 if (text.isBlank()) continue
                 val fixedSize = v2SizeFrom(sqliteTextPayload(cursor, 2))
-                val transform = v2TransformFrom(sqliteTextPayload(cursor, 7)) ?: V2Transform()
+                var transform = v2TransformFrom(sqliteTextPayload(cursor, 7)) ?: V2Transform()
+                var parent = itemTransforms[itemId]?.first
+                val visited = mutableSetOf(itemId)
+                while (parent != null && visited.add(parent)) {
+                    val ancestor = itemTransforms[parent] ?: break
+                    transform = ancestor.second.applying(transform)
+                    parent = ancestor.first
+                }
+                val scaleX = hypot(transform.m11, transform.m12).toFloat().coerceAtLeast(0.0001f)
+                val scaleY = hypot(transform.m21, transform.m22).toFloat().coerceAtLeast(0.0001f)
+                val fontSize = pureRefNoteFontSize(html)
+                val padding = 16f
+                val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = fontSize }
+                val localWidth = fixedSize?.width?.takeIf { it > 0 }?.toFloat()
+                    ?: (text.lines().maxOf { paint.measureText(it) } + padding * 2).coerceAtLeast(1f)
+                val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint,
+                    (localWidth - padding * 2).coerceIn(1f, 100_000f).toInt().coerceAtLeast(1))
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).build()
+                val localHeight = fixedSize?.height?.takeIf { it > 0 }?.toFloat() ?: (layout.height + padding * 2)
                 notes += CanvasMarkupText(
                     id = "pur-v2-note-$itemId",
                     text = text,
                     position = Offset(transform.dx.toFloat(), transform.dy.toFloat()),
-                    fontSize = ((fixedSize?.height?.toFloat() ?: 320f) / text.lines().size.coerceAtLeast(1))
-                        .coerceIn(24f, 240f),
+                    // PureRef's item origin is the box center, not the center of its glyphs.
+                    boxSize = Size2D(localWidth * scaleX, localHeight * scaleY),
+                    fontSize = fontSize * scaleY,
+                    textPadding = padding * scaleY,
+                    rotation = atan2(transform.m12, transform.m11).toFloat(),
+                    opacity = cursor.getFloat(4).takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f,
+                    locked = cursor.getInt(6) != 0,
+                    zOrder = cursor.getDouble(5).roundToInt(),
                 )
             }
         }
@@ -864,7 +906,9 @@ class PurFileParser {
         if (payload == null || payload.size < 21) return null
         val width = readDoubleBE(payload, 5)
         val height = readDoubleBE(payload, 13)
-        return if (width.isFinite() && height.isFinite() && width > 0 && height > 0) {
+        // PureRef uses -1 independently for each automatic dimension. A fixed
+        // width with automatic height must still constrain wrapping.
+        return if (width.isFinite() && height.isFinite()) {
             V2Size(width, height)
         } else {
             null

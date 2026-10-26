@@ -229,8 +229,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         val failedCount: Int,
     )
 
-    fun dropImages(uris: List<Uri>, dragPermission: android.view.DragAndDropPermissions? = null) {
+    fun dropImages(uris: List<Uri>, dragPermission: android.view.DragAndDropPermissions? = null, positionInWindow: Offset? = null) {
         if (uris.isEmpty()) return
+        val dropState = mainVm._uiState.value
         val operationToken = mainVm.beginSceneOperation()
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
@@ -246,42 +247,23 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
                     val existingImages = mainVm._uiState.value.images
                     val existingCount = existingImages.size
-                    val viewport = mainVm._uiState.value.canvasViewportSize
-                    val containerPadding = 16f
-                    val imageSpacing = 8f
-                    val minColumnWidth = 120f
-                    val maxColumns = 4
-                    val availableWidth = viewport.width - containerPadding * 2
-                    val columns = if (availableWidth <= 0f) maxColumns
-                        else ((availableWidth + imageSpacing) / (minColumnWidth + imageSpacing))
-                            .toInt().coerceIn(1, maxColumns)
-                    val columnWidth = if (availableWidth <= 0f) minColumnWidth
-                        else (availableWidth - imageSpacing * (columns - 1)) / columns
-
                     filtered.mapIndexedNotNull { index, uri ->
                         val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                             ?: return@mapIndexedNotNull null
                         val originalMime = mainVm.contentResolver.getType(uri) ?: "application/octet-stream"
                         val importedImage = decodeOriginalImage(rawBytes, originalMime)
                             ?: return@mapIndexedNotNull null
-                        val displayH = importedImage.height.toFloat() * columnWidth /
-                            importedImage.width.coerceAtLeast(1)
-
-                        val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
+                        val columnWidth = importedImage.width.toFloat().coerceAtMost(720f)
                         val totalIndex = existingCount + index
-                        val col = totalIndex % columns
-                        val row = totalIndex / columns
-                        val centerX = placementOrigin.x + col * (columnWidth + imageSpacing) + columnWidth / 2f
-                        val centerY = placementOrigin.y + row * (displayH + imageSpacing) + displayH / 2f
 
                         sceneImageFromOriginalImport(
                             name = mainVm.queryDisplayName(uri) ?: "image_${totalIndex + 1}",
                             imported = importedImage,
-                            center = Offset(centerX, centerY),
+                            center = Offset.Zero,
                             zIndex = totalIndex,
                             displayWidth = columnWidth,
                         )
-                    }
+                    }.let { layoutDroppedImages(it, dropState, positionInWindow) }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 dragPermission?.release()
@@ -304,13 +286,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 return@launch
             }
             mainVm.recordUndoState()
-            // Snapshot the pre-import image list so the
-            // auto-arrange path below can decide between
-            // [executeAutoLayout] (empty → nice grid for the new
-            // images) and [fitToScreen] (populated → preserve
-            // the user's manual layout, just zoom out so the
-            // new ones are visible).
-            val preImportImages = mainVm._uiState.value.images
             val hasOpenPur = mainVm.currentSceneUri != null && mainVm.isImportedPurFile
             if (!hasOpenPur) {
                 mainVm.untitledCounter++
@@ -350,18 +325,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 }
             }
             mainVm.notifyContentChanged()
-            // First-import auto-arrange: when the scene was empty
-            // before this import, run [executeAutoLayout]. For a
-            // populated scene, arrange only this batch beside the
-            // existing content, including the active group.
-            if (preImportImages.isEmpty()) {
-                mainVm.batchController.executeAutoLayout()
-            } else {
-                mainVm.batchController.executeImportedAutoLayout(
-                    imported.mapTo(linkedSetOf()) { it.id },
-                )
-                mainVm.batchController.fitToScreen()
-            }
+            // Preserve release-point placement and the user's current view.
             mainVm.setBusy(false)
         }
     }
@@ -2084,15 +2048,16 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         mainVm._uiState.update { it.copy(pendingSaveSceneLaunch = false) }
     }
 
-    fun updateCanvasViewport(width: Float, height: Float) {
+    fun updateCanvasViewport(width: Float, height: Float, originInWindow: Offset? = null) {
         val safeWidth = width.coerceAtLeast(0f)
         val safeHeight = height.coerceAtLeast(0f)
         mainVm._uiState.update { state ->
             val current = state.canvasViewportSize
-            if (current.width == safeWidth && current.height == safeHeight) {
+            val origin = originInWindow ?: state.canvasOriginInWindow
+            if (current.width == safeWidth && current.height == safeHeight && state.canvasOriginInWindow == origin) {
                 state
             } else {
-                state.copy(canvasViewportSize = Size2D(safeWidth, safeHeight))
+                state.copy(canvasViewportSize = Size2D(safeWidth, safeHeight), canvasOriginInWindow = origin)
             }
         }
     }

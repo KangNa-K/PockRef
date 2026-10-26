@@ -171,10 +171,100 @@ class PurV2ParserInstrumentedTest {
         assertTrue("oversized note should keep a readable font size", note.fontSize > 0f)
     }
 
+    @Test
+    fun nativeNoteKeepsCenteredBoxAndItemTransform() {
+        val file = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "transformed_note.pur")
+        buildV2PurWithNote(file, 400.0, 200.0, transformed = true)
+        val codec = PurSceneCodec()
+        try {
+            val note = codec.readFromFile(file).markupTexts.single()
+            assertEquals(Offset(120f, -80f), note.position)
+            assertEquals(Size2D(800f, 400f), note.boxSize)
+            assertEquals(40f, note.fontSize, 0.001f)
+            assertEquals((Math.PI / 2).toFloat(), note.rotation, 0.001f)
+            assertEquals(0.4f, note.opacity, 0.001f)
+            assertTrue(note.locked)
+            assertEquals(7, note.zOrder)
+        } finally { codec.release(); file.delete() }
+    }
+
+    @Test
+    fun nativeNoteIncludesNestedParentTransforms() {
+        val file = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "grouped_note.pur")
+        buildV2PurWithNote(file, 400.0, 200.0, transformed = true, grouped = true)
+        val codec = PurSceneCodec()
+        try {
+            val note = codec.readFromFile(file).markupTexts.single()
+            assertEquals(Offset(670f, 660f), note.position)
+            assertEquals(Size2D(1600f, 800f), note.boxSize)
+            assertEquals(80f, note.fontSize, 0.001f)
+        } finally { codec.release(); file.delete() }
+    }
+
+    @Test
+    fun autoSizedNoteWithoutParentColumnKeepsTransformedLayout() {
+        val file = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "auto_sized_note.pur")
+        buildV2PurWithNote(file, -1.0, -1.0, transformed = true, hasParent = false)
+        val codec = PurSceneCodec()
+        try {
+            val note = codec.readFromFile(file).markupTexts.single()
+            assertEquals(Offset(120f, -80f), note.position)
+            assertEquals(40f, note.fontSize, 0.001f)
+            assertTrue(note.boxSize!!.width > 1f)
+            assertTrue(note.boxSize!!.height > 1f)
+        } finally { codec.release(); file.delete() }
+    }
+
+    @Test
+    fun fixedWidthWithAutomaticHeightKeepsWrappingAndScale() {
+        val file = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "fixed_width_note.pur")
+        buildV2PurWithNote(file, 40.0, -1.0, transformed = true)
+        val codec = PurSceneCodec()
+        try {
+            val note = codec.readFromFile(file).markupTexts.single()
+            assertEquals(Offset(120f, -80f), note.position)
+            assertEquals(80f, note.boxSize!!.width, 0.001f)
+            assertEquals(40f, note.fontSize, 0.001f)
+            assertTrue("Automatic height must include wrapped lines", note.boxSize!!.height > 80f)
+        } finally { codec.release(); file.delete() }
+    }
+
+    @Test
+    fun desktopReferenceNotesKeepNativeSizeWhenPathIsProvided() {
+        val path = InstrumentationRegistry.getArguments().getString("nativeNoteSizePath").orEmpty()
+        assumeTrue("Provide nativeNoteSizePath to check the desktop reference", path.isNotBlank())
+        val codec = PurSceneCodec()
+        try {
+            val notes = codec.readFromFile(File(path)).markupTexts
+            val note = notes.single { it.id == "pur-v2-note-44" }
+            val nativeScale = 34.97693646768842f
+            assertEquals(82f * nativeScale, note.boxSize!!.width, 0.01f)
+            assertEquals(22f * nativeScale, note.fontSize, 0.01f)
+            assertEquals(Offset(-10772.896f, -10667.966f), note.position)
+            assertTrue("WDAD must retain its two-line desktop layout", note.boxSize!!.height > note.fontSize * 2)
+        } finally { codec.release() }
+    }
+
+    @Test
+    fun automaticWidthWithFixedHeightKeepsHeightAndScale() {
+        val file = File(InstrumentationRegistry.getInstrumentation().targetContext.cacheDir, "fixed_height_note.pur")
+        buildV2PurWithNote(file, -1.0, 200.0, transformed = true)
+        val codec = PurSceneCodec()
+        try {
+            val note = codec.readFromFile(file).markupTexts.single()
+            assertEquals(400f, note.boxSize!!.height, 0.001f)
+            assertTrue(note.boxSize!!.width > 1f)
+            assertEquals(40f, note.fontSize, 0.001f)
+        } finally { codec.release(); file.delete() }
+    }
+
     private fun buildV2PurWithNote(
         purFile: File,
         noteWidth: Double,
         noteHeight: Double,
+        transformed: Boolean = false,
+        grouped: Boolean = false,
+        hasParent: Boolean = true,
     ) {
         val dbFile = File(purFile.parentFile, "oversized_v2_note.sqlite")
         dbFile.delete()
@@ -183,7 +273,8 @@ class PurV2ParserInstrumentedTest {
         val db = SQLiteDatabase.openOrCreateDatabase(dbFile, null)
         try {
             db.execSQL("CREATE TABLE metadata(last_load_path TEXT)")
-            db.execSQL("CREATE TABLE items(id INTEGER PRIMARY KEY, opacity REAL, z REAL, locked INTEGER, transform TEXT)")
+            val parentColumn = if (hasParent) ", parent INTEGER" else ""
+            db.execSQL("CREATE TABLE items(id INTEGER PRIMARY KEY, opacity REAL, z REAL, locked INTEGER, transform TEXT$parentColumn)")
             db.execSQL("CREATE TABLE images(id INTEGER PRIMARY KEY, width INTEGER, height INTEGER, format TEXT, data BLOB)")
             db.execSQL("CREATE TABLE items_images(id INTEGER PRIMARY KEY, image INTEGER, image_transform TEXT)")
             db.execSQL("CREATE TABLE items_notes(id INTEGER PRIMARY KEY, text TEXT, fixed_size TEXT, background_color TEXT)")
@@ -191,13 +282,25 @@ class PurV2ParserInstrumentedTest {
             db.execSQL("INSERT INTO metadata(last_load_path) VALUES('/tmp/oversized_v2_note.pur')")
             db.insert("items", null, ContentValues().apply {
                 put("id", 1L)
-                put("opacity", 1.0)
-                put("z", 1.0)
-                put("locked", 0)
+                put("opacity", if (transformed) 0.4 else 1.0)
+                put("z", if (transformed) 7.0 else 1.0)
+                put("locked", if (transformed) 1 else 0)
+                if (hasParent) put("parent", if (grouped) 2L else -1L)
+                if (transformed) put("transform", v2TransformPayload(0.0, 2.0, -2.0, 0.0, 120.0, -80.0))
             })
+            if (grouped) {
+                db.insertOrThrow("items", null, ContentValues().apply {
+                    put("id", 2L); put("parent", 3L)
+                    put("transform", v2TransformPayload(2.0, 0.0, 0.0, 2.0, 30.0, 40.0))
+                })
+                db.insertOrThrow("items", null, ContentValues().apply {
+                    put("id", 3L); put("parent", -1L)
+                    put("transform", v2TransformPayload(1.0, 0.0, 0.0, 1.0, 400.0, 780.0))
+                })
+            }
             db.insert("items_notes", null, ContentValues().apply {
                 put("id", 1L)
-                put("text", "Large note")
+                put("text", if (transformed) "<p style=\"font-size:20px\">Large note</p>" else "Large note")
                 put("fixed_size", v2SizePayload(noteWidth, noteHeight).toByteString())
                 put("background_color", "#FFFFFFFF")
             })
@@ -233,6 +336,12 @@ class PurV2ParserInstrumentedTest {
             position(5)
             putDouble(width)
             putDouble(height)
+        }.array()
+
+    private fun v2TransformPayload(a: Double, b: Double, c: Double, d: Double, x: Double, y: Double): ByteArray =
+        ByteBuffer.allocate(77).order(ByteOrder.BIG_ENDIAN).apply {
+            position(5)
+            listOf(a, b, 0.0, c, d, 0.0, x, y, 1.0).forEach { putDouble(it) }
         }.array()
 
     private fun ByteArray.toByteString(): String =

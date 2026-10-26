@@ -130,6 +130,7 @@ data class CanvasMarkupText(
     val zOrder: Int = 0,
     val boxSize: Size2D? = null,
     val sourceJson: String? = null,
+    val textPadding: Float = 0f,
 )
 
 /**
@@ -1091,6 +1092,7 @@ data class PockRefUiState(
     val canvasScale: Float = 1f,
     val canvasOffset: Offset = Offset.Zero,
     val canvasViewportSize: Size2D = Size2D(0f, 0f),
+    val canvasOriginInWindow: Offset = Offset.Zero,
     val transientDragImageIds: Set<String> = emptySet(),
     val transientDragDelta: Offset = Offset.Zero,
     val isBusy: Boolean = false,

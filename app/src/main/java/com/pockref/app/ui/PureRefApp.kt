@@ -234,6 +234,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.Brush
@@ -2446,6 +2447,7 @@ fun PockRefApp(
                     androidx.compose.ui.platform.LocalContext.current,
                 )
                 PracticeConfigSheet(
+                    topInset = statusBarTopDp + Dimens.CornerInset,
                     // V_NOW (2026-06-10, "全局锁定/
                     // 冻结模式只显示全局锁定按钮"):
                     // mask the practice config
@@ -6979,6 +6981,13 @@ private fun PockRefCanvas(
             modifier = Modifier
             .fillMaxSize()
             .background(state.backgroundColor)
+            .onGloballyPositioned { coordinates ->
+                onAction(PockRefAction.UpdateCanvasViewport(
+                    coordinates.size.width.toFloat(),
+                    coordinates.size.height.toFloat(),
+                    coordinates.positionInWindow(),
+                ))
+            }
             .onSizeChanged { canvasSize ->
                 localCanvasSize = Size(
                     canvasSize.width.toFloat(),

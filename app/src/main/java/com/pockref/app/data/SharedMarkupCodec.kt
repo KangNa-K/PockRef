@@ -63,7 +63,8 @@ internal object SharedMarkupCodec {
                 require(item.optString("text", "").length <= 1_000_000) { "文本长度超出安全限制" }
                 texts += CanvasMarkupText(id, item.optString("text", ""),
                     origin + (size ?: Offset.Zero) / 2f, color, font, rotation, opacity, locked, order,
-                    size?.let { Size2D(it.x.coerceAtLeast(0f), it.y.coerceAtLeast(0f)) }, item.toString())
+                    size?.let { Size2D(it.x.coerceAtLeast(0f), it.y.coerceAtLeast(0f)) }, item.toString(),
+                    finite(item, "textPadding", 0.0).coerceAtLeast(0f))
             } else {
                 val width = finite(item, "lineWidth", 4.0)
                 require(width in 0.01f..10000f) { "标记线宽超出安全限制" }
@@ -108,6 +109,7 @@ internal object SharedMarkupCodec {
             item.put("points", points(listOf(origin, origin + Offset(size.width, size.height))))
                 .put("bounds", JSONArray().put(point(origin)).put(point(Offset(size.width, size.height))))
                 .put("text", text.text).put("textFontSize", text.fontSize).put("lineWidth", 0)
+                .put("textPadding", text.textPadding)
             item
         }).sortedBy { it.getInt("zOrder") }
         result.put("items", JSONArray(items))

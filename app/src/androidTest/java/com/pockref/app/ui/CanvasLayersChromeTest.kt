@@ -1,9 +1,13 @@
 package com.pockref.app.ui
 
+import android.app.Application
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.ViewModelStore
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
@@ -25,6 +29,7 @@ import com.pockref.app.model.SceneImage
 import com.pockref.app.model.Size2D
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 
@@ -147,7 +152,7 @@ class CanvasLayersChromeTest {
     }
 
     @Test
-    fun doubleClickSelectsAndFocusesOnlyTheTappedLayer() {
+    fun doubleClickSelectsAndTogglesFocusForTheTappedLayer() {
         val actions = mutableListOf<PockRefAction>()
         val state = mutableStateOf(PockRefUiState(
             images = listOf(
@@ -169,9 +174,72 @@ class CanvasLayersChromeTest {
         }
         row.performTouchInput { doubleClick() }
         composeRule.runOnIdle {
-            assertEquals(listOf(PockRefAction.SelectImage("lower")), actions)
+            assertEquals(listOf(PockRefAction.SelectImage("lower"),
+                PockRefAction.FitImageToScreen("lower")), actions)
+            actions.clear()
+            state.value = state.value.copy(fittedImageId = null)
+        }
+        row.performTouchInput { doubleClick() }
+        composeRule.runOnIdle {
+            assertEquals(listOf(PockRefAction.SelectImage("lower"),
+                PockRefAction.FitImageToScreen("lower")), actions)
+            actions.clear()
+            state.value = state.value.copy(fittedImageId = "lower")
+        }
+        composeRule.onNodeWithContentDescription("图层 1：顶层")
+            .performTouchInput { doubleClick() }
+        composeRule.runOnIdle {
+            assertEquals(listOf(PockRefAction.SelectImage("upper"),
+                PockRefAction.FitImageToScreen("upper")), actions)
         }
         composeRule.onNodeWithContentDescription("关闭图层窗口").assertDoesNotExist()
+    }
+
+    @Test
+    fun repeatedLayerDoubleClicksRestoreTheOriginalViewport() {
+        val initial = PockRefUiState(
+            images = listOf(image("reference", "参考图", 1)),
+            canvasViewportSize = Size2D(1200f, 800f),
+            canvasScale = 1.25f,
+            canvasOffset = Offset(120f, -80f),
+        )
+        val store = ViewModelStore()
+        lateinit var vm: PockRefViewModel
+        composeRule.runOnIdle {
+            val application = InstrumentationRegistry.getInstrumentation()
+                .targetContext.applicationContext as Application
+            vm = PockRefViewModel(application)
+            store.put("layer-focus", vm)
+            vm._uiState.value = initial
+        }
+        try {
+            composeRule.setContent {
+                val state = vm.uiState.collectAsState()
+                Box(Modifier.fillMaxSize()) {
+                    CanvasLayersChrome(state.value, vm::onAction, null)
+                }
+            }
+            composeRule.onNodeWithContentDescription("打开图层窗口").performClick()
+            val row = composeRule.onNodeWithContentDescription("图层 1：参考图")
+            repeat(2) {
+                row.performTouchInput { doubleClick() }
+                composeRule.runOnIdle {
+                    assertEquals("reference", vm.uiState.value.fittedImageId)
+                    assertEquals(8f, vm.uiState.value.canvasScale, 0f)
+                    assertEquals(0f, vm.uiState.value.canvasOffset.x, 0f)
+                    assertEquals(0f, vm.uiState.value.canvasOffset.y, 0f)
+                }
+                row.performTouchInput { doubleClick() }
+                composeRule.runOnIdle {
+                    assertNull(vm.uiState.value.fittedImageId)
+                    assertEquals(initial.canvasScale, vm.uiState.value.canvasScale, 0f)
+                    assertEquals(initial.canvasOffset, vm.uiState.value.canvasOffset)
+                    assertEquals(initial.images, vm.uiState.value.images)
+                }
+            }
+        } finally {
+            composeRule.runOnIdle { store.clear() }
+        }
     }
 
     @Test

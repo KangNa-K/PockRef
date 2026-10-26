@@ -6,6 +6,19 @@ import org.junit.Test
 
 class PureRefNoteTextTest {
     @Test
+    fun nativeFontSizeUsesPixelsAndConvertsPoints() {
+        assertEquals(20f, pureRefNoteFontSize("<p style='font-size:20px'>Text</p>"), 0.001f)
+        assertEquals(32f, pureRefNoteFontSize("<p style='font-size:24pt'>Text</p>"), 0.001f)
+        assertEquals(16f, pureRefNoteFontSize("Text"), 0.001f)
+        assertEquals(16f, pureRefNoteFontSize("<p style='font-size:0px'>Text</p>"), 0.001f)
+    }
+
+    @Test
+    fun qtContentFontOverridesDefaultBodyFont() {
+        assertEquals(40f, pureRefNoteFontSize("<body style='font-size:9pt'><p><span style='font-size:30pt'>Text</span></p></body>"), 0.001f)
+    }
+
+    @Test
     fun pureRefNotePlainTextStripsQtCssAndHtml() {
         val raw = """
             <html><head><style>

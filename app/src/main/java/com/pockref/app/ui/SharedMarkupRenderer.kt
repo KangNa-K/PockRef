@@ -47,15 +47,18 @@ internal object SharedMarkupRenderer {
             alpha = (alpha * text.opacity.coerceIn(0f,1f)).toInt()
             textSize = text.fontSize
         }
-        val width = (text.boxSize?.width ?: text.text.lines().maxOf { paint.measureText(it) })
+        val padding = text.textPadding.coerceAtLeast(0f)
+        val width = (text.boxSize?.width ?: (text.text.lines().maxOf { paint.measureText(it) } + padding * 2))
             .coerceIn(1f, 100_000f).toInt().coerceAtLeast(1)
-        val layout = StaticLayout.Builder.obtain(text.text,0,text.text.length,paint,width)
+        val contentWidth = (width - padding * 2).toInt().coerceAtLeast(1)
+        val layout = StaticLayout.Builder.obtain(text.text,0,text.text.length,paint,contentWidth)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).build()
         val save = canvas.save()
         try {
             canvas.translate(text.position.x,text.position.y)
             canvas.rotate(Math.toDegrees(text.rotation.toDouble()).toFloat())
-            canvas.translate(-width/2f, -(text.boxSize?.height ?: layout.height.toFloat())/2f)
+            canvas.translate(-width/2f, -(text.boxSize?.height ?: (layout.height + padding * 2))/2f)
+            canvas.translate(padding, padding)
             layout.draw(canvas)
         } finally { canvas.restoreToCount(save) }
     }
