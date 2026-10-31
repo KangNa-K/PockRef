@@ -9,6 +9,7 @@ import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.graphics.createBitmap
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.ColorAdjust
@@ -430,7 +431,7 @@ class PurSceneCodec {
         val height = maxOf(1, ceil(worldHeight * density).toInt())
 
         return try {
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val bitmap = createBitmap(width, height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
             val factor = density
             canvas.scale(factor,factor)

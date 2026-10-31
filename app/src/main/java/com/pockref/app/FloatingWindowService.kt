@@ -71,6 +71,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -451,12 +452,12 @@ class FloatingWindowService : Service() {
         val params = layoutParams ?: return
         update(params, resources.displayMetrics)
         windowManager.updateViewLayout(view, params)
-        preferences().edit()
-            .putInt(KEY_WIDTH, params.width)
-            .putInt(KEY_HEIGHT, params.height)
-            .putInt(KEY_X, params.x)
-            .putInt(KEY_Y, params.y)
-            .apply()
+        preferences().edit {
+            putInt(KEY_WIDTH, params.width)
+            putInt(KEY_HEIGHT, params.height)
+            putInt(KEY_X, params.x)
+            putInt(KEY_Y, params.y)
+        }
     }
 
     private fun restoreFullScreen() {
@@ -477,7 +478,10 @@ class FloatingWindowService : Service() {
     private fun minimizeToBubble() {
         val view = overlayView ?: return
         val params = layoutParams ?: return
-        preferences().edit().putInt(KEY_X, params.x).putInt(KEY_Y, params.y).apply()
+        preferences().edit {
+            putInt(KEY_X, params.x)
+            putInt(KEY_Y, params.y)
+        }
         windowManager.removeViewImmediate(view)
         overlayView = null
         overlayOwner?.destroy()
@@ -530,6 +534,8 @@ class FloatingWindowService : Service() {
             // Taps arrive via BubbleTouchListener -> performClick(); TalkBack's
             // click action reaches this listener directly.
             setOnClickListener { restoreFromBubble() }
+            // Lint cannot see that BubbleTouchListener calls performClick() on tap.
+            @Suppress("ClickableViewAccessibility")
             setOnTouchListener(BubbleTouchListener(params))
         }
         bubbleView = bubble
@@ -606,7 +612,10 @@ class FloatingWindowService : Service() {
         val topInset = statusBarInsetPx()
         params.y = params.y.coerceIn(topInset, (metrics.heightPixels - params.height).coerceAtLeast(topInset))
         windowManager.updateViewLayout(view, params)
-        preferences().edit().putInt(KEY_BUBBLE_X, params.x).putInt(KEY_BUBBLE_Y, params.y).apply()
+        preferences().edit {
+            putInt(KEY_BUBBLE_X, params.x)
+            putInt(KEY_BUBBLE_Y, params.y)
+        }
     }
 
     private fun statusBarInsetPx(): Int {

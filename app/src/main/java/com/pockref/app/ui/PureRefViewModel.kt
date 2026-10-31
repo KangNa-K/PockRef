@@ -11,6 +11,8 @@ import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.AppPreferences
@@ -877,7 +879,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.OpenSceneFromPicker -> openSceneFromPicker(action.uri)
             is PockRefAction.SaveScene -> sceneController.saveScene(action.uri)
             is PockRefAction.OpenRecentScene -> sceneController.loadScene(
-                Uri.parse(action.uri),
+                action.uri.toUri(),
                 dropRecentOnFailure = true,
             )
             is PockRefAction.RemoveRecentScene -> removeRecentScene(action.uri)
@@ -2237,7 +2239,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         if (oldUri != null && oldUri != newUri) {
             runCatching {
                 contentResolver.releasePersistableUriPermission(
-                    Uri.parse(oldUri),
+                    oldUri.toUri(),
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
                         android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                 )
@@ -2758,18 +2760,20 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             add(normalized)
             addAll(_uiState.value.recentScenes.filterNot { it.uri == normalized.uri }.take(19))
         }
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
+        prefs.edit {
+            putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                listOf(
+                    it.uri,
+                    it.label.replace("|", "/"),
+                    it.source,
+                    it.timestamp.toString(),
+                    it.filePath.replace("|", "/"),
+                    it.fileSize.toString(),
+                    if (it.pinned) "1" else "0",
+                    it.coverImageId.orEmpty(),
+                ).joinToString("|")
+            })
+        }
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
@@ -2783,7 +2787,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             return
         }
         if (_uiState.value.recentScenes.none { it.uri == uri }) return
-        val renamed = renameUnderlyingFile(Uri.parse(uri), "$label.pur")
+        val renamed = renameUnderlyingFile(uri.toUri(), "$label.pur")
         if (renamed == null) {
             reportError("重命名失败，文件可能已存在或存储位置不支持重命名")
             return
@@ -2802,18 +2806,20 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it
             }
         }
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
+        prefs.edit {
+            putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                listOf(
+                    it.uri,
+                    it.label.replace("|", "/"),
+                    it.source,
+                    it.timestamp.toString(),
+                    it.filePath.replace("|", "/"),
+                    it.fileSize.toString(),
+                    if (it.pinned) "1" else "0",
+                    it.coverImageId.orEmpty(),
+                ).joinToString("|")
+            })
+        }
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
@@ -2944,18 +2950,20 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         val updated = _uiState.value.recentScenes.map {
             if (it.uri == uri) it.copy(pinned = !it.pinned) else it
         }
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
+        prefs.edit {
+            putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                listOf(
+                    it.uri,
+                    it.label.replace("|", "/"),
+                    it.source,
+                    it.timestamp.toString(),
+                    it.filePath.replace("|", "/"),
+                    it.fileSize.toString(),
+                    if (it.pinned) "1" else "0",
+                    it.coverImageId.orEmpty(),
+                ).joinToString("|")
+            })
+        }
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
@@ -2993,18 +3001,20 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
      * writes it as a single atomic `apply()`.
      */
     private fun persistRecentScenes(updated: List<RecentSceneEntry>) {
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
+        prefs.edit {
+            putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                listOf(
+                    it.uri,
+                    it.label.replace("|", "/"),
+                    it.source,
+                    it.timestamp.toString(),
+                    it.filePath.replace("|", "/"),
+                    it.fileSize.toString(),
+                    if (it.pinned) "1" else "0",
+                    it.coverImageId.orEmpty(),
+                ).joinToString("|")
+            })
+        }
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
@@ -3209,18 +3219,20 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     updated.map { it.uri }.toSet(),
                 )
                 val newMultiSelectMode = current.recentMultiSelectMode && updated.isNotEmpty()
-                prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-                    listOf(
-                        it.uri,
-                        it.label.replace("|", "/"),
-                        it.source,
-                        it.timestamp.toString(),
-                        it.filePath.replace("|", "/"),
-                        it.fileSize.toString(),
-                        if (it.pinned) "1" else "0",
-                        it.coverImageId.orEmpty(),
-                    ).joinToString("|")
-                }).apply()
+                prefs.edit {
+                    putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                        listOf(
+                            it.uri,
+                            it.label.replace("|", "/"),
+                            it.source,
+                            it.timestamp.toString(),
+                            it.filePath.replace("|", "/"),
+                            it.fileSize.toString(),
+                            if (it.pinned) "1" else "0",
+                            it.coverImageId.orEmpty(),
+                        ).joinToString("|")
+                    })
+                }
                 _uiState.update {
                     it.copy(
                         recentScenes = updated,
@@ -3308,7 +3320,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         val deleted = mutableSetOf<String>()
         val failed = mutableSetOf<String>()
         uris.forEach { uriString ->
-            val uri = Uri.parse(uriString)
+            val uri = uriString.toUri()
             try {
                 DocumentsContract.deleteDocument(contentResolver, uri)
                 deleted.add(uriString)
@@ -3473,15 +3485,15 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     val numericId = documentId.substringAfter(':').toLongOrNull()
                     if (numericId != null) {
                         candidates += ContentUris.withAppendedId(
-                            Uri.parse("content://downloads/public_downloads"),
+                            "content://downloads/public_downloads".toUri(),
                             numericId,
                         )
                         candidates += ContentUris.withAppendedId(
-                            Uri.parse("content://downloads/my_downloads"),
+                            "content://downloads/my_downloads".toUri(),
                             numericId,
                         )
                         candidates += ContentUris.withAppendedId(
-                            Uri.parse("content://downloads/all_downloads"),
+                            "content://downloads/all_downloads".toUri(),
                             numericId,
                         )
                         candidates += ContentUris.withAppendedId(

@@ -7,6 +7,7 @@ import android.graphics.ImageDecoder
 import android.graphics.Rect
 import android.os.Build
 import android.util.Log
+import androidx.core.graphics.scale
 import com.pockref.app.model.SceneImage
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -476,7 +477,7 @@ class SceneImageDecoder(
             val scale = targetSide.toFloat() / longSide.toFloat()
             val newW = (decoded.width * scale).toInt().coerceAtLeast(1)
             val newH = (decoded.height * scale).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(decoded, newW, newH, true).also {
+            decoded.scale(newW, newH, filter = true).also {
                 if (it !== decoded) decoded.recycle()
             }
         } else {
@@ -626,7 +627,7 @@ class SceneImageDecoder(
             val scale = targetLongEdge.toFloat() / longSide.toFloat()
             val newW = (decoded.width * scale).toInt().coerceAtLeast(1)
             val newH = (decoded.height * scale).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(decoded, newW, newH, true).also {
+            decoded.scale(newW, newH, filter = true).also {
                 if (it !== decoded) decoded.recycle()
             }
         } else {

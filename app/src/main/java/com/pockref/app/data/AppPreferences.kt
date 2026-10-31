@@ -2,6 +2,7 @@ package com.pockref.app.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import com.pockref.app.model.BackgroundPreset
 import com.pockref.app.spen.SpenMode
 
@@ -33,13 +34,13 @@ class AppPreferences(context: Context) {
             if (value == BackgroundPreset.Custom) {
                 return
             }
-            prefs.edit().putString(KEY_DEFAULT_BG_PRESET, value.name).apply()
+            prefs.edit { putString(KEY_DEFAULT_BG_PRESET, value.name) }
         }
 
     var frostedGlassEnabled: Boolean
         get() = prefs.getBoolean(KEY_FROSTED_GLASS_ENABLED, true)
         set(value) {
-            prefs.edit().putBoolean(KEY_FROSTED_GLASS_ENABLED, value).apply()
+            prefs.edit { putBoolean(KEY_FROSTED_GLASS_ENABLED, value) }
         }
 
     var themeMode: ThemeMode
@@ -49,7 +50,7 @@ class AppPreferences(context: Context) {
                 .getOrDefault(ThemeMode.LIGHT)
         }
         set(value) {
-            prefs.edit().putString(KEY_THEME_MODE, value.name).apply()
+            prefs.edit { putString(KEY_THEME_MODE, value.name) }
         }
 
     /**
@@ -62,7 +63,7 @@ class AppPreferences(context: Context) {
     var edgeSnapEnabled: Boolean
         get() = prefs.getBoolean(KEY_EDGE_SNAP_ENABLED, true)
         set(value) {
-            prefs.edit().putBoolean(KEY_EDGE_SNAP_ENABLED, value).apply()
+            prefs.edit { putBoolean(KEY_EDGE_SNAP_ENABLED, value) }
         }
 
     /**
@@ -74,7 +75,7 @@ class AppPreferences(context: Context) {
     var rotationSnapEnabled: Boolean
         get() = prefs.getBoolean(KEY_ROTATION_SNAP_ENABLED, true)
         set(value) {
-            prefs.edit().putBoolean(KEY_ROTATION_SNAP_ENABLED, value).apply()
+            prefs.edit { putBoolean(KEY_ROTATION_SNAP_ENABLED, value) }
         }
 
     /**
@@ -93,13 +94,13 @@ class AppPreferences(context: Context) {
     var disabledGestureIds: Set<String>
         get() = prefs.getStringSet(KEY_DISABLED_GESTURE_IDS, emptySet()) ?: emptySet()
         set(value) {
-            prefs.edit().putStringSet(KEY_DISABLED_GESTURE_IDS, value).apply()
+            prefs.edit { putStringSet(KEY_DISABLED_GESTURE_IDS, value) }
         }
 
     var singleFingerCanvasPanEnabled: Boolean
         get() = prefs.getBoolean(KEY_SINGLE_FINGER_CANVAS_PAN_ENABLED, false)
         set(value) {
-            prefs.edit().putBoolean(KEY_SINGLE_FINGER_CANVAS_PAN_ENABLED, value).apply()
+            prefs.edit { putBoolean(KEY_SINGLE_FINGER_CANVAS_PAN_ENABLED, value) }
         }
 
     /**
@@ -147,7 +148,7 @@ class AppPreferences(context: Context) {
                 .getOrDefault(SpenMode.DOUBLE_TAP)
         }
         set(value) {
-            prefs.edit().putString(KEY_SPEN_MODE, value.name).apply()
+            prefs.edit { putString(KEY_SPEN_MODE, value.name) }
         }
 
     /**
@@ -176,7 +177,7 @@ class AppPreferences(context: Context) {
             com.pockref.app.data.AutoSaveManager.DEFAULT_INTERVAL_MS,
         )
         set(value) {
-            prefs.edit().putLong(KEY_AUTO_SAVE_INTERVAL_MS, value).apply()
+            prefs.edit { putLong(KEY_AUTO_SAVE_INTERVAL_MS, value) }
         }
 
     /**
@@ -199,7 +200,7 @@ class AppPreferences(context: Context) {
     var autoSaveEnabled: Boolean
         get() = prefs.getBoolean(KEY_AUTO_SAVE_ENABLED, true)
         set(value) {
-            prefs.edit().putBoolean(KEY_AUTO_SAVE_ENABLED, value).apply()
+            prefs.edit { putBoolean(KEY_AUTO_SAVE_ENABLED, value) }
         }
 
     /**
@@ -212,15 +213,15 @@ class AppPreferences(context: Context) {
             // Downloads-only switch. Migrate that obsolete setting once so
             // the new opt-in custom-directory behavior starts disabled.
             if (!prefs.getBoolean(KEY_DEFAULT_SAVE_PATH_MIGRATION_DONE, false)) {
-                prefs.edit()
-                    .remove(KEY_DEFAULT_SAVE_PATH_ENABLED)
-                    .putBoolean(KEY_DEFAULT_SAVE_PATH_MIGRATION_DONE, true)
-                    .apply()
+                prefs.edit {
+                    remove(KEY_DEFAULT_SAVE_PATH_ENABLED)
+                    putBoolean(KEY_DEFAULT_SAVE_PATH_MIGRATION_DONE, true)
+                }
             }
             return prefs.getBoolean(KEY_DEFAULT_SAVE_PATH_ENABLED, false)
         }
         set(value) {
-            prefs.edit().putBoolean(KEY_DEFAULT_SAVE_PATH_ENABLED, value).apply()
+            prefs.edit { putBoolean(KEY_DEFAULT_SAVE_PATH_ENABLED, value) }
         }
 
     /**
@@ -232,26 +233,26 @@ class AppPreferences(context: Context) {
     var defaultSaveDirectoryUri: String?
         get() = prefs.getString(KEY_DEFAULT_SAVE_DIRECTORY_URI, null)
         set(value) {
-            prefs.edit().apply {
+            prefs.edit {
                 if (value.isNullOrBlank()) {
                     remove(KEY_DEFAULT_SAVE_DIRECTORY_URI)
                 } else {
                     putString(KEY_DEFAULT_SAVE_DIRECTORY_URI, value)
                 }
-            }.apply()
+            }
         }
 
     /** Display name cached from the selected tree for the settings summary. */
     var defaultSaveDirectoryName: String?
         get() = prefs.getString(KEY_DEFAULT_SAVE_DIRECTORY_NAME, null)
         set(value) {
-            prefs.edit().apply {
+            prefs.edit {
                 if (value.isNullOrBlank()) {
                     remove(KEY_DEFAULT_SAVE_DIRECTORY_NAME)
                 } else {
                     putString(KEY_DEFAULT_SAVE_DIRECTORY_NAME, value)
                 }
-            }.apply()
+            }
         }
 
     /**
@@ -268,12 +269,12 @@ class AppPreferences(context: Context) {
     var minimapPositionX: Float
         get() = prefs.getFloat(KEY_MINIMAP_POSITION_X, Float.NaN)
         set(value) {
-            prefs.edit().putFloat(KEY_MINIMAP_POSITION_X, value).apply()
+            prefs.edit { putFloat(KEY_MINIMAP_POSITION_X, value) }
         }
     var minimapPositionY: Float
         get() = prefs.getFloat(KEY_MINIMAP_POSITION_Y, Float.NaN)
         set(value) {
-            prefs.edit().putFloat(KEY_MINIMAP_POSITION_Y, value).apply()
+            prefs.edit { putFloat(KEY_MINIMAP_POSITION_Y, value) }
         }
 
     /**
@@ -291,7 +292,7 @@ class AppPreferences(context: Context) {
                 .getOrDefault(com.pockref.app.model.MinimapDockEdge.NONE)
         }
         set(value) {
-            prefs.edit().putString(KEY_MINIMAP_DOCK_EDGE, value.name).apply()
+            prefs.edit { putString(KEY_MINIMAP_DOCK_EDGE, value.name) }
         }
 
     /**
@@ -306,7 +307,7 @@ class AppPreferences(context: Context) {
     var minimapCollapsed: Boolean
         get() = prefs.getBoolean(KEY_MINIMAP_COLLAPSED, true)
         set(value) {
-            prefs.edit().putBoolean(KEY_MINIMAP_COLLAPSED, value).apply()
+            prefs.edit { putBoolean(KEY_MINIMAP_COLLAPSED, value) }
         }
 
     /**
@@ -320,7 +321,7 @@ class AppPreferences(context: Context) {
     var minimapZoomScale: Float
         get() = prefs.getFloat(KEY_MINIMAP_ZOOM_SCALE, 1f).coerceIn(0.5f, 2.0f)
         set(value) {
-            prefs.edit().putFloat(KEY_MINIMAP_ZOOM_SCALE, value.coerceIn(0.5f, 2.0f)).apply()
+            prefs.edit { putFloat(KEY_MINIMAP_ZOOM_SCALE, value.coerceIn(0.5f, 2.0f)) }
         }
 
     /**
@@ -342,7 +343,7 @@ class AppPreferences(context: Context) {
     var globalImageLock: Boolean
  get() = prefs.getBoolean(KEY_GLOBAL_IMAGE_LOCK, false)
  set(value) {
- prefs.edit().putBoolean(KEY_GLOBAL_IMAGE_LOCK, value).apply()
+ prefs.edit { putBoolean(KEY_GLOBAL_IMAGE_LOCK, value) }
  }
 
  /**
@@ -357,7 +358,7 @@ class AppPreferences(context: Context) {
  var lockCanvasFrozen: Boolean
  get() = prefs.getBoolean(KEY_LOCK_CANVAS_FROZEN, false)
  set(value) {
- prefs.edit().putBoolean(KEY_LOCK_CANVAS_FROZEN, value).apply()
+ prefs.edit { putBoolean(KEY_LOCK_CANVAS_FROZEN, value) }
  }
 
     /**
@@ -442,30 +443,30 @@ class AppPreferences(context: Context) {
             )
         }
         set(value) {
-            val editor = prefs.edit()
-            if (value == null) {
-                editor.remove(KEY_LAST_PRACTICE_DURATION_MS)
-                editor.remove(KEY_LAST_REST_DURATION_MS)
-                editor.remove(KEY_LAST_PRACTICE_SHUFFLE)
-                editor.remove(KEY_LAST_PRACTICE_RESET_TIMER_ON_IMAGE_CHANGE)
-                // V_NOW (2026-06-08 user feedback "去掉倒计时提示音的功能"):
-                // [KEY_LAST_PRACTICE_SOUND] is no longer written
-                // here — the field is gone from [PracticeConfig]
-                // entirely. Existing on-disk entries with this key
-                // are simply ignored on the next read (the getter
-                // doesn't read the key), and the next `set(null)`
-                // or first config save will leave it orphaned but
-                // harmless. No explicit migration needed.
-            } else {
-                editor.putLong(KEY_LAST_PRACTICE_DURATION_MS, value.practiceDurationMs)
-                editor.putLong(KEY_LAST_REST_DURATION_MS, value.restDurationMs)
-                editor.putBoolean(KEY_LAST_PRACTICE_SHUFFLE, value.shuffle)
-                editor.putBoolean(
-                    KEY_LAST_PRACTICE_RESET_TIMER_ON_IMAGE_CHANGE,
-                    value.resetTimerOnImageChange,
-                )
+            prefs.edit {
+                if (value == null) {
+                    remove(KEY_LAST_PRACTICE_DURATION_MS)
+                    remove(KEY_LAST_REST_DURATION_MS)
+                    remove(KEY_LAST_PRACTICE_SHUFFLE)
+                    remove(KEY_LAST_PRACTICE_RESET_TIMER_ON_IMAGE_CHANGE)
+                    // V_NOW (2026-06-08 user feedback "去掉倒计时提示音的功能"):
+                    // [KEY_LAST_PRACTICE_SOUND] is no longer written
+                    // here — the field is gone from [PracticeConfig]
+                    // entirely. Existing on-disk entries with this key
+                    // are simply ignored on the next read (the getter
+                    // doesn't read the key), and the next `set(null)`
+                    // or first config save will leave it orphaned but
+                    // harmless. No explicit migration needed.
+                } else {
+                    putLong(KEY_LAST_PRACTICE_DURATION_MS, value.practiceDurationMs)
+                    putLong(KEY_LAST_REST_DURATION_MS, value.restDurationMs)
+                    putBoolean(KEY_LAST_PRACTICE_SHUFFLE, value.shuffle)
+                    putBoolean(
+                        KEY_LAST_PRACTICE_RESET_TIMER_ON_IMAGE_CHANGE,
+                        value.resetTimerOnImageChange,
+                    )
+                }
             }
-            editor.apply()
         }
 
     /**
@@ -481,7 +482,7 @@ class AppPreferences(context: Context) {
                 .getOrDefault(com.pockref.app.model.MinimapDisplayMode.MINIMAP)
         }
         set(value) {
-            prefs.edit().putString(KEY_MINIMAP_DISPLAY_MODE, value.name).apply()
+            prefs.edit { putString(KEY_MINIMAP_DISPLAY_MODE, value.name) }
         }
 
     /**
@@ -497,7 +498,7 @@ class AppPreferences(context: Context) {
                 .getOrDefault(com.pockref.app.model.MinimapSliderOrientation.VERTICAL)
         }
         set(value) {
-            prefs.edit().putString(KEY_MINIMAP_SLIDER_ORIENTATION, value.name).apply()
+            prefs.edit { putString(KEY_MINIMAP_SLIDER_ORIENTATION, value.name) }
         }
 
     // V_NOW (2026-06-16 user feedback "去掉设置里的启动

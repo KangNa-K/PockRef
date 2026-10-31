@@ -2,6 +2,7 @@ package com.pockref.app.update
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,12 +75,12 @@ class AppUpdateController internal constructor(
                                 noticeVisible = shouldNotify(manifest))
                         }
                     } else {
-                        prefs.edit().remove("manifest").apply()
+                        prefs.edit { remove("manifest") }
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
-                    prefs.edit().remove("manifest").apply()
+                    prefs.edit { remove("manifest") }
                 } finally {
                     _state.update { it.copy(checking = false) }
                 }
@@ -101,13 +102,13 @@ class AppUpdateController internal constructor(
             _state.update { it.copy(noticeVisible = it.manifest?.let(::shouldNotify) == true) }
             return
         }
-        prefs.edit().putLong("last_check", now).apply()
+        prefs.edit { putLong("last_check", now) }
         _state.update { it.copy(checking = true, message = null) }
         job = scope.launch {
             try {
                 when (val result = backend.check()) {
                     UpdateCheckResult.UpToDate -> {
-                        prefs.edit().remove("manifest").apply()
+                        prefs.edit { remove("manifest") }
                         _state.value = AppUpdateUiState(message = if (manual) "已是最新版本" else null)
                     }
                     is UpdateCheckResult.Available -> {
@@ -116,7 +117,7 @@ class AppUpdateController internal constructor(
                             .put("versionName", manifest.versionName).put("apkUrl", manifest.apkUrl)
                             .put("sha256", manifest.sha256).put("size", manifest.size)
                             .put("notes", manifest.notes).put("releaseUrl", manifest.releaseUrl)
-                        prefs.edit().putString("manifest", json.toString()).apply()
+                        prefs.edit { putString("manifest", json.toString()) }
                         val apk = backend.cached(result.manifest)
                         _state.value = _state.value.copy(
                             checking = false,
@@ -126,7 +127,7 @@ class AppUpdateController internal constructor(
                         )
                     }
                 }
-                prefs.edit().putLong("last_check", System.currentTimeMillis()).apply()
+                prefs.edit { putLong("last_check", System.currentTimeMillis()) }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -224,14 +225,16 @@ class AppUpdateController internal constructor(
     }
 
     fun ignoreCurrentVersion() {
-        _state.value.manifest?.let { prefs.edit().putInt("ignored_code", it.versionCode).apply() }
+        _state.value.manifest?.let { prefs.edit { putInt("ignored_code", it.versionCode) } }
         _state.update { it.copy(noticeVisible = false) }
     }
 
     fun later() {
         _state.value.manifest?.let {
-            prefs.edit().putInt("snoozed_code", it.versionCode)
-                .putLong("snoozed_until", System.currentTimeMillis() + UpdateReminderPolicy.SNOOZE_MS).apply()
+            prefs.edit {
+                putInt("snoozed_code", it.versionCode)
+                putLong("snoozed_until", System.currentTimeMillis() + UpdateReminderPolicy.SNOOZE_MS)
+            }
         }
         _state.update { it.copy(noticeVisible = false) }
     }

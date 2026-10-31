@@ -9,6 +9,9 @@ import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.withSave
+import androidx.core.net.toUri
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.ImageOptimizer
 import com.pockref.app.data.ImageTileKey
@@ -116,7 +119,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             // an image address as text" case.
             val uri = item.uri
                 ?: try {
-                    Uri.parse(item.coerceToText(app)?.toString()?.trim() ?: "")
+                    (item.coerceToText(app)?.toString()?.trim() ?: "").toUri()
                 } catch (_: Exception) { null }
             if (uri == null) {
                 failedCount++
@@ -2443,7 +2446,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     val outputWidth = (canvasWidth * exportDensity * scale).toInt().coerceAtLeast(1)
                     val outputHeight = (canvasHeight * exportDensity * scale).toInt().coerceAtLeast(1)
                     val bitmap = try {
-                        Bitmap.createBitmap(
+                        createBitmap(
                             outputWidth,
                             outputHeight,
                             Bitmap.Config.ARGB_8888,
@@ -2706,8 +2709,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             ?: return false
         if (!probeTile.isRecycled) probeTile.recycle()
 
-        canvas.save()
-        try {
+        canvas.withSave {
             canvas.translate(canvasCenterX, canvasCenterY)
             canvas.rotate(image.rotationDegrees)
             canvas.scale(
@@ -2759,8 +2761,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             (decodedRight - cropLeft) / cropWidth * dstW
                         val expandedBottom = -dstH / 2f +
                             (decodedBottom - cropTop) / cropHeight * dstH
-                        canvas.save()
-                        try {
+                        canvas.withSave {
                             canvas.clipRect(left, top, right, bottom)
                             canvas.drawBitmap(
                                 tile,
@@ -2773,18 +2774,14 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                 ),
                                 paint,
                             )
-                        } finally {
-                            canvas.restore()
                         }
                     } finally {
                         if (!tile.isRecycled) tile.recycle()
                     }
                 }
             }
-            return true
-        } finally {
-            canvas.restore()
         }
+        return true
     }
 
     private fun renderImageToCanvas(
@@ -2838,8 +2835,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             -dstW / 2f, -dstH / 2f, dstW / 2f, dstH / 2f,
         )
 
-        canvas.save()
-        try {
+        canvas.withSave {
             canvas.translate(canvasCenterX, canvasCenterY)
             canvas.rotate(image.rotationDegrees)
             canvas.scale(
@@ -2847,8 +2843,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 if (image.flipY) -1f else 1f,
             )
             canvas.drawBitmap(source, srcRect, dstRect, paint)
-        } finally {
-            canvas.restore()
         }
     }
 

@@ -40,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.testTag
+import androidx.core.content.edit
 import com.pockref.app.ui.theme.Dimens
 import kotlin.math.roundToInt
 
@@ -141,7 +142,7 @@ internal fun BoxScope.MarkupColorPicker(initialColor: Color, onColor: (Color) ->
                                     }
                                     FilledTonalIconButton(onClick = {
                                         saved = (saved.filterNot { it == argb } + argb).takeLast(12)
-                                        prefs.edit().putString("swatches", saved.joinToString(",")).apply()
+                                        prefs.edit { putString("swatches", saved.joinToString(",")) }
                                     }) { Icon(Icons.Rounded.Add, "保存当前颜色") }
                                 }
                             }

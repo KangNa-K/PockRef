@@ -7,6 +7,9 @@ import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.database.sqlite.transaction
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneGroup
@@ -68,13 +71,7 @@ internal class PurV2SceneWriter(
             db.rawQuery("PRAGMA journal_mode=OFF", null).use { }
             db.execSQL("PRAGMA synchronous=OFF")
             createSchema(db)
-            db.beginTransaction()
-            try {
-                insertScene(db, scene, images, thumbnail)
-                db.setTransactionSuccessful()
-            } finally {
-                db.endTransaction()
-            }
+            db.transaction { insertScene(db, scene, images, thumbnail) }
         } finally {
             db.close()
         }
@@ -399,10 +396,10 @@ internal class PurV2SceneWriter(
             val width = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
             val height = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
             val scaled = if (width == bitmap.width && height == bitmap.height) bitmap
-            else Bitmap.createScaledBitmap(bitmap, width, height, true)
+            else bitmap.scale(width, height, filter = true)
             try {
                 ByteArrayOutputStream().use { output ->
-                    val canvasBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    val canvasBitmap = createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     val canvas = android.graphics.Canvas(canvasBitmap)
                     canvas.drawColor(AndroidColor.WHITE)
                     canvas.drawBitmap(scaled, 0f, 0f, null)
@@ -418,7 +415,7 @@ internal class PurV2SceneWriter(
     }
 
     private fun fallbackThumbnail(): ByteArray = ByteArrayOutputStream().use { output ->
-        val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(AndroidColor.WHITE)
         check(bitmap.compress(Bitmap.CompressFormat.JPEG, 72, output))
         bitmap.recycle()

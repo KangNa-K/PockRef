@@ -253,11 +253,11 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
@@ -463,7 +463,7 @@ private val LockedGlowColor: Color = Color(0x55E57373)
 private val GoogleFontsProvider = GoogleFont.Provider(
     providerAuthority = "com.google.android.gms.fonts",
     providerPackage = "com.google.android.gms",
-    certificates = com.pockref.app.R.array.com_google_android_gms_fonts_certs,
+    certificates = com.pockref.app.R.array.pockref_gms_fonts_certs,
 )
 private val NunitoFont = GoogleFont("Nunito")
 private val NunitoFontFamily = FontFamily(
@@ -3671,9 +3671,9 @@ private fun BoxScope.CropOverlay(
     // the state mirror is still 0x0; the composable itself already has a
     // valid window size to use as a fallback.
     val viewportWidthPx = viewport.width.takeIf { it > 0f }
-        ?: with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
+        ?: LocalWindowInfo.current.containerSize.width.toFloat()
     val viewportHeightPx = viewport.height.takeIf { it > 0f }
-        ?: with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+        ?: LocalWindowInfo.current.containerSize.height.toFloat()
     val viewportDpW: Dp = with(density) { viewportWidthPx.toDp() }
     val viewportDpH: Dp = with(density) { viewportHeightPx.toDp() }
     val statusBarPx: Int = WindowInsets.statusBars.getTop(density)

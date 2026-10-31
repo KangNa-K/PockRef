@@ -7,6 +7,8 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Build
 import android.util.Log
+import androidx.core.graphics.get
+import androidx.core.graphics.scale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -587,7 +589,7 @@ class ImageOptimizer(private val context: Context) {
             val scale = config.maxLongSide.toFloat() / maxOf(decoded.width, decoded.height).toFloat()
             val newW = (decoded.width * scale).toInt().coerceAtLeast(1)
             val newH = (decoded.height * scale).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(decoded, newW, newH, true).also {
+            decoded.scale(newW, newH, filter = true).also {
                 if (it !== decoded) decoded.recycle()
             }
         } else decoded
@@ -739,7 +741,7 @@ class ImageOptimizer(private val context: Context) {
         if (step >= width && step >= height) {
             // Sample size >= image: just probe one corner pixel via the
             // batch path; calling getPixels for a 1x1 lookup is wasted work.
-            return Color.alpha(bitmap.getPixel(0, 0)) < 255
+            return Color.alpha(bitmap[0, 0]) < 255
         }
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)

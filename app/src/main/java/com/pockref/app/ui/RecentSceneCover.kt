@@ -2,8 +2,8 @@ package com.pockref.app.ui
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.net.Uri
 import android.util.Log
+import androidx.core.net.toUri
 import com.pockref.app.data.PurSceneCodec
 import com.pockref.app.model.pickCoverTarget
 import java.io.File
@@ -12,7 +12,7 @@ internal fun loadRecentSceneCover(context: Context, uri: String, coverImageId: S
     return try {
         val tempFile = File.createTempFile("pockref_cover_", ".pur", context.cacheDir)
         try {
-            val input = context.contentResolver.openInputStream(Uri.parse(uri)) ?: return null
+            val input = context.contentResolver.openInputStream(uri.toUri()) ?: return null
             input.use { source -> tempFile.outputStream().use { source.copyTo(it) } }
             val codec = PurSceneCodec()
             try {

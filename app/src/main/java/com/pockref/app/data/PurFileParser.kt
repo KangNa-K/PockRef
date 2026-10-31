@@ -10,6 +10,8 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.util.Log
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.toColorInt
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.compose.ui.geometry.Offset
@@ -558,7 +560,7 @@ class PurFileParser {
                 }
                 if (memberIds.isEmpty()) return@mapNotNull null
                 val storedArgb = row.backgroundColor?.let {
-                    runCatching { android.graphics.Color.parseColor(it) }.getOrNull()
+                    runCatching { it.toColorInt() }.getOrNull()
                 }
                 val opacity = if (storedArgb != null) android.graphics.Color.alpha(storedArgb) / 255f else 0f
                 val opaqueColor = storedArgb?.let {
@@ -974,7 +976,7 @@ class PurFileParser {
         val logicalWidth = maxOf(1.0, (bounds.width() + pad * 2f).toDouble())
         val logicalHeight = maxOf(1.0, (bounds.height() + pad * 2f).toDouble())
         val target = limitV2GeneratedRaster(logicalWidth, logicalHeight) ?: return null
-        val bitmap = Bitmap.createBitmap(target.rasterWidth, target.rasterHeight, Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(target.rasterWidth, target.rasterHeight, Bitmap.Config.ARGB_8888)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.RED
             style = Paint.Style.STROKE
