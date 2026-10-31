@@ -20,11 +20,13 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- Camera: used by the "拍照" import option. Declaring
-         this permission makes the app installable on devices
-         without a camera (uses-feature is NOT required), but
-         allows requesting camera access at runtime when the
-         user taps the "拍照" button. -->
+    <!-- Camera: used by the "拍照" import option. The CAMERA
+         permission implicitly requires camera hardware, so the
+         feature is declared optional to keep the app installable
+         on devices without a camera (e.g. ChromeOS). -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -83,10 +85,7 @@
              要求调用方显式声明会 query 的 provider authority
              才能 resolve 成功。这是 Google 推荐的标准 query
              方式。 -->
-        <provider
-            android:authorities="com.google.android.gms.fonts"
-            android:name="com.google.android.gms.fonts"
-            android:exported="false" />
+        <provider android:authorities="com.google.android.gms.fonts" />
     </queries>
 
     <application

@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.dp
 import com.pockref.app.model.SceneGroup
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onRoot
@@ -80,7 +81,7 @@ class SelectionBottomSheetTest {
                 Box(Modifier.fillMaxSize()) {
                     CanvasLayersChrome(state.value, {}, null)
                     SelectionBottomSheet(
-                        state.value, {}, mutableStateMapOf(), mutableStateMapOf(), null,
+                        state.value, {}, remember { mutableStateMapOf() }, remember { mutableStateMapOf() }, null,
                     )
                 }
             }
@@ -122,7 +123,7 @@ class SelectionBottomSheetTest {
             MaterialTheme {
                 Box(Modifier.width(400.dp)) {
                 SelectionBottomSheet(
-                    selectedState, actions::add, mutableStateMapOf(), mutableStateMapOf(), null,
+                    selectedState, actions::add, remember { mutableStateMapOf() }, remember { mutableStateMapOf() }, null,
                 )
                 }
             }
@@ -172,7 +173,7 @@ class SelectionBottomSheetTest {
                 MaterialTheme {
                     Box(Modifier.width(width.value).fillMaxSize()) {
                         SelectionBottomSheet(
-                            state.value, actions::add, mutableStateMapOf(), mutableStateMapOf(), null,
+                            state.value, actions::add, remember { mutableStateMapOf() }, remember { mutableStateMapOf() }, null,
                         )
                     }
                 }
@@ -303,7 +304,7 @@ class SelectionBottomSheetTest {
             MaterialTheme {
                 Box(Modifier.width(400.dp).fillMaxSize()) {
                     SelectionBottomSheet(
-                        state.value, actions::add, mutableStateMapOf(), mutableStateMapOf(), null,
+                        state.value, actions::add, remember { mutableStateMapOf() }, remember { mutableStateMapOf() }, null,
                     )
                 }
             }
@@ -350,7 +351,7 @@ class SelectionBottomSheetTest {
                 Box(Modifier.width(280.dp).fillMaxSize()) {
                     SelectionBottomSheet(
                         selectedState.copy(images = listOf(image.copy(locked = true))),
-                        actions::add, mutableStateMapOf(), mutableStateMapOf(), null,
+                        actions::add, remember { mutableStateMapOf() }, remember { mutableStateMapOf() }, null,
                     )
                 }
             }
@@ -372,7 +373,7 @@ class SelectionBottomSheetTest {
         composeRule.setContent {
             MaterialTheme {
                 SelectionBottomSheet(
-                    state.value, actions::add, mutableStateMapOf(), mutableStateMapOf(), null,
+                    state.value, actions::add, remember { mutableStateMapOf() }, remember { mutableStateMapOf() }, null,
                 )
             }
         }
