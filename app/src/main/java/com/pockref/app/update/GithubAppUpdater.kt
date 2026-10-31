@@ -109,6 +109,8 @@ object GithubAppUpdater {
             context.packageManager.canRequestPackageInstalls()
 
     fun openInstallPermission(context: Context) {
+        // Unknown-sources settings page only exists on API 26+; earlier versions grant install implicitly.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         context.startActivity(
             Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),

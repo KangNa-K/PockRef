@@ -368,6 +368,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.util.LinkedHashMap
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.PI
 import kotlin.math.abs
@@ -580,7 +581,10 @@ private class CreateDocumentWithInitialUri : ActivityResultContract<CreateDocume
             .setType(input.mimeType)
             .putExtra(Intent.EXTRA_TITLE, input.fileName)
             .apply {
-                input.initialUri?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+                // EXTRA_INITIAL_URI is API 26+; older pickers just open their default location.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    input.initialUri?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+                }
             }
     }
 
@@ -5607,7 +5611,7 @@ private fun MinimapZoomSlider(
         TooltipBox(
             positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
             tooltip = {
-                PlainTooltip { Text(String.format("%.2fx", currentValue)) }
+                PlainTooltip { Text(String.format(Locale.getDefault(), "%.2fx", currentValue)) }
             },
             state = tooltipState,
         ) {
@@ -5633,7 +5637,7 @@ private fun MinimapZoomSlider(
                     .padding(horizontal = 12.dp, vertical = 2.dp)
                     .semantics {
                         contentDescription =
-                            "缩放控制, 当前缩放级别 ${String.format("%.2f", currentValue)} 倍"
+                            "缩放控制, 当前缩放级别 ${String.format(Locale.getDefault(), "%.2f", currentValue)} 倍"
                         progressBarRangeInfo = ProgressBarRangeInfo(
                             current = currentValue,
                             range = ZOOM_MIN..ZOOM_MAX,

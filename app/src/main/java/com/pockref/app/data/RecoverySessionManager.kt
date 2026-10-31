@@ -1,5 +1,6 @@
 package com.pockref.app.data
 
+import android.annotation.SuppressLint
 import android.content.Context
 
 internal fun shouldRestoreBackup(
@@ -8,6 +9,9 @@ internal fun shouldRestoreBackup(
     alreadyChecked: Boolean,
 ): Boolean = previousSessionActive && !hasExternalOpenRequest && !alreadyChecked
 
+// commit() is intentional: the session-active flag must reach disk synchronously,
+// otherwise a crash right after launch could lose it and skip backup recovery.
+@SuppressLint("ApplySharedPref")
 class RecoverySessionManager(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(
         PREFS_NAME,
