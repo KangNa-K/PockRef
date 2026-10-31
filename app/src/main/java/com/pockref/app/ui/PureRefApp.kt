@@ -355,6 +355,7 @@ import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.SelectionMode
 import com.pockref.app.model.hasSceneContent
 import com.pockref.app.model.isCanvasOpen
+import com.pockref.app.model.isCanvasOpen
 import com.pockref.app.model.isImageLocked
 import com.pockref.app.model.Size2D
 import com.pockref.app.ui.settings.SettingsPanel
@@ -1288,7 +1289,12 @@ fun PockRefApp(
     val isLockEngaged = state.globalImageLock || state.lockCanvasFrozen
     val chromePolicy = remember(state) { CanvasChromePolicy.resolve(state) }
     var topToolbarWidth by remember { mutableStateOf(224.dp) }
-    var layerPanelExpanded by remember { mutableStateOf(false) }
+    var layerPanelExpanded by remember(state.isCanvasOpen) { mutableStateOf(false) }
+    LaunchedEffect(state.isCanvasOpen) {
+        if (!state.isCanvasOpen && state.settingsSheetOpen) {
+            onAction(PockRefAction.SetSettingsSheetOpen(false))
+        }
+    }
     val chromeDensity = LocalDensity.current
     // Snackbar surface for runtime errors emitted by the ViewModel. We use a
     // remember-durable host and pump the flow inside a LaunchedEffect that
@@ -1763,7 +1769,7 @@ fun PockRefApp(
             SettingsPanel(
                 topInset = statusBarTopDp + Dimens.CornerInset,
                 bottomInset = actionPanelBottomInset,
-                open = state.settingsSheetOpen,
+                open = state.isCanvasOpen && state.settingsSheetOpen,
                 onDismiss = { onAction(PockRefAction.SetSettingsSheetOpen(false)) },
                 state = state,
                 onAction = onAction,
@@ -2168,72 +2174,6 @@ fun PockRefApp(
             )
         }
         if (!state.hasSceneContent && !state.blankCanvasOpen) {
-            // V_NOW (2026-06-10, "启动页多选 + 底部 Bulk
-            // Action Bar 置顶"): the start-page multi-select
-            // chrome. Three siblings of the centered
-            // [EmptyCanvasState]:
-            //   1. [RecentMultiSelectTopBar] (top-aligned) —
-            //      only renders when [PockRefUiState.recentMultiSelectMode]
-            //      is true. Shows the "已选 N 项" count + a
-            //      close (X) button to exit the mode.
-            //   2. [RecentMultiSelectBottomBar] (bottom-
-            //      aligned) — only renders when in multi-
-            //      select mode AND [recentScenes] is not
-            //      empty (an empty list would mean no actions
-            //      to do, so the bar is hidden). Hosts the
-            //      全选/置顶/取消置顶/删除 bulk actions.
-            //   3. [BulkDeleteConfirmDialog] — sibling
-            //      overlay (not positioned; uses
-            //      [AlertDialog]'s built-in window). Only
-            //      renders when [PockRefUiState.bulkDeleteConfirmOpen]
-            //      is true. Confirms the user's intent
-            //      before the destructive [BulkDeleteRecentScenes]
-            //      dispatch fires.
-            // The three siblings are independent of the
-            // [EmptyCanvasState] — they don't move or
-            // re-layout it, the [Modifier.align] in
-            // [EmptyCanvasState] keeps it centred while
-            // the chrome slides in from the top and
-            // bottom edges.
-            //
-            // V_NOW (2026-06-10, sheet 统一): the v1.0
-            // dual top-bar + bottom-bar chrome has
-            // been collapsed into a SINGLE bottom
-            // sheet — [RecentMultiSelectSheet]. The
-            // sheet itself owns the
-            // "visible = recentMultiSelectMode &&
-            // recentScenes.isNotEmpty()" gate, so
-            // the call site just renders it
-            // unconditionally; the sheet no-ops
-            // when the gate is false. This matches
-            // the [com.pockref.app.ui.PureRefApp.SelectionBottomSheet]
-            // / crop overlay's [BottomSheetPanel]
-            // usage — one sheet, one chrome element,
-            // visual contract identical to every
-            // other sheet in the app.
-            //
-            // V_NOW (BackHandler — see further down): the
-            // system back button, when the start page is
-            // in multi-select mode, exits multi-select
-            // first (before the existing "close scene" /
-            // "finish activity" priority chain). The chain
-            // is updated so the recent-multi-select case
-            // ranks ABOVE the scene-is-open case, which is
-            // a no-op for the start page anyway (no
-            // scene is open there — the [EmptyCanvasState]
-            // is the canvas-empty branch). The sheet's
-            // own back handler is disabled
-            // ([dismissOnBackPress] = false) so the
-            // PockRefApp-level chain is the single
-            // back-press authority.
-            RecentMultiSelectSheet(
-                state = state,
-                onAction = onAction,
-            )
-            BulkDeleteConfirmDialog(
-                state = state,
-                onAction = onAction,
-            )
             // V_NOW (2026-06-16 user feedback "把导出日志按钮
             // 改成默认不显示,点 pockref 图标 7 次后才会显示"):
             // the FAB visibility is now gated by a local
@@ -2259,6 +2199,14 @@ fun PockRefApp(
                 onLogExportFab = { showLogExportFab.value = true },
                 modifier = Modifier.align(Alignment.Center),
             )
+            RecentMultiSelectToolbar(
+                state = state,
+                onAction = onAction,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = Dimens.EdgeInset, vertical = Dimens.CornerInset),
+            )
+            BulkDeleteConfirmDialog(state = state, onAction = onAction)
             // V_NOW (2026-06-16, "启动页导出运行日志" feature):
             // Bottom-right export FAB. Mounted ONLY on the start
             // page branch; once a scene is loaded the FAB
@@ -3338,13 +3286,14 @@ private data class SheetActionSpec(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SheetActionButton(
+internal fun SheetActionButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     modifier: Modifier = Modifier,
     active: Boolean = false,
     tint: Color? = null,
     showLabel: Boolean = true,
+    enabled: Boolean = true,
     onClick: () -> Unit,
     // V_NOW (S-04): optional long-press handler. When
     // non-null, the button switches from `Modifier.clickable`
@@ -3396,11 +3345,12 @@ private fun SheetActionButton(
             .then(
                 if (onLongClick != null) {
                     Modifier.combinedClickable(
+                        enabled = enabled,
                         onClick = onClick,
                         onLongClick = onLongClick,
                     )
                 } else {
-                    Modifier.clickable(onClick = onClick)
+                    Modifier.clickable(enabled = enabled, onClick = onClick)
                 },
             )
             .background(
@@ -3426,14 +3376,14 @@ private fun SheetActionButton(
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = resolvedTint,
+            tint = resolvedTint.copy(alpha = resolvedTint.alpha * if (enabled) 1f else 0.38f),
             modifier = Modifier.size(18.dp),
         )
         if (showLabel) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f),
                 maxLines = 1,
             )
         }

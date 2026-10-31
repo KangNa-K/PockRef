@@ -50,6 +50,7 @@ internal fun PockRefUiState.openBlankCanvas(): PockRefUiState = copy(
 
 internal fun PockRefUiState.closeBlankCanvas(): PockRefUiState = copy(
     importSourceMenuOpen = false,
+    settingsSheetOpen = false,
     recentMultiSelectMode = false,
     recentSelection = emptySet(),
     bulkDeleteConfirmOpen = false,

@@ -1965,6 +1965,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 backgroundColor = defaultBg,
                 backgroundCustomColor = defaultBg,
                 showBackgroundPicker = false,
+                settingsSheetOpen = false,
                 images = emptyList(),
                 groups = emptyList(),
                 requiresGroupFlattening = false,

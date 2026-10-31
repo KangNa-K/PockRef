@@ -117,6 +117,67 @@ class CanvasLayersChromeTest {
         assertLayerPanelMatchesSettings(showFloatingWindowButton = false)
     }
 
+    @Test
+    fun returningHomeClosesSettingsAndDoesNotReopenLayersOnNextScene() {
+        val scene = PockRefUiState(images = listOf(image("reference", "reference", 1)))
+        val state = mutableStateOf(scene)
+        composeRule.setContent {
+            PockRefApp(state = state.value, onAction = { action ->
+                if (action is PockRefAction.SetSettingsSheetOpen) {
+                    state.value = state.value.copy(settingsSheetOpen = action.open)
+                }
+            })
+        }
+        composeRule.onNodeWithContentDescription("打开图层窗口").performClick()
+        val layers = composeRule.onNode(
+            SemanticsMatcher.expectValue(SemanticsProperties.PaneTitle, "图层窗口"),
+        )
+        layers.assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Settings").performClick()
+        composeRule.onNodeWithTag("settings_panel").assertIsDisplayed()
+
+        composeRule.runOnIdle { state.value = state.value.copy(images = emptyList()) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_panel").assertDoesNotExist()
+        layers.assertDoesNotExist()
+        composeRule.runOnIdle { assertTrue(!state.value.settingsSheetOpen) }
+
+        composeRule.runOnIdle { state.value = state.value.copy(images = scene.images) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("settings_panel").assertDoesNotExist()
+        layers.assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("打开图层窗口").performClick()
+        layers.assertIsDisplayed()
+    }
+
+    @Test
+    fun cancellingSceneCloseKeepsSettingsOpenButDiscardingClosesIt() {
+        val store = ViewModelStore()
+        composeRule.runOnIdle {
+            val application = InstrumentationRegistry.getInstrumentation()
+                .targetContext.applicationContext as Application
+            val vm = PockRefViewModel(application)
+            store.put("close-scene", vm)
+            try {
+                vm._uiState.value = PockRefUiState(
+                    images = listOf(image("reference", "reference", 1)),
+                    settingsSheetOpen = true,
+                )
+                vm.onAction(PockRefAction.CloseScene)
+                assertTrue(vm.uiState.value.showUnsavedChangesDialog)
+                vm.onAction(PockRefAction.UnsavedDialogCancel)
+                assertTrue(vm.uiState.value.settingsSheetOpen)
+
+                vm.onAction(PockRefAction.CloseScene)
+                vm.onAction(PockRefAction.UnsavedDialogDiscard)
+                assertTrue(vm.uiState.value.images.isEmpty())
+                assertTrue(!vm.uiState.value.settingsSheetOpen)
+            } finally {
+                store.clear()
+            }
+        }
+    }
+
     private fun assertLayerPanelMatchesSettings(showFloatingWindowButton: Boolean) {
         val state = mutableStateOf(PockRefUiState(
             images = listOf(image("reference", "reference", 1)),

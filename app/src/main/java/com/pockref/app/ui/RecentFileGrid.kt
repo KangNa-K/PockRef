@@ -8,9 +8,6 @@
 
 package com.pockref.app.ui
 
-import android.graphics.Bitmap
-import android.net.Uri
-import com.pockref.app.data.PurSceneCodec
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
@@ -76,13 +73,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import com.pockref.app.model.RecentSceneEntry
 import com.pockref.app.model.RecentSortMode
-import com.pockref.app.model.pickCoverTarget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -337,51 +334,7 @@ private fun RecentFileTile(
     var bitmap by remember(entry.uri, entry.coverImageId) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     LaunchedEffect(entry.uri, entry.coverImageId) {
         bitmap = withContext(Dispatchers.IO) {
-            runCatching {
-                val tempFile = java.io.File.createTempFile("pockref_cover_", ".pur", context.cacheDir)
-                try {
-                    context.contentResolver.openInputStream(Uri.parse(entry.uri))?.use { input ->
-                        tempFile.outputStream().use { out -> input.copyTo(out) }
-                    }
-                    val codec = PurSceneCodec()
-                    try {
-                        val scene = codec.readFromFile(tempFile)
-                        val targetImage = pickCoverTarget(
-                            images = scene.images,
-                            coverImageId = entry.coverImageId,
-                        )
-                        if (targetImage != null) {
-                            codec.imageDecoder.setSourceFile(tempFile)
-                            val decoded = codec.imageDecoder.decodeThumbnail(targetImage)?.bitmap
-                            if (decoded != null) {
-                                // V_NOW (2026-06-11): apply the
-                                // non-destructive cropRect to the
-                                // cover thumbnail so the tile shows
-                                // the cropped view, not the full
-                                // original image.
-                                val crop = targetImage.cropRect
-                                if (crop != null) {
-                                    val cx = (crop.left * decoded.width).toInt().coerceIn(0, decoded.width - 1)
-                                    val cy = (crop.top * decoded.height).toInt().coerceIn(0, decoded.height - 1)
-                                    val cw = ((crop.right - crop.left) * decoded.width).toInt().coerceIn(1, decoded.width - cx)
-                                    val ch = ((crop.bottom - crop.top) * decoded.height).toInt().coerceIn(1, decoded.height - cy)
-                                    Bitmap.createBitmap(decoded, cx, cy, cw, ch).asImageBitmap()
-                                } else {
-                                    decoded.asImageBitmap()
-                                }
-                            } else {
-                                null
-                            }
-                        } else {
-                            null
-                        }
-                    } finally {
-                        codec.release()
-                    }
-                } finally {
-                    tempFile.delete()
-                }
-            }.getOrNull()
+            loadRecentSceneCover(context, entry.uri, entry.coverImageId)?.asImageBitmap()
         }
     }
 
@@ -605,6 +558,7 @@ private fun RecentFileTile(
                             onClick = onTap,
                             onLongClick = if (!multiSelectMode) onLongPress else null,
                         )
+                        .testTag("recent-file-cover:${entry.uri}")
                         .graphicsLayer {
                             translationX = dragOffset
                         },
@@ -919,16 +873,7 @@ private fun RecentFileTile(
                 .fillMaxWidth()
                 .combinedClickable(
                     onClick = {
-                        // V_NOW (2026-06-11, swipe v6 only):
-                        // the v5 cancel-on-label-tap branch
-                        // is gone; the label just routes to
-                        // [onTap] like before. To cancel a
-                        // v6 swipe, the user taps the
-                        // thumbnail itself (which goes
-                        // through [onTap] and resets the
-                        // tile state via the host screen's
-                        // tap handler).
-                        onTap()
+                        if (multiSelectMode) onTap() else showRenameDialog = true
                     },
                     onLongClick = if (multiSelectMode) {
                         { /* no-op in multi-select */ }
