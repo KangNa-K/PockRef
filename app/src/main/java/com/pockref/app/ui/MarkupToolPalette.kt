@@ -186,7 +186,7 @@ private fun MarkupStyleOptions(state: PockRefUiState, onAction: (PockRefAction) 
 @Composable
 private fun PaletteChoice(label: String, selected: Boolean, onClick: () -> Unit,
     tall: Boolean = false, content: @Composable () -> Unit) {
-    TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+    TooltipBox(positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
         tooltip = { PlainTooltip { Text(label) } }, state = rememberTooltipState()) {
         Box(Modifier.size(52.dp, if (tall) 80.dp else 52.dp)
             .clip(RoundedCornerShape(16.dp))
@@ -201,7 +201,7 @@ private fun PaletteChoice(label: String, selected: Boolean, onClick: () -> Unit,
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PaletteIcon(label: String, icon: ImageVector, enabled: Boolean = true, onClick: () -> Unit) {
-    TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+    TooltipBox(positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
         tooltip = { PlainTooltip { Text(label) } }, state = rememberTooltipState()) {
         IconButton(onClick, enabled = enabled) { Icon(icon, label, Modifier.size(24.dp)) }
     }
