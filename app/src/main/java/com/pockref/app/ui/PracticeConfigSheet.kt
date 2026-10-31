@@ -32,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -138,10 +139,10 @@ fun BoxScope.PracticeConfigSheet(
     // dismiss/re-show and the user would see stale
     // values from before they closed.
     var practiceSeconds by remember(lastConfig) {
-        mutableStateOf(((lastConfig?.practiceDurationMs ?: 60_000L) / 1000L).toInt())
+        mutableIntStateOf(((lastConfig?.practiceDurationMs ?: 60_000L) / 1000L).toInt())
     }
     var restSeconds by remember(lastConfig) {
-        mutableStateOf(((lastConfig?.restDurationMs ?: 30_000L) / 1000L).toInt())
+        mutableIntStateOf(((lastConfig?.restDurationMs ?: 30_000L) / 1000L).toInt())
     }
     var shuffle by remember(lastConfig) { mutableStateOf(lastConfig?.shuffle ?: false) }
     var resetTimerOnImageChange by remember(lastConfig) {

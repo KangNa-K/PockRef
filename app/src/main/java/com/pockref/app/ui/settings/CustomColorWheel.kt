@@ -22,6 +22,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,9 +82,9 @@ internal fun CustomColorWheel(
  onCancel: () -> Unit,
 ) {
  val initialHsv = remember(currentColor) { rgbToHsv(currentColor) }
- var hue by remember(currentColor) { mutableStateOf(initialHsv[0]) }
- var sat by remember(currentColor) { mutableStateOf(initialHsv[1]) }
- var value by remember(currentColor) { mutableStateOf(initialHsv[2]) }
+ var hue by remember(currentColor) { mutableFloatStateOf(initialHsv[0]) }
+ var sat by remember(currentColor) { mutableFloatStateOf(initialHsv[1]) }
+ var value by remember(currentColor) { mutableFloatStateOf(initialHsv[2]) }
  val previewColor = Color.hsv(hue, sat, value)
 
  Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

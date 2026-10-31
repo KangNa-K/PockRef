@@ -4906,7 +4906,7 @@ private fun BoxScope.MinimapChrome(
 
     // Auto-dismiss: slider disappears after 3 s of inactivity.
     // Any slider drag resets the timer.
-    val sliderInteractionStamp = remember { mutableStateOf(0L) }
+    val sliderInteractionStamp = remember { mutableLongStateOf(0L) }
     LaunchedEffect(zoomSliderActive.value) {
         if (!zoomSliderActive.value) return@LaunchedEffect
         while (true) {
