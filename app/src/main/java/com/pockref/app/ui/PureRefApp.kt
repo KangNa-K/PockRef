@@ -2600,8 +2600,8 @@ private fun TopToolbar(
     onEnterFloatingWindow: () -> Unit,
     showFloatingWindowButton: Boolean,
     onTakePhoto: () -> Unit,
-    parentMaxWidth: Dp = Dp.Infinity,
     modifier: Modifier = Modifier,
+    parentMaxWidth: Dp = Dp.Infinity,
     onWidthChanged: (Int) -> Unit = {},
 ) {
     val toolbarModifier = if (parentMaxWidth != Dp.Infinity && parentMaxWidth > 0.dp) {
@@ -5692,6 +5692,7 @@ private fun EmptyCanvasState(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
     onOpenBlankCanvas: () -> Unit,
+    modifier: Modifier = Modifier,
     // V_NOW (2026-06-16 user feedback "把导出日志按钮改成默认
     // 不显示,点 pockref 图标 7 次后才会显示"): the start-page
     // log-export FAB is hidden by default and unlocked via
@@ -5706,7 +5707,6 @@ private fun EmptyCanvasState(
     // the activity is destroyed).
     showLogExportFab: Boolean = false,
     onLogExportFab: () -> Unit = {},
-    modifier: Modifier = Modifier,
 ) {
     // 7-tap easter-egg counter on the PockRef title. local
     // remember: dies with the composable, so every fresh

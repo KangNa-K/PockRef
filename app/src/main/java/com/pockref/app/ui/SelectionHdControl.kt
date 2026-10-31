@@ -124,8 +124,8 @@ internal data class OriginalResolutionControlPlacement(
 internal fun SelectionHdControl(
     state: OriginalResolutionSelectionState,
     onClick: () -> Unit,
-    rotationDegrees: Float = 0f,
     modifier: Modifier = Modifier,
+    rotationDegrees: Float = 0f,
 ) {
     val selected = state != OriginalResolutionSelectionState.OFF
     val backgroundColor = if (selected) {
