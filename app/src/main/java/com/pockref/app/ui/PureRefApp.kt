@@ -6613,6 +6613,13 @@ private fun PockRefCanvas(
     // gesture via beginImageDrag) cancels the pending dispatch.
     val snapHighlightStart = state.snapHighlight?.startTimeMs
     val localView = androidx.compose.ui.platform.LocalView.current
+    // S Pen diagnostics below log on every stylus DOWN/MOVE; keep them out
+    // of release builds so they don't flood logcat (and the 500-line log
+    // export).
+    val spenDebugLogging = remember(localView) {
+        (localView.context.applicationInfo.flags and
+            android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
     // V3 S Pen debug: install a raw-MotionEvent listener on
     // the underlying View so logcat captures the raw
     // buttonState regardless of whether Compose's
@@ -6624,6 +6631,7 @@ private fun PockRefCanvas(
     // the listener is cleared, so we never leak a hook
     // on the root view.
     androidx.compose.runtime.DisposableEffect(localView) {
+        if (!spenDebugLogging) return@DisposableEffect onDispose { }
         // Log-only hook: it never consumes or acts on a tap, so there is no
         // click to forward to performClick().
         @Suppress("ClickableViewAccessibility")
@@ -7208,15 +7216,17 @@ private fun PockRefCanvas(
                     // relevant fields so a logcat capture
                     // can confirm which detection path is
                     // (or isn't) firing.
-                    android.util.Log.i(
-                        "PockRefSpen",
-                        "down type=${down.type} " +
-                            "primary=${firstEvent.buttons.isPrimaryPressed} " +
-                            "secondary=${firstEvent.buttons.isSecondaryPressed} " +
-                            "tertiary=${firstEvent.buttons.isTertiaryPressed} " +
-                            "isStylus=$downIsStylus " +
-                            "buttonDown=$stylusButtonDown",
-                    )
+                    if (spenDebugLogging) {
+                        android.util.Log.i(
+                            "PockRefSpen",
+                            "down type=${down.type} " +
+                                "primary=${firstEvent.buttons.isPrimaryPressed} " +
+                                "secondary=${firstEvent.buttons.isSecondaryPressed} " +
+                                "tertiary=${firstEvent.buttons.isTertiaryPressed} " +
+                                "isStylus=$downIsStylus " +
+                                "buttonDown=$stylusButtonDown",
+                        )
+                    }
 
                     // V_NOW (4-corner scale handles, SINGLE
                     // + MULTI/BOX paths): if the finger lands
