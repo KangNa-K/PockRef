@@ -707,7 +707,7 @@ class PurSceneCodec {
                 return extendedScene
             }
 
-            if (looksLikeLegacyPur(header, fileLen)) {
+            if (looksLikeLegacyPur(header)) {
                 // For large files, skip the readAllBytes path entirely —
                 // it causes OOM. Go straight to the streaming parser.
                 if (fileLen > 100_000_000L) {
@@ -846,7 +846,7 @@ class PurSceneCodec {
             if (fileLen < 224L) return@runCatching null
             val header = ByteArray(minOf(fileLen.toInt(), 224))
             raf.readFully(header)
-            val parsedHeader = purFileParser.parseHeader(header, fileLen)
+            val parsedHeader = purFileParser.parseHeader(header)
             val indexOffset = parsedHeader.sqliteOffset
             if (indexOffset <= 0L || indexOffset > fileLen) return@runCatching null
             if (parsedHeader.formatVersion.startsWith("2.")) return@runCatching null
@@ -1134,7 +1134,7 @@ class PurSceneCodec {
     private fun looksLikeDesktopPur(raf: RandomAccessFile, header: ByteArray): Boolean {
         if (header.size < HEADER_MIN_SIZE) return false
         try {
-            val parsedHeader = purFileParser.parseHeader(header, raf.length())
+            val parsedHeader = purFileParser.parseHeader(header)
             if (parsedHeader.formatVersion.startsWith("2.")
                 && parsedHeader.sqliteOffset > 0 && parsedHeader.sqliteOffset < raf.length()
             ) {
@@ -1554,7 +1554,7 @@ class PurSceneCodec {
 
         val imageBlobs = mutableListOf<LegacyImageBlob>()
         if (indexEntries.size == imageCount) {
-            for ((id, start, end) in indexEntries) {
+            for ((_, start, end) in indexEntries) {
                 if (start >= 0 && end > start && end <= bytes.size) {
                     val blob = bytes.copyOfRange(start.toInt(), end.toInt())
                     imageBlobs += LegacyImageBlob(start, end, blob)
@@ -1856,7 +1856,7 @@ class PurSceneCodec {
         return false
     }
 
-    private fun looksLikeLegacyPur(bytes: ByteArray, fileLength: Long = Long.MAX_VALUE): Boolean {
+    private fun looksLikeLegacyPur(bytes: ByteArray): Boolean {
         if (bytes.size < 14 || readIntBe(bytes, 0) != 8) return false
         val imageCount = readUnsignedShortBe(bytes, 12)
         if (imageCount == 0 || imageCount > 10000) return false

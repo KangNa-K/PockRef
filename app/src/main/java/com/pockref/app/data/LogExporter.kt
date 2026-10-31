@@ -275,6 +275,7 @@ object LogExporter {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
             info.longVersionCode.toInt()
         } else {
+            @Suppress("DEPRECATION")
             info.versionCode
         }
     } catch (t: Throwable) {

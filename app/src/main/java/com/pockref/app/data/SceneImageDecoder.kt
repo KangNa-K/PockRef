@@ -149,6 +149,8 @@ class SceneImageDecoder(
 
     private data class DecoderKey(val offset: Int, val length: Int)
 
+    // `image` stays in the signature so re-enabling the pool only touches the body.
+    @Suppress("UNUSED_PARAMETER")
     private fun getOrCreateRegionDecoder(image: SceneImage): BitmapRegionDecoder? {
         // V_NOW: disabled. BitmapRegionDecoder created from
         // RandomAccessFileRegionInputStream has multiple failure
@@ -397,7 +399,7 @@ class SceneImageDecoder(
         val decoder = getOrCreateRegionDecoder(image)
         if (decoder != null) {
             return try {
-                decodeViaRegionDecoder(decoder, image, targetSide)
+                decodeViaRegionDecoder(decoder, targetSide)
                     // decodeRegion() can return null silently (corrupted data,
                     // unsupported format, Samsung quirks). Fall back to the
                     // reliable seek+read+decodeByteArray path instead of
@@ -454,7 +456,6 @@ class SceneImageDecoder(
      */
     private fun decodeViaRegionDecoder(
         decoder: BitmapRegionDecoder,
-        image: SceneImage,
         targetSide: Int,
     ): Bitmap? {
         val width = decoder.width
@@ -769,10 +770,15 @@ private class DiskThumbnailCache(
 
         val fileName = key.hashCode().toString(16).padStart(8, '0') + ".webp"
         val file = File(cacheDir, fileName)
-        var size = 0L
+        val size: Long
         try {
             file.outputStream().use { out ->
-                bitmap.compress(Bitmap.CompressFormat.WEBP, 80, out)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, out)
+                } else {
+                    @Suppress("DEPRECATION")
+                    bitmap.compress(Bitmap.CompressFormat.WEBP, 80, out)
+                }
             }
             size = file.length()
         } catch (e: Exception) {

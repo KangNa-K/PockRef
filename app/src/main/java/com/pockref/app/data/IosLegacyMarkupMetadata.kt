@@ -9,7 +9,7 @@ internal fun readIosLegacyMarkupMetadata(file: File, parser: PurFileParser): JSO
     RandomAccessFile(file, "r").use { input ->
         if (input.length() < 224L) return@use null
         val headerBytes = ByteArray(224).also(input::readFully)
-        val header = parser.parseHeader(headerBytes, input.length())
+        val header = parser.parseHeader(headerBytes)
         if (!header.formatVersion.startsWith("1.")) return@use null
         val index = header.sqliteOffset
         require(index in 224L..input.length()) { "旧版场景索引损坏" }

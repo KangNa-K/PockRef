@@ -681,7 +681,6 @@ internal data class RotationHandleGeometry(
 
 internal fun projectImageRotationHandleToScreen(
     imageCenter: Offset,
-    imageWidth: Float,
     imageHeight: Float,
     rotationDegrees: Float,
     handleOffsetPx: Float,

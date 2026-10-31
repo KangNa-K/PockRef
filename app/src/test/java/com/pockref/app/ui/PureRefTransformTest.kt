@@ -1255,7 +1255,6 @@ class PockRefTransformTest {
     fun rotationHandle_forSingleImageSitsAboveRotatedTopEdge() {
         val geometry = projectImageRotationHandleToScreen(
             imageCenter = Offset.Zero,
-            imageWidth = 100f,
             imageHeight = 80f,
             rotationDegrees = 90f,
             handleOffsetPx = 32f,

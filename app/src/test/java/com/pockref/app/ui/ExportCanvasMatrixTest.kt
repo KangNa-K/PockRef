@@ -520,7 +520,6 @@ class ExportCanvasMatrixTest {
         val intrinsicH = 3000
         val userScale = 0.5f
         val displayW = 1200f  // 0.3x .pur transform — irrelevant for export
-        val displayH = 900f
 
         val dstW = intrinsicW * userScale
         val dstH = intrinsicH * userScale
@@ -708,7 +707,6 @@ class ExportCanvasMaxDimTest {
  //4096, even when intrinsic is bigger. For a6000×4500
  // source image, target =6000 capped at4096 =4096.
  val intrinsicW =6000
- val intrinsicH =4500
  val (scale, maxImageDim) = computeScaleAndMaxImageDim(
  maxDim =8192,
  canvasWidth =12000,
@@ -752,8 +750,6 @@ fun pass1_bboxUsesIntrinsicCoordsAndConvertsCenter() {
  // User wrote the .pur at displayScale=0.3 (typical
  // desktop PockRef behaviour for a reference board).
  val displayScale =0.3f
- val displayW = intrinsicW * displayScale //1200
- val displayH = intrinsicH * displayScale //900
  val imageScale =1f // no pinch zoom
  // The user laid this image out at displaySize coords
  // (1000,500). After conversion to intrinsic coords,
@@ -804,7 +800,6 @@ fun pass1_bboxUsesIntrinsicCoordsAndConvertsCenter() {
 @Test
 fun pass1_twoImagesAtDifferentCenters_ProduceSeparateBboxExtents() {
  val intrinsicW =4000
- val intrinsicH =3000
  val displayScale =0.3f
  val imageScale =1f
 
@@ -815,15 +810,11 @@ fun pass1_twoImagesAtDifferentCenters_ProduceSeparateBboxExtents() {
  // preserve that spacing — i.e. the two images'
  // bbox edges should not overlap.
  val img1CxDisplay =1000f
- val img1CyDisplay =500f
  val img2CxDisplay =4000f
- val img2CyDisplay =1500f
 
  // Convert each center to intrinsic coords.
  val img1Cx = img1CxDisplay / displayScale
- val img1Cy = img1CyDisplay / displayScale
  val img2Cx = img2CxDisplay / displayScale
- val img2Cy = img2CyDisplay / displayScale
 
  // Image1 bbox right edge in intrinsic coords:
  val img1Right = img1Cx + intrinsicW * imageScale /2f

@@ -425,7 +425,6 @@ class ImageOptimizer(private val context: Context) {
     fun retryFailed(
         originalTasks: List<BatchTask>,
         config: OptimizeConfig = saveOptimizeConfig(),
-        concurrency: Int = 1,
         onItemComplete: (OptimizeResult) -> Unit = {},
         onProgress: (BatchProgress) -> Unit = {},
         onComplete: (BatchProgress) -> Unit = {},
@@ -628,7 +627,6 @@ class ImageOptimizer(private val context: Context) {
         mimeType: String,
         config: OptimizeConfig = saveOptimizeConfig(),
     ): OptimizeResult {
-        val t0 = System.nanoTime()
         val originalSize = imageBytes.size
 
         if (originalSize < config.minCompressThreshold) {
@@ -661,7 +659,6 @@ class ImageOptimizer(private val context: Context) {
             )
         }
 
-        val t1 = System.nanoTime()
         val decoded = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }) ?: return OptimizeResult(
@@ -672,7 +669,6 @@ class ImageOptimizer(private val context: Context) {
             originalSize = originalSize,
             optimizedSize = originalSize,
         )
-        val t2 = System.nanoTime()
 
         val imageType = classifyImage(decoded, mimeType)
         val hasAlpha = hasTransparency(decoded)
@@ -680,7 +676,6 @@ class ImageOptimizer(private val context: Context) {
         val quality = chooseQuality(imageType, outputFormat, config)
 
         val compressed = compressBitmap(decoded, outputFormat, quality)
-        val t3 = System.nanoTime()
 
         val finalBytes = if (compressed.size >= originalSize) {
             if (originalSize > config.maxCompressTarget) {
@@ -691,7 +686,6 @@ class ImageOptimizer(private val context: Context) {
         } else {
             compressed
         }
-        val t4 = System.nanoTime()
 
         val result = OptimizeResult(
             bytes = finalBytes,
@@ -703,8 +697,6 @@ class ImageOptimizer(private val context: Context) {
         )
 
         decoded.recycle()
-
-        val elapsed = (t4 - t0) / 1_000_000
 
         return result
     }

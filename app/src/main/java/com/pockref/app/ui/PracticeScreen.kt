@@ -56,7 +56,6 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.pockref.app.data.PurFileParser
 import com.pockref.app.data.SceneImageDecoder
 import com.pockref.app.model.PracticePhase
 import com.pockref.app.model.PracticeState
@@ -179,7 +178,6 @@ fun BoxScope.PracticeScreen(
     state: PracticeState,
     images: List<SceneImage>,
     imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
     onAction: (PockRefAction) -> Unit,
 ) {
     val currentImage = remember(state.currentImageId, images) {
@@ -193,10 +191,6 @@ fun BoxScope.PracticeScreen(
     val phaseKey = "${state.status.name}|${state.phase.name}|${state.currentIndex}|${state.config.practiceDurationMs}|${state.config.restDurationMs}"
     LaunchedEffect(phaseKey) {
         if (state.status != PracticeStatus.RUNNING) return@LaunchedEffect
-        val phaseDuration = when (state.phase) {
-            PracticePhase.COUNTDOWN -> state.config.practiceDurationMs
-            PracticePhase.REST -> state.config.restDurationMs
-        }
         val phaseEndMs = System.currentTimeMillis() + state.remainingMs.coerceAtLeast(0L)
         while (true) {
             val remaining = phaseEndMs - System.currentTimeMillis()
@@ -240,14 +234,12 @@ fun BoxScope.PracticeScreen(
             state = state,
             currentImage = currentImage,
             imageDecoder = imageDecoder,
-            imageLazyLoader = imageLazyLoader,
             onAction = onAction,
         )
         PracticeStatus.PAUSED -> PracticePausedView(
             state = state,
             currentImage = currentImage,
             imageDecoder = imageDecoder,
-            imageLazyLoader = imageLazyLoader,
             onAction = onAction,
         )
         PracticeStatus.FINISHED -> PracticeFinishedOverlay(
@@ -269,7 +261,6 @@ private fun PracticeRunningView(
     state: PracticeState,
     currentImage: SceneImage?,
     imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
     onAction: (PockRefAction) -> Unit,
 ) {
     val restDim = state.phase == PracticePhase.REST
@@ -317,7 +308,6 @@ private fun PracticeRunningView(
                 PracticeImageLayer(
                     image = currentImage,
                     imageDecoder = imageDecoder,
-                    imageLazyLoader = imageLazyLoader,
                     alpha = imageAlpha,
                 )
             }
@@ -486,7 +476,6 @@ private fun PracticePausedView(
     state: PracticeState,
     currentImage: SceneImage?,
     imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
     onAction: (PockRefAction) -> Unit,
 ) {
     // No opaque scrim here — the image needs to be
@@ -525,7 +514,6 @@ private fun PracticePausedView(
         PracticeImageLayer(
             image = currentImage,
             imageDecoder = imageDecoder,
-            imageLazyLoader = imageLazyLoader,
             alpha = 1f,
         )
 
@@ -745,7 +733,6 @@ private fun CountdownBadge(
 private fun PracticeImageLayer(
     image: SceneImage?,
     imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
     alpha: Float,
 ) {
     if (image == null) return
@@ -756,7 +743,6 @@ private fun PracticeImageLayer(
         decodePracticeImage(
             image = image,
             imageDecoder = imageDecoder,
-            imageLazyLoader = imageLazyLoader,
             displayWidth = displayWidth,
             displayHeight = displayHeight,
         )
@@ -779,7 +765,6 @@ private fun PracticeImageLayer(
 private fun decodePracticeImage(
     image: SceneImage,
     imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
     displayWidth: Int,
     displayHeight: Int,
 ): android.graphics.Bitmap? {

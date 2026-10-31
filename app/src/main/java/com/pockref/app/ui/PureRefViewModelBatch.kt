@@ -626,9 +626,8 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
      * has no drift.
      *
      * Lock guard: per-image + global lock filter, same
-     * as [PockRefViewModelBatch.batchScale] and the
-     * per-image [PockRefViewModelTransform.setSelectedImageScale]
-     * path. Locked members are excluded from the
+     * as [PockRefViewModelBatch.batchScale]. Locked
+     * members are excluded from the
      * scale application; the group as a whole still
      * re-centers around [worldCenter], but a locked
      * member's pose is preserved.

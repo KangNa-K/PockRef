@@ -165,10 +165,6 @@ fun BoxScope.PracticeConfigSheet(
     customDialogTarget?.let { target ->
         CustomDurationDialog(
             target = target,
-            initialMinutes = when (target) {
-                CustomDialogTarget.PRACTICE -> practiceSeconds / 60
-                CustomDialogTarget.REST -> restSeconds / 60
-            },
             inputText = customInputText,
             onInputChange = { customInputText = it },
             onConfirm = { minutes ->
@@ -309,16 +305,13 @@ private enum class CustomDialogTarget {
  * target: 1-60 for COUNTDOWN, 1-10 for REST.
  *
  * The dialog is shown by the parent sheet when the user
- * taps the "自定义" chip. The parent passes the
- * current value as `initialMinutes` (so the user can
- * see and edit their previous custom value rather
- * than re-typing from scratch).
+ * taps the "自定义" chip. The input text is hoisted to
+ * the parent ([inputText] / [onInputChange]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CustomDurationDialog(
     target: CustomDialogTarget,
-    initialMinutes: Int,
     inputText: String,
     onInputChange: (String) -> Unit,
     onConfirm: (Int) -> Unit,

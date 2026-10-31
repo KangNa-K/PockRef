@@ -109,18 +109,18 @@ class PurFileParser {
         inputFile.deleteOnExit()
         try {
             inputFile.outputStream().use { out -> input.copyTo(out, 65536) }
-            return parseFromFile(inputFile, deleteAfter = true)
+            return parseFromFile(inputFile)
         } finally {
             inputFile.delete()
         }
     }
 
-    fun parseFromFile(file: File, deleteAfter: Boolean = false): PockRefScene {
+    fun parseFromFile(file: File): PockRefScene {
         val inputRaf = RandomAccessFile(file, "r")
         try {
             val headerBytes = ByteArray(minOf(file.length().toInt(), 0x100))
             inputRaf.readFully(headerBytes)
-            val header = parseHeader(headerBytes, file.length())
+            val header = parseHeader(headerBytes)
 
             return if (header.formatVersion.startsWith("2.")) {
                 parseV2Format(inputRaf, file, header)
@@ -182,7 +182,7 @@ class PurFileParser {
     /** The rotated SQLite file used by V2 lazy image records, if any. */
     val lazySourceFile: File? get() = imageTempFile ?: dbTempFile
 
-    fun parseHeader(bytes: ByteArray, fileLength: Long = 0): PurHeader {
+    fun parseHeader(bytes: ByteArray): PurHeader {
         require(bytes.size >= 8) {
             "File too small to be a .pur file (${bytes.size} bytes)"
         }
@@ -196,10 +196,10 @@ class PurFileParser {
         val formatVersion = decodeUtf16BE(bytes, pos, versionByteLen)
         pos += versionByteLen
 
-        return parseV1Header(bytes, fileLength, pos, formatVersion)
+        return parseV1Header(bytes, pos, formatVersion)
     }
 
-    private fun parseV1Header(bytes: ByteArray, fileLength: Long, startPos: Int, formatVersion: String): PurHeader {
+    private fun parseV1Header(bytes: ByteArray, startPos: Int, formatVersion: String): PurHeader {
         var pos = startPos
 
         val numImages = if (pos + 2 <= bytes.size) readUInt16BE(bytes, pos) else 0
@@ -232,7 +232,7 @@ class PurFileParser {
         var thumbnailOffset = 0
 
         if (pos + 4 <= bytes.size) {
-            val numImagesAgain = readUInt32BE(bytes, pos).toInt()
+            // Repeated image count; numImages above is authoritative, so skip it.
             pos += 4
 
             canvasX = if (pos + 8 <= bytes.size) readDoubleBE(bytes, pos) else 0.0

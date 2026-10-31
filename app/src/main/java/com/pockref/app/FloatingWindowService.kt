@@ -258,6 +258,9 @@ class FloatingWindowService : Service() {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
         } else {
+            // Pre-O devices have no notification channels; the channel-less
+            // constructor is the only option there.
+            @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
         return builder
@@ -411,7 +414,9 @@ class FloatingWindowService : Service() {
             gravity = Gravity.TOP or Gravity.START
             this.x = x
             this.y = y
-            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            // The non-deprecated path is WindowInsets-based IME handling,
+            // which the overlay doesn't implement yet; keep the legacy mode.
+            softInputMode = @Suppress("DEPRECATION") WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
     }
 

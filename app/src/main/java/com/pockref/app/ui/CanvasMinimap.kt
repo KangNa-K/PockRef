@@ -197,15 +197,6 @@ private data class MinimapColors(
     // reports the gesture.
     onLongPress: () -> Unit = {},
     onLongPressEnd: () -> Unit = {},
-    // V_NOW: when true, the canvas-pan-by-drag gesture
-    // is suppressed (the [pointerInput] re-keys on
-    // [sliderActive] and short-circuits). The slider
-    // mode morphs the panel away anyway, so the
-    // drag-pan handler would conflict with the
-    // M3 [Slider]'s own thumb drag. Disabling the
-    // drag-pan during slider mode is the cleanest
-    // way to avoid the gesture race.
-    sliderActive: Boolean = false,
   ) {
      // V_NOW (智能收缩 / 让位给 pill): when [isCollapsed] is
      // true the minimap renders as a 24dp clickable "navigate"
@@ -436,8 +427,8 @@ private data class MinimapColors(
             // drag-pan-canvas below) so the two
             // gesture detectors don't fight over
             // pointer event consumption. We don't
-            // call `down.consume()` on the initial
-            // down event so the drag-pan-canvas
+            // consume the initial down event so
+            // the drag-pan-canvas
             // pointerInput also sees it (the user
             // might press-then-immediately-drag
             // before 500ms elapses, which should
@@ -459,7 +450,7 @@ private data class MinimapColors(
             // reverse direction).
             .pointerInput(Unit) {
                 awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
+                    awaitFirstDown(requireUnconsumed = false)
                     // V_NOW (S-07): raised from framework default
                     // 500ms to 800ms. The minimap panel's
                     // PRIMARY action is "tap to jump the canvas
@@ -501,8 +492,8 @@ private data class MinimapColors(
                         return@awaitEachGesture
                     }
                     // Long-press fired. Notify the parent
-                    // so it can flip [sliderActive] =
-                    // true (and the morph runs).
+                    // so it can flip its zoomSliderActive
+                    // flag (and the morph runs).
                     onLongPress()
                     // Now wait for the pointer to be
                     // released (no timeout — the user
@@ -1428,7 +1419,7 @@ internal fun CollapsedMinimapIcon(
             // long-press morphs to slider.
             .pointerInput(Unit) {
                 awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
+                    awaitFirstDown(requireUnconsumed = false)
                     // V_NOW (S-07): same 800ms threshold as
                     // the expanded minimap above.
                     val longPressTimeoutMs = MINIMAP_LONG_PRESS_TIMEOUT_MS

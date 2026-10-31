@@ -130,6 +130,6 @@ class CrashHandlerTest {
         val text = CrashHandler.readLastCrashFrom(crashDir)
         // And the read should be observable (either null OR the partial
         // content), not silently lost.
-        assertTrue(text == null || text!!.isNotEmpty())
+        assertTrue(text == null || text.isNotEmpty())
     }
 }

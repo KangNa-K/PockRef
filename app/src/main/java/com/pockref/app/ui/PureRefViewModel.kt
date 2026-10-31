@@ -1434,7 +1434,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.CancelExport -> _uiState.update { it.copy(showExportDialog = false) }
             is PockRefAction.ConfirmExport -> {
                 _uiState.update { it.copy(showExportDialog = false) }
-                sceneController.exportSelected(action.uri, action.format)
+                sceneController.exportSelected(action.uri)
             }
             is PockRefAction.ConfirmExportGif -> {
                 _uiState.update { it.copy(showExportDialog = false) }
@@ -2940,7 +2940,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     // regardless of timestamp sort. Re-serializes the prefs
     // entry so the flag survives process death.
     internal fun togglePinRecentScene(uri: String) {
-        val target = _uiState.value.recentScenes.firstOrNull { it.uri == uri } ?: return
+        if (_uiState.value.recentScenes.none { it.uri == uri }) return
         val updated = _uiState.value.recentScenes.map {
             if (it.uri == uri) it.copy(pinned = !it.pinned) else it
         }

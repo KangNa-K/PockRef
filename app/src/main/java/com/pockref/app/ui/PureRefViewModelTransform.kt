@@ -602,6 +602,7 @@ internal fun invertHistoryEntry(
  * already carries everything needed to reverse itself. The argument is
  * kept in the signature for symmetry / future use.
  */
+@Suppress("UNUSED_PARAMETER")
 internal fun invertDiff(diff: SceneDiff, appliedState: PockRefUiState): SceneDiff {
     return when (diff) {
         is SceneDiff.ReplaceImages -> SceneDiff.ReplaceImages(
@@ -859,8 +860,8 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     else -> updated.lastOrNull()
                 },
                 selectedImageIds = updated,
-                selectedGroupIds = state.groups.filter { group ->
-                    group.imageIds.isNotEmpty() && group.imageIds.all { it in updated }
+                selectedGroupIds = state.groups.filter { candidate ->
+                    candidate.imageIds.isNotEmpty() && candidate.imageIds.all { it in updated }
                 }.mapTo(linkedSetOf()) { it.id },
                 topToolbarExpanded = updated.isEmpty(),
                 // V_NOW: re-show the selection toolbar on
@@ -869,58 +870,6 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
             )
                 .normalizeSelection()
         }
-    }
-
-    /**
-     * V_NOW (4-corner scale handles, SINGLE path):
-     * apply an ABSOLUTE scale to the SINGLE
-     * selected image, pinning [worldPivot] (the
-     * drag's anchor corner) in world space and
-     * translating the image so the new center is
-     * at [worldCenter]. Distinct from the
-     * existing [transformSelectedImage] (which
-     * multiplies a RELATIVE [scaleChange] onto
-     * the current image's scale each frame)
-     * because the corner drag wants a fixed
-     * reference frame: the down-time diagonal
-     * length. The scale baseline ([initialScale]
-     * + the down-time diagonal length) is
-     * captured at the down event by the pointer
-     * handler.
-     *
-     * Lock guard: applies to the SINGLE selected
-     * image only. If that image is locked
-     * (per-image OR via the app-wide
-     * [PockRefUiState.globalImageLock]), the
-     * call is a no-op. The corner hit-test in
-     * [PockRefCanvas] also gates on this BEFORE
-     * starting the drag, so a normal user never
-     * reaches this reducer with a locked image.
-     *
-     * The scale is clamped to the [0.1, 8.0]
-     * range that the relative path uses, so the
-     * absolute and relative code paths are
-     * behaviorally consistent at the boundary.
-     * [worldCenter] is supplied by the pointer
-     * handler (already a world-space point from
-     * its screen → world conversion).
-     */
-    internal fun setSelectedImageScale(newScale: Float, worldCenter: Offset, worldPivot: Offset) {
-        // V_NOW (2026-06-10 single-image corner-handle
-        // v3): the legacy SINGLE-path absolute
-        // `(newScale, worldCenter, worldPivot)`
-        // reducer is now UNREACHABLE — SINGLE and
-        // GROUP corner drags both dispatch
-        // [PockRefAction.SetSelectedImagesScale]
-        // (see the pointer handler in
-        // [PockRefApp.PockRefCanvas]). The
-        // function body is kept here (with a
-        // no-op early return) so any stale call
-        // site that still has a reference to it
-        // compiles. It will be deleted in a
-        // follow-up commit. The new reducer lives
-        // in
-        // [com.pockref.app.ui.PureRefViewModelBatch.setSelectedImagesScale].
     }
 
     internal fun moveImage(imageId: String, delta: Offset) {
@@ -950,7 +899,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
     internal fun bringImageToFront(imageId: String) {
         if (imageId.isBlank()) return
         val state = mainVm._uiState.value
-        val target = state.images.firstOrNull { it.id == imageId } ?: return
+        if (state.images.none { it.id == imageId }) return
         val targetIds = if (state.editingGroupId == null) {
             state.groupContaining(imageId)?.imageIds?.toSet() ?: setOf(imageId)
         } else setOf(imageId)
@@ -1330,6 +1279,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         mainVm.endSceneGesture()
     }
 
+    @Suppress("UNUSED_PARAMETER")
     internal fun zoomCanvas(scaleChange: Float, focus: Offset) {
         // [focus] parameter is intentionally ignored. The no-selection
         // pinch / rotate gestures all dispatch [ZoomCanvas] expecting
@@ -1576,8 +1526,8 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                     if (selected.size == 1) {
                         Pair(worldPivot, Offset.Zero)
                     } else {
-                        val pan = (aabb.center - worldPivot) * ((effectiveScale - 1f) / effectiveScale)
-                        Pair(aabb.center, pan)
+                        val centerPan = (aabb.center - worldPivot) * ((effectiveScale - 1f) / effectiveScale)
+                        Pair(aabb.center, centerPan)
                     }
                 }
             }

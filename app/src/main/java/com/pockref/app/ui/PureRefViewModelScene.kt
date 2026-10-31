@@ -943,7 +943,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
     fun retryFailedOptimization() {
         val lazyTasks = mainVm.pendingLazyTasks ?: return
-        val bDir = mainVm.backupDir
         mainVm._uiState.update {
             it.copy(
                 batchOptimizeState = it.batchOptimizeState.copy(
@@ -1037,7 +1036,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
     private suspend fun writeSceneToFile(uri: Uri, truncate: Boolean, images: List<SceneImage>): Boolean {
         mainVm.setBusy(true)
-        var success = false
         try {
             withContext(Dispatchers.IO) {
                 val scene = mainVm._uiState.value.toScene().copy(images = images)
@@ -1070,10 +1068,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         mainVm._uiState.update { it.copy(images = images) }
         mainVm.lastSaveSnapshotHash = mainVm.computeQuickHash(mainVm._uiState.value.toScene())
         mainVm.syncDirectSaveState()
-        success = true
         mainVm.setBusy(false)
         mainVm._uiState.update { it.copy(isSaving = false) }
-        return success
+        return true
     }
 
     fun undoLastOptimization() {
@@ -1238,7 +1235,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
      * are copied verbatim so JPEG/GIF/WebP data never receives another
      * lossy encode.
      */
-    fun exportSelected(uri: Uri, _format: ExportFormat) {
+    fun exportSelected(uri: Uri) {
         val state = mainVm._uiState.value
         val targets = if (state.selectedImageIds.isNotEmpty()) {
             state.images.filter { it.id in state.selectedImageIds }

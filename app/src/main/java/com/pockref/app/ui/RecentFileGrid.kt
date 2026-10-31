@@ -20,7 +20,6 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -270,7 +269,6 @@ private fun RecentFileTile(
     val commitThresholdPx = with(density) { SwipeDimens.commitThreshold.toPx() }
     val visualRevealStartPx = with(density) { SwipeDimens.visualRevealStart.toPx() }
     val maxDragPx = with(density) { SwipeDimens.maxDrag.toPx() }
-    val buttonHalfWidthPx = with(density) { (SwipeDimens.buttonSizeExpanded / 2).toPx() }
     val emphasizedDecelerate = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f)
     val emphasizedAccelerate = CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)
 
@@ -390,37 +388,20 @@ private fun RecentFileTile(
             .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
+        Box(modifier = Modifier.fillMaxWidth().aspectRatio(1f)) {
             // V_NOW (2026-06-11, swipe v6 position fix):
-            // we use [BoxWithConstraints] so [maxWidth]
-            // is in scope. The button's modifier chain
-            // (see below) anchors the button at the
-            // tile center (via [fillMaxSize +
+            // the button's modifier chain (see below)
+            // anchors the button at the tile center
+            // (via [fillMaxSize +
             // wrapContentSize(Center)]) and then
             // translates it horizontally with
             // [graphicsLayer] to land on the
-            // revealed-strip midpoint. We pass the
-            // tile half-width into the button as a
-            // captured local of the SwipeActionButton
-            // call site; this avoids relying on
-            // [GraphicsLayerScope.size.width] which is
-            // unreliable in the nested graphicsLayer
-            // lambda + the surrounding
-            // [fillMaxSize+wrapContentSize+graphicsLayer]
-            // modifier chain in this compose-bom
-            // configuration.
-            val tileHalfWidthPx = with(density) { maxWidth.toPx() / 2f }
-            // (We tried using this val directly in
-            // the [graphicsLayer] lambda below, but
-            // a captured outer-lambda val inside the
-            // nested receiver scope is not visible
-            // in this compose-bom 1.7+ build. The
-            // [tileWidthPx] state set by
-            // [Modifier.onSizeChanged] on the
-            // thumbnail Box is used instead; see
-            // the comments at the [tileWidthPx]
-            // declaration and the
-            // [graphicsLayer] block below.)
+            // revealed-strip midpoint. The tile width
+            // comes from the [tileWidthPx] state set by
+            // [Modifier.onSizeChanged] on the thumbnail
+            // Box; see the comments at the
+            // [tileWidthPx] declaration and the
+            // [graphicsLayer] block below.
             // 1. Delete button — DEAD CODE in v6 (the
             //    v5 full-tile replace surface is
             //    removed; the v6 path uses
@@ -670,12 +651,11 @@ private fun RecentFileTile(
             //    dragOffset/2 (right). We anchor the
             //    button at Alignment.Center (tile_w/2)
             //    and translate by
-            //    dragOffset/2 + button_w/2 (sign by
+            //    tile_w/2 + dragOffset/2 (sign by
             //    direction) so the center lands on the
-            //    strip midpoint. The constant
-            //    [buttonHalfWidthPx] is in pixels (the
-            //    unit graphicsLayer.translationX
-            //    operates in).
+            //    strip midpoint. [tileWidthPx] is in
+            //    pixels (the unit
+            //    graphicsLayer.translationX operates in).
             if (kotlin.math.abs(dragOffset) >= visualRevealStartPx) {
                 val revealProgressRaw = (
                     (kotlin.math.abs(dragOffset) - visualRevealStartPx) /
@@ -757,14 +737,13 @@ private fun RecentFileTile(
                         //   tile_w + dragOffset/2
                         // and the anchor is at tile_w/2,
                         // so the delta is tile_w/2 +
-                        // dragOffset/2. The
-                        // [tileHalfWidthPx] constant
-                        // here is the tile width in
-                        // pixels captured at the top of
-                        // the composable; the previous
-                        // attempts that just used
-                        // [buttonHalfWidthPx] (no tile
-                        // term) or [Alignment.CenterEnd]
+                        // dragOffset/2. The tile
+                        // half-width comes from
+                        // [tileWidthPx] (see below);
+                        // the previous attempts that
+                        // used only the button
+                        // half-width (no tile term)
+                        // or [Alignment.CenterEnd]
                         // (which the compose-bom 1.7+
                         // align overload rejects) ended
                         // up placing the button ~button_w
@@ -794,33 +773,6 @@ private fun RecentFileTile(
                             // independent because the
                             // [goingLeft] condition flips
                             // the sign of the whole term.
-                            // The graphicsLayer lambda
-                            // is a [GraphicsLayerScope]
-                            // receiver block; the outer
-                            // BoxWithConstraintsScope
-                            // captured val
-                            // [tileHalfWidthPx] is not
-                            // visible from inside this
-                            // nested lambda in some
-                            // compose-bom 1.7+ build
-                            // configurations (compiler
-                            // resolves the receiver
-                            // shadowing chain but
-                            // doesn't always chain
-                            // through the captured
-                            // locals). Recompute the
-                            // half-tile-width from
-                            // [size.width] inside the
-                            // lambda, which is the
-                            // GraphicsLayerScope's
-                            // current measured size of
-                            // the button's wrapper
-                            // Box (after
-                            // [wrapContentSize] and
-                            // [fillMaxSize] constraints
-                            // resolve, [size.width] is
-                            // the tile's full width
-                            // because we filled max).
                             // V_NOW (2026-06-11, swipe v6
                             // position fix #3): the prior
                             // attempt used [size.width] here
