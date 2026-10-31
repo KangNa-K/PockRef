@@ -1,5 +1,6 @@
 package com.pockref.app
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -152,7 +153,12 @@ private class FloatingWindowLifecycleOwner : LifecycleOwner {
     }
 }
 
-/** Observes overlay-window input before forwarding it unchanged to Compose. */
+/**
+ * Observes overlay-window input before forwarding it unchanged to Compose.
+ * Created only in code (never inflated from XML), so it doesn't need the
+ * standard `(Context, AttributeSet)` constructors.
+ */
+@SuppressLint("ViewConstructor")
 private class SpenInputFrameLayout(
     context: Context,
     private val onMotionEvent: (MotionEvent) -> Unit,
@@ -516,6 +522,9 @@ class FloatingWindowService : Service() {
             }
             elevation = dp(6).toFloat()
             contentDescription = getString(R.string.app_name)
+            // Taps arrive via BubbleTouchListener -> performClick(); TalkBack's
+            // click action reaches this listener directly.
+            setOnClickListener { restoreFromBubble() }
             setOnTouchListener(BubbleTouchListener(params))
         }
         bubbleView = bubble
@@ -570,7 +579,7 @@ class FloatingWindowService : Service() {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (!dragged && event.actionMasked == MotionEvent.ACTION_UP) {
-                        restoreFromBubble()
+                        view.performClick()
                     } else {
                         snapBubbleToNearestEdge(view)
                     }
@@ -602,6 +611,10 @@ class FloatingWindowService : Service() {
         } else {
             0
         }
+        // statusBars() insets are 0 while the bar is hidden and don't exist
+        // before API 30, so the framework dimen stays as the floor that keeps
+        // the overlay below the status bar (2.2.3 fix).
+        @Suppress("InternalInsetResource", "DiscouragedApi")
         val resourceId = resources.getIdentifier("status_bar_height", "dimen", "android")
         val resourceInset = if (resourceId > 0) {
             resources.getDimensionPixelSize(resourceId)

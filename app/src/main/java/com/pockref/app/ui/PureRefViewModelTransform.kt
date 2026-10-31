@@ -1877,6 +1877,10 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         }
         // Also copy the first selected image to the system
         // clipboard so the user can paste it into other apps.
+        // The MediaStore insert below needs scoped storage (API 29+);
+        // older devices would need WRITE_EXTERNAL_STORAGE, which we
+        // don't request, so they keep the in-app duplicate only.
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return
         val firstOriginal = originals.firstOrNull() ?: return
         mainVm.viewModelScope.launch {
             try {

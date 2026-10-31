@@ -6717,6 +6717,9 @@ private fun PockRefCanvas(
     // restored, so we never leak a hook on the root
     // view.
     androidx.compose.runtime.DisposableEffect(localView) {
+        // Log-only hook: it never consumes or acts on a tap, so there is no
+        // click to forward to performClick().
+        @Suppress("ClickableViewAccessibility")
         val previous = localView.setOnTouchListener { _, motionEvent ->
             val toolType = motionEvent.getToolType(0)
             val buttonState = motionEvent.buttonState
@@ -9232,6 +9235,10 @@ private fun PockRefCanvas(
                 val edgeThresholdPx = 20f
                 val targetSwitchCooldownMs = 500L
 
+                // Single scope that loops until the coroutine is cancelled, so no
+                // events can fall between scopes; lint only sees the lambda's
+                // implicit return value.
+                @Suppress("ReturnFromAwaitPointerEventScope")
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
