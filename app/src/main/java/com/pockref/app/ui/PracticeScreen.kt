@@ -52,8 +52,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pockref.app.data.SceneImageDecoder
@@ -721,10 +721,12 @@ private fun CountdownBadge(
  * V_NOW: image layer. Decodes the [SceneImage] via the
  * existing [SceneImageDecoder] pipeline at the screen's
  * pixel dimensions so the decoder picks the closest
- * DECODE_LADDER level (e.g. 1080×1920 phone → level 3 =
- * 1024px long side). The bitmap is cached by
- * `remember(image.id)` so the same image across multiple
- * ticker frames doesn't re-decode.
+ * DECODE_LADDER level (e.g. 2800×1752 tablet → 4096px
+ * long side). The window size is read in px from
+ * [LocalWindowInfo] (it also tracks the floating-window
+ * overlay) and bucketed to a ladder rung, so the bitmap
+ * cached by `remember` only re-decodes when the rung
+ * changes, not on every px of a window resize.
  *
  * [alpha] applies the rest-phase dim transition (M3
  * medium-emphasis 300ms motion, see [PracticeRunningView]).
@@ -736,15 +738,14 @@ private fun PracticeImageLayer(
     alpha: Float,
 ) {
     if (image == null) return
-    val configuration = LocalConfiguration.current
-    val displayWidth = configuration.screenWidthDp
-    val displayHeight = configuration.screenHeightDp
-    val bitmap = remember(image.id, displayWidth, displayHeight) {
+    val containerSize = LocalWindowInfo.current.containerSize
+    val decodeSide = practiceImageDecodeSide(containerSize.width, containerSize.height) ?: return
+    val bitmap = remember(image.id, decodeSide) {
         decodePracticeImage(
             image = image,
             imageDecoder = imageDecoder,
-            displayWidth = displayWidth,
-            displayHeight = displayHeight,
+            displayWidth = decodeSide,
+            displayHeight = decodeSide,
         )
     } ?: return
     Image(
@@ -757,9 +758,21 @@ private fun PracticeImageLayer(
 }
 
 /**
+ * Maps the practice window size in px to the DECODE_LADDER
+ * rung that covers its long side, capped at the largest rung.
+ * Returns null for a not-yet-measured (0×0) window.
+ */
+internal fun practiceImageDecodeSide(containerWidthPx: Int, containerHeightPx: Int): Int? {
+    if (containerWidthPx <= 0 || containerHeightPx <= 0) return null
+    val longSide = maxOf(containerWidthPx, containerHeightPx)
+    val ladder = SceneImageDecoder.DECODE_LADDER
+    return ladder.firstOrNull { it >= longSide } ?: ladder.last()
+}
+
+/**
  * V_NOW: image-bytes resolver + bitmap decode. Mirrors
  * the canvas path: [SceneImageDecoder.decode] with the
- * screen dimensions so the decoder picks the closest
+ * window px dimensions so the decoder picks the closest
  * DECODE_LADDER level.
  */
 private fun decodePracticeImage(
