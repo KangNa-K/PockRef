@@ -2925,9 +2925,7 @@ internal fun SelectionBottomSheet(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             val gifImageId = selectedGifPlaybackImageId
-            if (hasGifControls && gifImageId != null &&
-                selectedGifPlaybackSource != null && selectedGifPlaybackState != null
-            ) {
+            if (hasGifControls) {
                 GifFrameControlBar(
                     source = selectedGifPlaybackSource,
                     playback = selectedGifPlaybackState,
@@ -7335,7 +7333,7 @@ private fun PockRefCanvas(
                                     val ct = cornerImages.first()
                                     projectImageRotationHandleToScreen(
                                         imageCenter = ct.center,
-                                        imageHeight = ct.displaySize.height.toFloat() * ct.scale,
+                                        imageHeight = ct.displaySize.height * ct.scale,
                                         rotationDegrees = ct.rotationDegrees,
                                         handleOffsetPx = rotationHandleOffsetPx,
                                         canvasScale = cs2.canvasScale,
@@ -7403,8 +7401,8 @@ private fun PockRefCanvas(
                                     val cornerAabb: Rect
                                     if (hasSingleSelection) {
                                         val ct = cornerImages.first()
-                                        val imgW = ct.displaySize.width.toFloat() * ct.scale
-                                        val imgH = ct.displaySize.height.toFloat() * ct.scale
+                                        val imgW = ct.displaySize.width * ct.scale
+                                        val imgH = ct.displaySize.height * ct.scale
                                         gProjected = projectImageCornersToScreen(
                                             imageCenter = ct.center,
                                             imageWidth = imgW,
@@ -7422,8 +7420,8 @@ private fun PockRefCanvas(
                                         )
                                         cornerAabb = rotatedFootprintAabb(
                                             center = ct.center,
-                                            displayW = ct.displaySize.width.toFloat(),
-                                            displayH = ct.displaySize.height.toFloat(),
+                                            displayW = ct.displaySize.width,
+                                            displayH = ct.displaySize.height,
                                             scale = ct.scale,
                                             rotationDegrees = ct.rotationDegrees,
                                         )
@@ -7473,8 +7471,8 @@ private fun PockRefCanvas(
                                                     img.id to
                                                         rotatedFootprintAabb(
                                                             center = img.center,
-                                                            displayW = img.displaySize.width.toFloat(),
-                                                            displayH = img.displaySize.height.toFloat(),
+                                                            displayW = img.displaySize.width,
+                                                            displayH = img.displaySize.height,
                                                             scale = img.scale,
                                                             rotationDegrees = img.rotationDegrees,
                                                         )
@@ -7504,8 +7502,8 @@ private fun PockRefCanvas(
                                         if (hasSingleSelection) {
                                             val ct = cornerImages.first()
                                             singleRot = ct.rotationDegrees
-                                            singleW = ct.displaySize.width.toFloat() * ct.scale
-                                            singleH = ct.displaySize.height.toFloat() * ct.scale
+                                            singleW = ct.displaySize.width * ct.scale
+                                            singleH = ct.displaySize.height * ct.scale
                                             singleInitScale = ct.scale
                                             // gProjected contains the image's actual
                                             // rotated corners (from projectImageCornersToScreen).
@@ -9212,8 +9210,8 @@ private fun PockRefCanvas(
         val viewRect = worldViewportRect(
             canvasOffset = renderCanvasOffset,
             canvasScale = state.canvasScale,
-            viewportWidth = size.width.toFloat(),
-            viewportHeight = size.height.toFloat(),
+            viewportWidth = size.width,
+            viewportHeight = size.height,
         )
 
         val groupByFirstMember = state.groups.mapNotNull { group ->

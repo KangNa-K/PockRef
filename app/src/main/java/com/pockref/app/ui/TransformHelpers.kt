@@ -345,7 +345,7 @@ internal fun computeRotationSnapDecision(
             // 200ms pause).
             return if (isInZone) {
                 val newGuide = AngleSnapGuide(
-                    snappedDegrees = target!!,
+                    snappedDegrees = target,
                     isEngaged = false,
                     startTimeMs = previousGuide.startTimeMs,
                     lastAngleChangeMs = now,
@@ -387,7 +387,7 @@ internal fun computeRotationSnapDecision(
         val shouldFire = elapsed >= debounceMs
 
         val newGuide = AngleSnapGuide(
-            snappedDegrees = target!!,
+            snappedDegrees = target,
             isEngaged = false,
             startTimeMs = previousGuide?.startTimeMs ?: now,
             lastAngleChangeMs = now,

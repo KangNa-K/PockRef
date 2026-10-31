@@ -211,7 +211,7 @@ class PurV2ParserInstrumentedTest {
             assertEquals(Offset(120f, -80f), note.position)
             assertEquals(40f, note.fontSize, 0.001f)
             assertTrue(note.boxSize!!.width > 1f)
-            assertTrue(note.boxSize!!.height > 1f)
+            assertTrue(note.boxSize.height > 1f)
         } finally { codec.release(); file.delete() }
     }
 
@@ -225,7 +225,7 @@ class PurV2ParserInstrumentedTest {
             assertEquals(Offset(120f, -80f), note.position)
             assertEquals(80f, note.boxSize!!.width, 0.001f)
             assertEquals(40f, note.fontSize, 0.001f)
-            assertTrue("Automatic height must include wrapped lines", note.boxSize!!.height > 80f)
+            assertTrue("Automatic height must include wrapped lines", note.boxSize.height > 80f)
         } finally { codec.release(); file.delete() }
     }
 
@@ -241,7 +241,7 @@ class PurV2ParserInstrumentedTest {
             assertEquals(82f * nativeScale, note.boxSize!!.width, 0.01f)
             assertEquals(22f * nativeScale, note.fontSize, 0.01f)
             assertEquals(Offset(-10772.896f, -10667.966f), note.position)
-            assertTrue("WDAD must retain its two-line desktop layout", note.boxSize!!.height > note.fontSize * 2)
+            assertTrue("WDAD must retain its two-line desktop layout", note.boxSize.height > note.fontSize * 2)
         } finally { codec.release() }
     }
 
@@ -253,7 +253,7 @@ class PurV2ParserInstrumentedTest {
         try {
             val note = codec.readFromFile(file).markupTexts.single()
             assertEquals(400f, note.boxSize!!.height, 0.001f)
-            assertTrue(note.boxSize!!.width > 1f)
+            assertTrue(note.boxSize.width > 1f)
             assertEquals(40f, note.fontSize, 0.001f)
         } finally { codec.release(); file.delete() }
     }

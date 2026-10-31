@@ -1407,7 +1407,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
             rotationSnapEngageJob?.cancel()
             rotationSnapEngageJob = null
         } else if (rotationSnapEngageJob == null) {
-            val enteredMs = decision.newGuide?.angleEnteredSnapZoneMs ?: now
+            val enteredMs = decision.newGuide.angleEnteredSnapZoneMs ?: now
             val remaining = (enteredMs + ROTATION_SNAP_DEBOUNCE_MS) - now
             if (remaining > 0L) {
                 scheduleRotationSnapEngage(

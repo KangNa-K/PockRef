@@ -102,7 +102,7 @@ class CanvasMinimapTest {
             imageBytes = ByteArray(0),
         )
         val aabb = imageRotatedAabb(image)
-        val expectedHalf = side / 2f * kotlin.math.sqrt(2f).toFloat()
+        val expectedHalf = side / 2f * kotlin.math.sqrt(2f)
         assertEquals(-expectedHalf, aabb.left, 0.01f)
         assertEquals(-expectedHalf, aabb.top, 0.01f)
         assertEquals(expectedHalf, aabb.right, 0.01f)

@@ -4,8 +4,6 @@
     androidx.compose.foundation.ExperimentalFoundationApi::class,
 )
 
-@file:Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
-
 package com.pockref.app.ui
 
 import androidx.compose.animation.core.CubicBezierEasing

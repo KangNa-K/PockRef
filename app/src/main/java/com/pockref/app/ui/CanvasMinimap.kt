@@ -471,7 +471,7 @@ private data class MinimapColors(
                     // fired) or `true` (= release happened
                     // before the timeout = no long-press).
                     val releasedBeforeTimeout = withTimeoutOrNull(
-                        longPressTimeoutMs.toLong(),
+                        longPressTimeoutMs,
                     ) {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -1424,7 +1424,7 @@ internal fun CollapsedMinimapIcon(
                     // the expanded minimap above.
                     val longPressTimeoutMs = MINIMAP_LONG_PRESS_TIMEOUT_MS
                     val releasedBeforeTimeout = withTimeoutOrNull(
-                        longPressTimeoutMs.toLong(),
+                        longPressTimeoutMs,
                     ) {
                         while (true) {
                             val event = awaitPointerEvent()

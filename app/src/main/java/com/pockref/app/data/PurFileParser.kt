@@ -474,7 +474,7 @@ class PurFileParser {
                 (android.graphics.Color.alpha(nativeArgb) * native.backgroundOpacity).roundToInt() == expectedAlpha
             native.copy(
                 id = saved.optString("id", native.id).ifBlank { native.id },
-                backgroundColor = if (nativeMatchesSaved) savedColor!! else native.backgroundColor,
+                backgroundColor = if (nativeMatchesSaved) savedColor else native.backgroundColor,
                 backgroundOpacity = if (nativeMatchesSaved) savedOpacity else native.backgroundOpacity,
                 movesAsUnit = mergedMovesAsUnit,
                 positionLocked = native.positionLocked,
