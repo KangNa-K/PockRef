@@ -158,7 +158,10 @@ fun BoxScope.PracticeConfigSheet(
     var customDialogTarget by rememberSaveable {
         mutableStateOf<CustomDialogTarget?>(null)
     }
-    var customInputText by rememberSaveable(customDialogTarget) {
+    // Not keyed on `customDialogTarget`: each `onClickCustom` sets the
+    // target and pre-fills this text together, and a key change would
+    // reset the text to "" right after that pre-fill.
+    var customInputText by rememberSaveable {
         mutableStateOf("")
     }
 

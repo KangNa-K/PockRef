@@ -5,8 +5,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.test.espresso.Espresso.pressBack
 import com.pockref.app.model.PockRefUiState
@@ -75,6 +77,28 @@ class PracticeConfigPanelTest {
         compose.runOnIdle { assertEquals(config, started) }
     }
 
+    @Test fun customDialogPrefillsCurrentWholeMinuteValue() {
+        // 7m countdown and 3m rest are not presets, so each row's custom
+        // chip shows the value and reopening the dialog should pre-fill it.
+        val config = PracticeConfig(420_000L, 180_000L, false, true)
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(600.dp, 600.dp)) {
+                    PracticeConfigSheet(true, 1, config, {}, {})
+                }
+            }
+        }
+        val input = hasSetTextAction()
+        compose.onNodeWithText("7m").performScrollTo().performClick()
+        compose.onNodeWithText("自定义倒计时").assertIsDisplayed()
+        compose.onNode(input).assert(editableTextEquals("7"))
+        compose.onNodeWithText("取消").performClick()
+
+        compose.onNodeWithText("3m").performScrollTo().performClick()
+        compose.onNodeWithText("自定义休息").assertIsDisplayed()
+        compose.onNode(input).assert(editableTextEquals("3"))
+    }
+
     @Test fun closeAndBackDismissWithoutStartingAndReopenResetsEdits() {
         val visible = mutableStateOf(true)
         var dismissals = 0
@@ -102,4 +126,9 @@ class PracticeConfigPanelTest {
             assertEquals(0, starts)
         }
     }
+
+    private fun editableTextEquals(text: String) = SemanticsMatcher.expectValue(
+        SemanticsProperties.EditableText,
+        AnnotatedString(text),
+    )
 }
