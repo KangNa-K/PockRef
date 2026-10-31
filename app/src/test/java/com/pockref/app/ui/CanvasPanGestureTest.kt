@@ -1,6 +1,7 @@
 package com.pockref.app.ui
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -320,5 +321,19 @@ class CanvasPanGestureTest {
         )
 
         assertEquals(Offset.Zero, delta)
+    }
+
+    @Test
+    fun lassoBounds_startAsPointThenCoverWholePath() {
+        var bounds = expandLassoBounds(null, Offset(100f, 100f))
+        assertEquals(Rect(Offset(100f, 100f), Offset(100f, 100f)), bounds)
+
+        // Drag up-left, then down-right past the start: the box must keep
+        // both extremes (the old code kept only the min corner -> 0x0).
+        for (p in listOf(Offset(40f, 60f), Offset(220f, 180f), Offset(150f, 120f))) {
+            bounds = expandLassoBounds(bounds, p)
+        }
+
+        assertEquals(Rect(left = 40f, top = 60f, right = 220f, bottom = 180f), bounds)
     }
 }

@@ -7108,7 +7108,8 @@ private fun PockRefCanvas(
                     // without arming image drag.
                     var tapTargetImageId: String? = null
                     var lassoActive = false
-                    var lassoStart: Offset? = null
+                    // Screen-space bounding box of the lasso path so far.
+                    var lassoBounds: Rect? = null
                     var boxSelectStart: Offset? = null
                     var boxSelectDragging = false
                     // V_NOW (4-corner scale handles):
@@ -8421,7 +8422,7 @@ private fun PockRefCanvas(
                                     )
                                     boxSelectDragging = false
                                     lassoActive = true
-                                    lassoStart = change.position
+                                    lassoBounds = expandLassoBounds(null, change.position)
                                 }
                             }
 
@@ -8468,12 +8469,7 @@ private fun PockRefCanvas(
                                 val bottom = maxOf(start.y, cur.y)
                                 currentOnAction(PockRefAction.UpdateBoxSelectRect(RectF(left, top, right, bottom), cur))
                             } else if (lassoActive) {
-                                lassoStart = lassoStart?.let { ls ->
-                                    Offset(
-                                        minOf(ls.x, change.position.x),
-                                        minOf(ls.y, change.position.y),
-                                    )
-                                } ?: change.position
+                                lassoBounds = expandLassoBounds(lassoBounds, change.position)
                             } else {
                                 val panDelta = canvasPanDeltaForPointerCount(
                                     pointerCount = 1,
@@ -8667,7 +8663,7 @@ private fun PockRefCanvas(
                     // result in deselect.
                     if (isTap && lassoActive) {
                         lassoActive = false
-                        lassoStart = null
+                        lassoBounds = null
                     }
 
                     // V_NOW (2026-06-11): combine
@@ -9082,13 +9078,18 @@ private fun PockRefCanvas(
                     if (boxSelectDragging && boxSelectStart != null) {
                         currentOnAction(PockRefAction.CommitBoxSelect)
                     }
-                    if (lassoActive && lassoStart != null) {
-                        val end = lassoStart
-                        val left = minOf(lassoStart.x, end.x)
-                        val top = minOf(lassoStart.y, end.y)
-                        val right = maxOf(lassoStart.x, end.x)
-                        val bottom = maxOf(lassoStart.y, end.y)
-                        currentOnAction(PockRefAction.LassoSelect(RectF(left, top, right, bottom)))
+                    val finalLassoBounds = lassoBounds
+                    if (lassoActive && finalLassoBounds != null) {
+                        currentOnAction(
+                            PockRefAction.LassoSelect(
+                                RectF(
+                                    finalLassoBounds.left,
+                                    finalLassoBounds.top,
+                                    finalLassoBounds.right,
+                                    finalLassoBounds.bottom,
+                                ),
+                            ),
+                        )
                     }
                 }
             }
@@ -11062,6 +11063,22 @@ internal fun computeEdgeAutoScroll(
     }
     return Offset(dx, dy)
 }
+
+/**
+ * Grows the lasso's screen-space bounding box to include [point].
+ * `null` starts a new (zero-size) box at [point].
+ */
+internal fun expandLassoBounds(bounds: Rect?, point: Offset): Rect =
+    if (bounds == null) {
+        Rect(point, point)
+    } else {
+        Rect(
+            left = minOf(bounds.left, point.x),
+            top = minOf(bounds.top, point.y),
+            right = maxOf(bounds.right, point.x),
+            bottom = maxOf(bounds.bottom, point.y),
+        )
+    }
 
 internal fun canvasPanDeltaForPointerCount(
     pointerCount: Int,
