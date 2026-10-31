@@ -4912,12 +4912,12 @@ private fun BoxScope.MinimapChrome(
         while (true) {
             delay(3000L)
             // If no interaction happened during the wait, dismiss.
-            if (sliderInteractionStamp.value == 0L) {
+            if (sliderInteractionStamp.longValue == 0L) {
                 zoomSliderActive.value = false
                 break
             }
             // An interaction occurred; reset stamp and wait again.
-            sliderInteractionStamp.value = 0L
+            sliderInteractionStamp.longValue = 0L
         }
     }
 
@@ -5026,7 +5026,7 @@ private fun BoxScope.MinimapChrome(
                     onLongPress = {
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                         zoomSliderActive.value = true
-                        sliderInteractionStamp.value = System.currentTimeMillis()
+                        sliderInteractionStamp.longValue = System.currentTimeMillis()
                     },
                     // V_NOW: do NOT dismiss on long-press end;
                     // slider stays for drag. Dismissed via
@@ -5047,7 +5047,7 @@ private fun BoxScope.MinimapChrome(
                         val newScale = (currentCanvasScale * (1f + scaleDelta))
                             .coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
                         currentOnAction(PockRefAction.SetCanvasZoom(newScale))
-                        sliderInteractionStamp.value = System.currentTimeMillis()
+                        sliderInteractionStamp.longValue = System.currentTimeMillis()
                     },
                 )
             }
@@ -5275,7 +5275,7 @@ private fun BoxScope.MinimapChrome(
                     onLongPress = {
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                         zoomSliderActive.value = true
-                        sliderInteractionStamp.value = System.currentTimeMillis()
+                        sliderInteractionStamp.longValue = System.currentTimeMillis()
                     },
                     // V_NOW: do NOT set zoomSliderActive = false
                     // on long-press end. The slider should remain
@@ -5304,7 +5304,7 @@ private fun BoxScope.MinimapChrome(
                         // expanded panel — so the slider
                         // overlay doesn't fade out from
                         // under the user's finger mid-drag.
-                        sliderInteractionStamp.value = System.currentTimeMillis()
+                        sliderInteractionStamp.longValue = System.currentTimeMillis()
                     },
                 )
         }
@@ -5424,7 +5424,7 @@ private fun BoxScope.MinimapChrome(
                         onDragStart = {
                             hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                             zoomSliderActive.value = true
-                            sliderInteractionStamp.value = System.currentTimeMillis()
+                            sliderInteractionStamp.longValue = System.currentTimeMillis()
                         },
                         onDrag = { _, dragAmount ->
                             // dragAmount.y: negative when
@@ -5440,7 +5440,7 @@ private fun BoxScope.MinimapChrome(
                             val newScale = (currentCanvasScale * (1f + scaleDelta))
                                 .coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
                             currentOnAction(PockRefAction.SetCanvasZoom(newScale))
-                            sliderInteractionStamp.value = System.currentTimeMillis()
+                            sliderInteractionStamp.longValue = System.currentTimeMillis()
                         },
                         onDragEnd = {
                             // Don't collapse here — the
@@ -5534,7 +5534,7 @@ private fun BoxScope.MinimapChrome(
                 orientation = sliderOrientation,
                 currentValue = currentCanvasScale,
                 onValueChange = { newValue ->
-                    sliderInteractionStamp.value = System.currentTimeMillis()
+                    sliderInteractionStamp.longValue = System.currentTimeMillis()
                     currentOnAction(PockRefAction.SetCanvasZoom(newValue))
                 },
                 onValueChangeFinished = { zoomSliderActive.value = false },
