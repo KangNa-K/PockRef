@@ -8,8 +8,6 @@
     <string name="bg_mint">薄荷</string>
     <string name="bg_sky">天蓝</string>
     <string name="bg_custom">自定义</string>
-    <string name="bg_dialog_title">背景色</string>
-    <string name="bg_background_label">背景</string>
     <!-- V_NOW (2026-06-16, "启动页导出运行日志" feature):
          Button label and toast text for the LogExportFab on the start page.
          Same Chinese text as the default-locale (en) since PockRef
@@ -18,5 +16,4 @@
     <string name="log_export_toast_success">日志已导出: %1$s</string>
     <string name="log_export_toast_write_failed">日志写入失败: %1$s</string>
     <string name="log_export_toast_build_failed">日志导出失败: %1$s</string>
-    <string name="log_export_toast_timeout">日志导出超时</string>
 </resources>

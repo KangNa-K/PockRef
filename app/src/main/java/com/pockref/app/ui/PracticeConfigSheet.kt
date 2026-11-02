@@ -1,41 +1,59 @@
 package com.pockref.app.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import com.pockref.app.model.PracticeConfig
+import com.pockref.app.ui.theme.Dimens
 import kotlin.math.roundToInt
 
 /**
  * V_NOW (2026-06-08 速写练习 commit 2 — extended
  * duration chips + custom): the pre-flight config sheet.
  *
- * 4-setting-row [ModalBottomSheet] that lets the user tweak
+ * Uses the same [CanvasSidePopup] as settings to let the user tweak
  * [PracticeConfig] before starting a slideshow session.
  *
  * Layout (top to bottom):
@@ -65,10 +83,8 @@ import kotlin.math.roundToInt
  * [PracticeConfig], the pref key is gone from
  * [com.pockref.app.data.AppPreferences.lastPracticeConfig],
  * and the practice mode is silent by design. The
- * config sheet now has 4 setting rows (was 3) and
- * surfaces a slightly taller total-height to keep
- * the start button comfortably above the navigation
- * bar.
+ * config panel has 4 setting rows; its scrollable body
+ * keeps the start button visible in short windows.
  *
  * V_NOW (2026-06-08 user feedback "倒计时时长新增 10
  * 分钟和自定义两个按钮..."): the countdown and
@@ -96,18 +112,18 @@ import kotlin.math.roundToInt
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PracticeConfigSheet(
+fun BoxScope.PracticeConfigSheet(
     visible: Boolean,
     selectedCount: Int,
     lastConfig: PracticeConfig?,
     onStart: (PracticeConfig) -> Unit,
     onDismiss: () -> Unit,
+    topInset: Dp = with(LocalDensity.current) { WindowInsets.statusBars.getTop(this).toDp() } + Dimens.CornerInset,
+    bottomInset: Dp = Dimens.CornerInset,
 ) {
     if (!visible) return
 
-    // skipPartiallyExpanded = true so the sheet
-    // goes straight to its full height on show.
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    BackHandler(onBack = onDismiss)
 
     // V_NOW: pre-fill from [lastConfig] (which the
     // PockRefApp caller reads from
@@ -123,10 +139,10 @@ fun PracticeConfigSheet(
     // dismiss/re-show and the user would see stale
     // values from before they closed.
     var practiceSeconds by remember(lastConfig) {
-        mutableStateOf(((lastConfig?.practiceDurationMs ?: 60_000L) / 1000L).toInt())
+        mutableIntStateOf(((lastConfig?.practiceDurationMs ?: 60_000L) / 1000L).toInt())
     }
     var restSeconds by remember(lastConfig) {
-        mutableStateOf(((lastConfig?.restDurationMs ?: 30_000L) / 1000L).toInt())
+        mutableIntStateOf(((lastConfig?.restDurationMs ?: 30_000L) / 1000L).toInt())
     }
     var shuffle by remember(lastConfig) { mutableStateOf(lastConfig?.shuffle ?: false) }
     var resetTimerOnImageChange by remember(lastConfig) {
@@ -142,17 +158,16 @@ fun PracticeConfigSheet(
     var customDialogTarget by rememberSaveable {
         mutableStateOf<CustomDialogTarget?>(null)
     }
-    var customInputText by rememberSaveable(customDialogTarget) {
+    // Not keyed on `customDialogTarget`: each `onClickCustom` sets the
+    // target and pre-fills this text together, and a key change would
+    // reset the text to "" right after that pre-fill.
+    var customInputText by rememberSaveable {
         mutableStateOf("")
     }
 
     customDialogTarget?.let { target ->
         CustomDurationDialog(
             target = target,
-            initialMinutes = when (target) {
-                CustomDialogTarget.PRACTICE -> practiceSeconds / 60
-                CustomDialogTarget.REST -> restSeconds / 60
-            },
             inputText = customInputText,
             onInputChange = { customInputText = it },
             onConfirm = { minutes ->
@@ -167,78 +182,91 @@ fun PracticeConfigSheet(
         )
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    CanvasSidePopup(
+        visible = visible,
+        title = "速写练习窗口",
+        modifier = Modifier.testTag("practice_config_panel"),
+        topInset = topInset,
+        bottomInset = bottomInset,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            // ── Header ──
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = "速写练习",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().height(56.dp).padding(start = 16.dp, end = 4.dp),
+            ) {
+                Icon(Icons.Rounded.Timer, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Text("速写练习", style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(start = 10.dp).weight(1f))
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭速写练习窗口")
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                // ── Header ──
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = if (selectedCount == 0) "未选择图片" else "将练习 $selectedCount 张图片",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                // ── 倒计时 (5 presets + 自定义) ──
+                DurationChips(
+                    label = "倒计时",
+                    // 5 presets: 30s / 1m / 2m / 5m / 10m
+                    options = listOf(30, 60, 120, 300, 600),
+                    selectedSeconds = practiceSeconds,
+                    onSelectPreset = { practiceSeconds = it },
+                    onClickCustom = {
+                        customDialogTarget = CustomDialogTarget.PRACTICE
+                        customInputText = (practiceSeconds / 60).toString().takeIf {
+                            practiceSeconds % 60 == 0 && practiceSeconds > 0
+                        } ?: ""
+                    },
                 )
+
+                // ── 休息 (5 presets + 自定义) ──
+                DurationChips(
+                    label = "休息",
+                    // 5 presets: 0s / 15s / 30s / 1m / 5m
+                    options = listOf(0, 15, 30, 60, 300),
+                    selectedSeconds = restSeconds,
+                    onSelectPreset = { restSeconds = it },
+                    onClickCustom = {
+                        customDialogTarget = CustomDialogTarget.REST
+                        customInputText = (restSeconds / 60).toString().takeIf {
+                            restSeconds % 60 == 0 && restSeconds > 0
+                        } ?: ""
+                    },
+                )
+
+                // ── 随机顺序 ──
+                ToggleRow(label = "随机顺序", checked = shuffle, onCheckedChange = { shuffle = it })
+
+                // ── 切图时重置计时 ──
+                ToggleRow(
+                    label = "切换图片时重置计时",
+                    checked = resetTimerOnImageChange,
+                    onCheckedChange = { resetTimerOnImageChange = it },
+                )
+
+                // ── 总时长摘要 ──
+                val totalMin = if (selectedCount == 0) 0
+                else ((selectedCount * (practiceSeconds + restSeconds)).toDouble() / 60.0).roundToInt()
                 Text(
-                    text = if (selectedCount == 0) "未选择图片" else "将练习 $selectedCount 张图片",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "总时长约 $totalMin 分钟",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-
-            // ── 倒计时 (5 presets + 自定义) ──
-            DurationChips(
-                label = "倒计时",
-                // 5 presets: 30s / 1m / 2m / 5m / 10m
-                options = listOf(30, 60, 120, 300, 600),
-                selectedSeconds = practiceSeconds,
-                onSelectPreset = { practiceSeconds = it },
-                onClickCustom = {
-                    customDialogTarget = CustomDialogTarget.PRACTICE
-                    customInputText = (practiceSeconds / 60).toString().takeIf {
-                        practiceSeconds % 60 == 0 && practiceSeconds > 0
-                    } ?: ""
-                },
-            )
-
-            // ── 休息 (5 presets + 自定义) ──
-            DurationChips(
-                label = "休息",
-                // 5 presets: 0s / 15s / 30s / 1m / 5m
-                options = listOf(0, 15, 30, 60, 300),
-                selectedSeconds = restSeconds,
-                onSelectPreset = { restSeconds = it },
-                onClickCustom = {
-                    customDialogTarget = CustomDialogTarget.REST
-                    customInputText = (restSeconds / 60).toString().takeIf {
-                        restSeconds % 60 == 0 && restSeconds > 0
-                    } ?: ""
-                },
-            )
-
-            // ── 随机顺序 ──
-            ToggleRow(label = "随机顺序", checked = shuffle, onCheckedChange = { shuffle = it })
-
-            // ── 切图时重置计时 ──
-            ToggleRow(
-                label = "切换图片时重置计时",
-                checked = resetTimerOnImageChange,
-                onCheckedChange = { resetTimerOnImageChange = it },
-            )
-
-            // ── 总时长摘要 ──
-            val totalMin = if (selectedCount == 0) 0
-            else ((selectedCount * (practiceSeconds + restSeconds)).toDouble() / 60.0).roundToInt()
-            Text(
-                text = "总时长约 $totalMin 分钟",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
             // ── 开始按钮 ──
             Button(
@@ -253,7 +281,7 @@ fun PracticeConfigSheet(
                     )
                 },
                 enabled = selectedCount > 0,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             ) {
                 Text("开始")
             }
@@ -280,16 +308,13 @@ private enum class CustomDialogTarget {
  * target: 1-60 for COUNTDOWN, 1-10 for REST.
  *
  * The dialog is shown by the parent sheet when the user
- * taps the "自定义" chip. The parent passes the
- * current value as `initialMinutes` (so the user can
- * see and edit their previous custom value rather
- * than re-typing from scratch).
+ * taps the "自定义" chip. The input text is hoisted to
+ * the parent ([inputText] / [onInputChange]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CustomDurationDialog(
     target: CustomDialogTarget,
-    initialMinutes: Int,
     inputText: String,
     onInputChange: (String) -> Unit,
     onConfirm: (Int) -> Unit,
@@ -310,7 +335,7 @@ private fun CustomDurationDialog(
         )
     }
 
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
@@ -394,7 +419,7 @@ private data class Quadruple<A, B, C, D>(
  * "7m") so the user has visible feedback about what
  * they previously chose.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun DurationChips(
     label: String,
@@ -428,7 +453,7 @@ private fun DurationChips(
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Medium,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             options.forEach { sec ->
                 FilterChip(
                     selected = selectedSeconds == sec,
@@ -470,6 +495,7 @@ private fun ToggleRow(
         Text(
             text = label,
             style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f).padding(end = 8.dp),
         )
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }

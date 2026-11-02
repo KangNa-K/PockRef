@@ -6,7 +6,12 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.util.Log
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.toColorInt
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.compose.ui.geometry.Offset
@@ -106,18 +111,18 @@ class PurFileParser {
         inputFile.deleteOnExit()
         try {
             inputFile.outputStream().use { out -> input.copyTo(out, 65536) }
-            return parseFromFile(inputFile, deleteAfter = true)
+            return parseFromFile(inputFile)
         } finally {
             inputFile.delete()
         }
     }
 
-    fun parseFromFile(file: File, deleteAfter: Boolean = false): PockRefScene {
+    fun parseFromFile(file: File): PockRefScene {
         val inputRaf = RandomAccessFile(file, "r")
         try {
             val headerBytes = ByteArray(minOf(file.length().toInt(), 0x100))
             inputRaf.readFully(headerBytes)
-            val header = parseHeader(headerBytes, file.length())
+            val header = parseHeader(headerBytes)
 
             return if (header.formatVersion.startsWith("2.")) {
                 parseV2Format(inputRaf, file, header)
@@ -179,7 +184,7 @@ class PurFileParser {
     /** The rotated SQLite file used by V2 lazy image records, if any. */
     val lazySourceFile: File? get() = imageTempFile ?: dbTempFile
 
-    fun parseHeader(bytes: ByteArray, fileLength: Long = 0): PurHeader {
+    fun parseHeader(bytes: ByteArray): PurHeader {
         require(bytes.size >= 8) {
             "File too small to be a .pur file (${bytes.size} bytes)"
         }
@@ -193,10 +198,10 @@ class PurFileParser {
         val formatVersion = decodeUtf16BE(bytes, pos, versionByteLen)
         pos += versionByteLen
 
-        return parseV1Header(bytes, fileLength, pos, formatVersion)
+        return parseV1Header(bytes, pos, formatVersion)
     }
 
-    private fun parseV1Header(bytes: ByteArray, fileLength: Long, startPos: Int, formatVersion: String): PurHeader {
+    private fun parseV1Header(bytes: ByteArray, startPos: Int, formatVersion: String): PurHeader {
         var pos = startPos
 
         val numImages = if (pos + 2 <= bytes.size) readUInt16BE(bytes, pos) else 0
@@ -229,7 +234,7 @@ class PurFileParser {
         var thumbnailOffset = 0
 
         if (pos + 4 <= bytes.size) {
-            val numImagesAgain = readUInt32BE(bytes, pos).toInt()
+            // Repeated image count; numImages above is authoritative, so skip it.
             pos += 4
 
             canvasX = if (pos + 8 <= bytes.size) readDoubleBE(bytes, pos) else 0.0
@@ -335,8 +340,12 @@ class PurFileParser {
                 val images = FileOutputStream(imageFile).use { output ->
                     readV2SceneImages(db, output, privateMetadata)
                 }
-                val notes = readV2Notes(db)
-                val drawings = readV2DrawingImages(db)
+                val shared = privateMetadata?.let(SharedMarkupCodec::decode)
+                val nativeIDs = privateMetadata?.optJSONArray("sharedMarkupNativeItemIDs")?.let { ids ->
+                    (0 until ids.length()).map { ids.getLong(it).toString() }.toSet()
+                } ?: emptySet()
+                val notes = readV2Notes(db).filterNot { shared != null && shared.warning == null && it.id.removePrefix("pur-v2-note-") in nativeIDs }
+                val drawings = readV2DrawingImages(db).filterNot { shared != null && shared.warning == null && it.id.removePrefix("pur-v2-drawing-") in nativeIDs }
                 val groupRead = readV2SceneGroups(db)
                 val groups = mergeV2Groups(groupRead.groups, privateMetadata)
                 val name = privateMetadata?.optString("displayName")?.takeIf { it.isNotBlank() }
@@ -349,7 +358,10 @@ class PurFileParser {
                     images = (images + drawings).sortedBy { it.zIndex },
                     groups = groups,
                     requiresGroupFlattening = groupRead.requiresFlattening,
-                    markupTexts = notes,
+                    markupTexts = (shared?.texts ?: emptyList()) + notes,
+                    markupStrokes = shared?.strokes ?: emptyList(),
+                    markupSourceMetadata = privateMetadata?.toString(),
+                    markupCompatibilityWarning = shared?.warning,
                     defaultSpacing = readV2DefaultSpacing(privateMetadata),
                     defaultAlignment = readV2DefaultAlignment(privateMetadata),
                 )
@@ -370,17 +382,21 @@ class PurFileParser {
         val requiresFlattening: Boolean,
     )
 
-    private fun readV2PockRefMetadata(db: SQLiteDatabase): JSONObject? = runCatching {
-        db.rawQuery("SELECT json FROM pockref_metadata ORDER BY id LIMIT 1", emptyArray()).use { cursor ->
+    private fun readV2PockRefMetadata(db: SQLiteDatabase): JSONObject? {
+        val exists = db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pockref_metadata'", null)
+            .use { it.moveToFirst() }
+        if (!exists) return null
+        return db.rawQuery("SELECT json FROM pockref_metadata ORDER BY id LIMIT 1", emptyArray()).use { cursor ->
             if (!cursor.moveToFirst() || cursor.isNull(0)) return@use null
             val bytes = if (cursor.getType(0) == android.database.Cursor.FIELD_TYPE_BLOB) {
                 cursor.getBlob(0)
             } else {
                 cursor.getString(0).toByteArray(Charsets.UTF_8)
             }
+            require(bytes.size <= 32 * 1024 * 1024) { "标记元数据超出安全限制" }
             JSONObject(String(bytes, Charsets.UTF_8))
         }
-    }.getOrNull()
+    }
 
     private fun readV2BackgroundColor(metadata: JSONObject?): Color {
         val value = metadata?.optJSONObject("backgroundColor") ?: return Color(0xFF111111)
@@ -460,7 +476,7 @@ class PurFileParser {
                 (android.graphics.Color.alpha(nativeArgb) * native.backgroundOpacity).roundToInt() == expectedAlpha
             native.copy(
                 id = saved.optString("id", native.id).ifBlank { native.id },
-                backgroundColor = if (nativeMatchesSaved) savedColor!! else native.backgroundColor,
+                backgroundColor = if (nativeMatchesSaved) savedColor else native.backgroundColor,
                 backgroundOpacity = if (nativeMatchesSaved) savedOpacity else native.backgroundOpacity,
                 movesAsUnit = mergedMovesAsUnit,
                 positionLocked = native.positionLocked,
@@ -544,7 +560,7 @@ class PurFileParser {
                 }
                 if (memberIds.isEmpty()) return@mapNotNull null
                 val storedArgb = row.backgroundColor?.let {
-                    runCatching { android.graphics.Color.parseColor(it) }.getOrNull()
+                    runCatching { it.toColorInt() }.getOrNull()
                 }
                 val opacity = if (storedArgb != null) android.graphics.Color.alpha(storedArgb) / 255f else 0f
                 val opaqueColor = storedArgb?.let {
@@ -631,13 +647,19 @@ class PurFileParser {
         imageOutput: FileOutputStream,
         privateMetadata: JSONObject?,
     ): List<SceneImage> {
+        val columns = db.rawQuery("PRAGMA table_info(items)",null).use { cursor ->
+            buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+        }
+        val nameColumn = if ("name" in columns) "it.name" else "NULL"
+        val parentTransform = if ("parent" in columns) "parent_group.transform" else "NULL"
+        val parentJoin = if ("parent" in columns) "LEFT JOIN items parent_group ON parent_group.id = it.parent" else ""
         val sql = """
             SELECT ii.id, ii.image, im.width, im.height, im.format, it.opacity, it.z, it.locked,
-                   it.transform, ii.image_transform, parent_group.transform, it.name
+                   it.transform, ii.image_transform, $parentTransform, $nameColumn
             FROM items_images ii
             JOIN images im ON im.id = ii.image
             JOIN items it ON it.id = ii.id
-            LEFT JOIN items parent_group ON parent_group.id = it.parent
+            $parentJoin
             WHERE im.data IS NOT NULL
             ORDER BY it.z, ii.id
         """.trimIndent()
@@ -705,6 +727,21 @@ class PurFileParser {
     }
 
     private fun readV2Notes(db: SQLiteDatabase): List<CanvasMarkupText> {
+        val hasParent = db.rawQuery("PRAGMA table_info(items)", null).use { cursor ->
+            val nameIndex = cursor.getColumnIndexOrThrow("name")
+            var found = false
+            while (cursor.moveToNext()) if (cursor.getString(nameIndex) == "parent") found = true
+            found
+        }
+        val itemTransforms = mutableMapOf<Long, Pair<Long, V2Transform>>()
+        if (hasParent) {
+            db.rawQuery("SELECT id, parent, transform FROM items", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    itemTransforms[cursor.getLong(0)] = cursor.getLong(1) to
+                        (v2TransformFrom(sqliteTextPayload(cursor, 2)) ?: V2Transform())
+                }
+            }
+        }
         val sql = """
             SELECT n.id, n.text, n.fixed_size, n.background_color, it.opacity, it.z,
                    it.locked, it.transform
@@ -720,13 +757,37 @@ class PurFileParser {
                 val text = pureRefNotePlainText(html)
                 if (text.isBlank()) continue
                 val fixedSize = v2SizeFrom(sqliteTextPayload(cursor, 2))
-                val transform = v2TransformFrom(sqliteTextPayload(cursor, 7)) ?: V2Transform()
+                var transform = v2TransformFrom(sqliteTextPayload(cursor, 7)) ?: V2Transform()
+                var parent = itemTransforms[itemId]?.first
+                val visited = mutableSetOf(itemId)
+                while (parent != null && visited.add(parent)) {
+                    val ancestor = itemTransforms[parent] ?: break
+                    transform = ancestor.second.applying(transform)
+                    parent = ancestor.first
+                }
+                val scaleX = hypot(transform.m11, transform.m12).toFloat().coerceAtLeast(0.0001f)
+                val scaleY = hypot(transform.m21, transform.m22).toFloat().coerceAtLeast(0.0001f)
+                val fontSize = pureRefNoteFontSize(html)
+                val padding = 16f
+                val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { textSize = fontSize }
+                val localWidth = fixedSize?.width?.takeIf { it > 0 }?.toFloat()
+                    ?: (text.lines().maxOf { paint.measureText(it) } + padding * 2).coerceAtLeast(1f)
+                val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint,
+                    (localWidth - padding * 2).coerceIn(1f, 100_000f).toInt().coerceAtLeast(1))
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).build()
+                val localHeight = fixedSize?.height?.takeIf { it > 0 }?.toFloat() ?: (layout.height + padding * 2)
                 notes += CanvasMarkupText(
                     id = "pur-v2-note-$itemId",
                     text = text,
                     position = Offset(transform.dx.toFloat(), transform.dy.toFloat()),
-                    fontSize = ((fixedSize?.height?.toFloat() ?: 320f) / text.lines().size.coerceAtLeast(1))
-                        .coerceIn(24f, 240f),
+                    // PureRef's item origin is the box center, not the center of its glyphs.
+                    boxSize = Size2D(localWidth * scaleX, localHeight * scaleY),
+                    fontSize = fontSize * scaleY,
+                    textPadding = padding * scaleY,
+                    rotation = atan2(transform.m12, transform.m11).toFloat(),
+                    opacity = cursor.getFloat(4).takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f,
+                    locked = cursor.getInt(6) != 0,
+                    zOrder = cursor.getDouble(5).roundToInt(),
                 )
             }
         }
@@ -847,7 +908,9 @@ class PurFileParser {
         if (payload == null || payload.size < 21) return null
         val width = readDoubleBE(payload, 5)
         val height = readDoubleBE(payload, 13)
-        return if (width.isFinite() && height.isFinite() && width > 0 && height > 0) {
+        // PureRef uses -1 independently for each automatic dimension. A fixed
+        // width with automatic height must still constrain wrapping.
+        return if (width.isFinite() && height.isFinite()) {
             V2Size(width, height)
         } else {
             null
@@ -913,7 +976,7 @@ class PurFileParser {
         val logicalWidth = maxOf(1.0, (bounds.width() + pad * 2f).toDouble())
         val logicalHeight = maxOf(1.0, (bounds.height() + pad * 2f).toDouble())
         val target = limitV2GeneratedRaster(logicalWidth, logicalHeight) ?: return null
-        val bitmap = Bitmap.createBitmap(target.rasterWidth, target.rasterHeight, Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(target.rasterWidth, target.rasterHeight, Bitmap.Config.ARGB_8888)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.RED
             style = Paint.Style.STROKE

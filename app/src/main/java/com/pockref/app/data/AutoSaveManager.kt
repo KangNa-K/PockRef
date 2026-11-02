@@ -1,10 +1,12 @@
 package com.pockref.app.data
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
 import android.system.Os
 import android.util.Log
+import androidx.core.content.edit
 import com.pockref.app.model.PockRefScene
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -55,7 +57,10 @@ class AutoSaveManager internal constructor(
                 validator.imageDecoder.release()
             }
             Os.rename(temp.absolutePath, updateCheckpoint.absolutePath)
-            check(prefs.edit().putLong("update_from_version", installedVersion()).commit()) {
+            // KTX edit(commit = true) drops commit()'s result, which must block installation.
+            @SuppressLint("UseKtx")
+            val markerSaved = prefs.edit().putLong("update_from_version", installedVersion()).commit()
+            check(markerSaved) {
                 "无法保存更新恢复标记"
             }
         } finally {
@@ -73,7 +78,7 @@ class AutoSaveManager internal constructor(
     }
 
     fun consumeUpdateCheckpoint() {
-        prefs.edit().remove("update_from_version").apply()
+        prefs.edit { remove("update_from_version") }
     }
 
     // V_NOW: backed by [AppPreferences.autoSaveIntervalMs] so the
@@ -205,15 +210,16 @@ class AutoSaveManager internal constructor(
                 Log.d(TAG, "autoSave: no currentSceneUri, backup-only save")
             }
 
-            val edit = prefs.edit().putLong(KEY_LAST_SAVE_TS, System.currentTimeMillis())
-            // A backup alone does not mean the original was saved. Retry the
-            // original on the next cycle even when the scene has not changed.
-            if (currentSceneUri == null || originalSaved) {
-                edit.putString(KEY_LAST_CONTENT_HASH, sceneHash)
-            } else {
-                edit.remove(KEY_LAST_CONTENT_HASH)
+            prefs.edit {
+                putLong(KEY_LAST_SAVE_TS, System.currentTimeMillis())
+                // A backup alone does not mean the original was saved. Retry the
+                // original on the next cycle even when the scene has not changed.
+                if (currentSceneUri == null || originalSaved) {
+                    putString(KEY_LAST_CONTENT_HASH, sceneHash)
+                } else {
+                    remove(KEY_LAST_CONTENT_HASH)
+                }
             }
-            edit.apply()
 
             cleanupOldBackups()
 
@@ -259,10 +265,10 @@ class AutoSaveManager internal constructor(
     private fun computeSceneHash(scene: PockRefScene): String = AutoSaveHash.compute(codec, scene)
 
     fun clearAutoSaveState() {
-        prefs.edit()
-            .remove(KEY_LAST_SAVE_TS)
-            .remove(KEY_LAST_CONTENT_HASH)
-            .apply()
+        prefs.edit {
+            remove(KEY_LAST_SAVE_TS)
+            remove(KEY_LAST_CONTENT_HASH)
+        }
     }
 
     fun listBackups(): List<BackupEntry> {

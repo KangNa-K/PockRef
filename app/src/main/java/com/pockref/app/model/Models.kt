@@ -99,6 +99,7 @@ data class Size2D(
 enum class CanvasMarkupTool {
     PEN,
     TEXT,
+    HIGHLIGHTER, LINE, ARROW, RECTANGLE, ELLIPSE, ERASER, SELECT, LASSO, INK_ERASER,
 }
 
 data class CanvasMarkupStroke(
@@ -106,8 +107,15 @@ data class CanvasMarkupStroke(
     val color: Color = Color(0xFFE53935),
     val lineWidth: Float = 4f,
     val points: List<Offset> = emptyList(),
+    val kind: String = "pen",
+    val opacity: Float = 1f,
+    val rotation: Float = 0f,
+    val locked: Boolean = false,
+    val zOrder: Int = 0,
+    val sourceJson: String? = null,
 ) {
-    val isRenderable: Boolean get() = points.size >= 2
+    val isRenderable: Boolean get() = points.size >= 2 ||
+        (points.size == 1 && kind in setOf("pen", "highlighter"))
 }
 
 data class CanvasMarkupText(
@@ -116,6 +124,13 @@ data class CanvasMarkupText(
     val position: Offset,
     val color: Color = Color(0xFFE53935),
     val fontSize: Float = 80f,
+    val rotation: Float = 0f,
+    val opacity: Float = 1f,
+    val locked: Boolean = false,
+    val zOrder: Int = 0,
+    val boxSize: Size2D? = null,
+    val sourceJson: String? = null,
+    val textPadding: Float = 0f,
 )
 
 /**
@@ -552,6 +567,8 @@ data class PockRefScene(
     val requiresGroupFlattening: Boolean = false,
     val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
     val markupTexts: List<CanvasMarkupText> = emptyList(),
+    val markupSourceMetadata: String? = null,
+    val markupCompatibilityWarning: String? = null,
     /**
      * Default horizontal / vertical spacing (in scene units) used by
      * auto-layout. The desktop .pur format does not standardize a
@@ -829,6 +846,7 @@ data class PockRefUiState(
     val backgroundCustomColor: Color = Color(0xFF808080),
     val showBackgroundPicker: Boolean = false,
     val themeMode: com.pockref.app.data.ThemeMode = com.pockref.app.data.ThemeMode.LIGHT,
+    val frostedGlassEnabled: Boolean = true,
     /**
      * V_NOW: S Pen side-button gesture mode. Mirrors
      * [com.pockref.app.data.AppPreferences.spenMode] so the
@@ -850,8 +868,15 @@ data class PockRefUiState(
     val requiresGroupFlattening: Boolean = false,
     val markupStrokes: List<CanvasMarkupStroke> = emptyList(),
     val markupTexts: List<CanvasMarkupText> = emptyList(),
+    val markupSourceMetadata: String? = null,
+    val markupCompatibilityWarning: String? = null,
     val markupModeActive: Boolean = false,
     val markupTool: CanvasMarkupTool = CanvasMarkupTool.PEN,
+    val markupColor: Color = Color(0xFFE53935),
+    val markupLineWidth: Float = 4f,
+    val selectedMarkupId: String? = null,
+    val selectedMarkupIds: Set<String> = emptySet(),
+    val markupLassoPoints: List<Offset> = emptyList(),
     val markupVisible: Boolean = true,
     val draftMarkupStroke: CanvasMarkupStroke? = null,
     val markupSessionBaseStrokes: List<CanvasMarkupStroke>? = null,
@@ -1067,6 +1092,7 @@ data class PockRefUiState(
     val canvasScale: Float = 1f,
     val canvasOffset: Offset = Offset.Zero,
     val canvasViewportSize: Size2D = Size2D(0f, 0f),
+    val canvasOriginInWindow: Offset = Offset.Zero,
     val transientDragImageIds: Set<String> = emptySet(),
     val transientDragDelta: Offset = Offset.Zero,
     val isBusy: Boolean = false,
@@ -1210,7 +1236,7 @@ data class PockRefUiState(
      * collapses to whichever edge the user last docked to, rather
      * than a fresh "no edge" state.
      */
-    val minimapCollapsed: Boolean = false,
+    val minimapCollapsed: Boolean = true,
     /**
      * V_NOW: pinch-to-zoom scale for the full minimap panel.
      * 1.0f = default size (computed from scene bbox in
@@ -1716,8 +1742,10 @@ fun PockRefUiState.toScene(): PockRefScene = PockRefScene(
     images = images.sortedBy { it.zIndex },
     groups = groups,
     requiresGroupFlattening = requiresGroupFlattening,
-    markupStrokes = markupStrokes,
-    markupTexts = markupTexts,
+    markupStrokes = if (markupModeActive) markupSessionBaseStrokes ?: markupStrokes else markupStrokes,
+    markupTexts = if (markupModeActive) markupSessionBaseTexts ?: markupTexts else markupTexts,
+    markupSourceMetadata = markupSourceMetadata,
+    markupCompatibilityWarning = markupCompatibilityWarning,
     defaultSpacing = sceneDefaultSpacing,
     defaultAlignment = sceneDefaultAlignment,
 )

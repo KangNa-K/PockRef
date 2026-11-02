@@ -22,6 +22,9 @@ internal fun PockRefUiState.restoreMarkupHistorySnapshot(snapshot: MarkupHistory
     pendingMarkupTextValue = "",
     pendingMarkupTextFontSize = 80f,
     editingMarkupTextId = null,
+    selectedMarkupId = null,
+    selectedMarkupIds = emptySet(),
+    markupLassoPoints = emptyList(),
 )
 
 internal class MarkupHistory {

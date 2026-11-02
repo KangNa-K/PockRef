@@ -176,7 +176,10 @@ class PockRefActionsTest {
     // 2026-08-13: 181 → 183 — added transient posterize controls.
     // 183 baseline variants + 10 editable-group operations + the
     // group-editor-specific ClearGroupSelection action.
-    private val expectedVariantCount: Int = 195
+    // 2026-10-25: +5 markup tool/style/delete/transform actions.
+    // 2026-10-25: +1 SetFrostedGlassEnabled appearance preference.
+    // Added DuplicateSelectedMarkup for the selection reuse button.
+    private val expectedVariantCount: Int = 202
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

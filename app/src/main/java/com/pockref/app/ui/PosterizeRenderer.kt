@@ -14,6 +14,7 @@ import android.graphics.Shader
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.core.graphics.createBitmap
 import com.pockref.app.model.ColorAdjust
 import com.pockref.app.model.SceneImage
 import kotlinx.coroutines.CoroutineScope
@@ -239,7 +240,7 @@ internal class GifFrameBitmapCache {
             return current
         }
         current?.takeUnless { it.isRecycled }?.recycle()
-        return Bitmap.createBitmap(safeWidth, safeHeight, Bitmap.Config.ARGB_8888).also {
+        return createBitmap(safeWidth, safeHeight, Bitmap.Config.ARGB_8888).also {
             buffers[imageId] = it
         }
     }
@@ -394,7 +395,7 @@ internal fun createPosterizedBitmap(
 ): Bitmap {
     require(PosterizeRenderer.isSupported(request.levels))
 
-    val output = Bitmap.createBitmap(
+    val output = createBitmap(
         source.width.coerceAtLeast(1),
         source.height.coerceAtLeast(1),
         Bitmap.Config.ARGB_8888,

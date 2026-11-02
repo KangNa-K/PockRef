@@ -626,9 +626,8 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
      * has no drift.
      *
      * Lock guard: per-image + global lock filter, same
-     * as [PockRefViewModelBatch.batchScale] and the
-     * per-image [PockRefViewModelTransform.setSelectedImageScale]
-     * path. Locked members are excluded from the
+     * as [PockRefViewModelBatch.batchScale]. Locked
+     * members are excluded from the
      * scale application; the group as a whole still
      * re-centers around [worldCenter], but a locked
      * member's pose is preserved.
@@ -816,6 +815,16 @@ class PockRefViewModelBatch(private val mainVm: PockRefViewModel) {
         val vpW = currentState.canvasViewportSize.width
         val vpH = currentState.canvasViewportSize.height
         if (vpW <= 0f || vpH <= 0f) {
+            return
+        }
+
+        // A single selected group (or its editor) means arrange its contents,
+        // not resize the unchanged group as one giant image.
+        layoutSelectedGroupMembers(currentState)?.let { laidOut ->
+            if (laidOut != allImages) {
+                mainVm.mutateScene { copy(images = laidOut) }
+                fitToScreen()
+            }
             return
         }
 

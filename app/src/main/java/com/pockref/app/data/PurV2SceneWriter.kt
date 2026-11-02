@@ -7,6 +7,9 @@ import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.database.sqlite.transaction
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.SceneGroup
@@ -68,13 +71,7 @@ internal class PurV2SceneWriter(
             db.rawQuery("PRAGMA journal_mode=OFF", null).use { }
             db.execSQL("PRAGMA synchronous=OFF")
             createSchema(db)
-            db.beginTransaction()
-            try {
-                insertScene(db, scene, images, thumbnail)
-                db.setTransactionSuccessful()
-            } finally {
-                db.endTransaction()
-            }
+            db.transaction { insertScene(db, scene, images, thumbnail) }
         } finally {
             db.close()
         }
@@ -217,25 +214,27 @@ internal class PurV2SceneWriter(
         scene.markupTexts.forEachIndexed { index, note ->
             val id = idStart + index
             val z = (scene.images.maxOfOrNull { it.zIndex } ?: 0) + index + 1.0
-            insertItem(db, id, "", z, false, -1L,
-                transformPayload(1.0, 0.0, 0.0, 1.0, note.position.x.toDouble(), note.position.y.toDouble()))
+            insertItem(db, id, "", z, note.locked, -1L,
+                transformPayload(cos(note.rotation.toDouble()), sin(note.rotation.toDouble()), -sin(note.rotation.toDouble()), cos(note.rotation.toDouble()), note.position.x.toDouble(), note.position.y.toDouble()))
             db.insertOrThrow("items_notes", null, ContentValues().apply {
                 val longestLine = note.text.lineSequence().map { it.length }.maxOrNull() ?: 0
                 put("fixed_size", sizePayload(
-                    max(note.fontSize * longestLine, 1f).toDouble(),
-                    max(note.fontSize * note.text.lines().size.coerceAtLeast(1), 1f).toDouble(),
+                    max(note.boxSize?.width ?: (note.fontSize * longestLine), 1f).toDouble(),
+                    max(note.boxSize?.height ?: (note.fontSize * note.text.lines().size.coerceAtLeast(1)), 1f).toDouble(),
                 ))
                 putNull("background_color")
-                put("text", "<p>${escapeHtml(note.text)}</p>")
+                put("text", "<p style=\"font-size:${note.fontSize}px;color:#${"%06x".format(note.color.toArgb() and 0xFFFFFF)}\">${escapeHtml(note.text).replace("\n","<br/>")}</p>")
                 put("style", 1)
-                putNull("text_color")
+                put("text_color", "#%08x".format(note.color.toArgb()))
                 put("id", id)
             })
         }
     }
 
     private fun insertMarkupDrawing(db: SQLiteDatabase, scene: PockRefScene, id: Long) {
-        val strokes = scene.markupStrokes.filter { it.points.size >= 2 }
+        val strokes = scene.markupStrokes.flatMap { stroke ->
+            com.pockref.app.ui.markupPolylines(stroke).map { stroke.copy(points=it, rotation=0f, kind="pen") }
+        }.filter { it.points.size >= 2 }
         if (strokes.isEmpty()) return
         val payload = drawingPayload(strokes)
         val transform = transformPayload(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
@@ -291,10 +290,10 @@ internal class PurV2SceneWriter(
             })
         }
         val argb = scene.backgroundColor.toArgb()
-        val metadata = JSONObject().apply {
+        val metadata = SharedMarkupCodec.metadata(scene.markupStrokes, scene.markupTexts, scene.markupSourceMetadata).apply {
             put("version", 2)
             put("displayName", scene.name)
-            put("canvasSize", JSONObject().put("width", 4096).put("height", 4096))
+            if (!has("canvasSize")) put("canvasSize", org.json.JSONArray().put(4096).put(4096))
             put("backgroundColor", JSONObject().apply {
                 put("r", AndroidColor.red(argb)); put("g", AndroidColor.green(argb))
                 put("b", AndroidColor.blue(argb)); put("a", AndroidColor.alpha(argb))
@@ -309,6 +308,10 @@ internal class PurV2SceneWriter(
             put("markupsHidden", false)
             put("images", imageMetadata)
             put("groups", groupMetadata)
+            put("sharedMarkupNativeItemIDs", org.json.JSONArray().apply {
+                scene.markupTexts.indices.forEach { put(images.size + groups.size + 1L + it) }
+                if (scene.markupStrokes.isNotEmpty()) put(images.size + groups.size + scene.markupTexts.size + 1L)
+            })
         }
         db.insertOrThrow("pockref_metadata", null, ContentValues().apply {
             put("json", metadata.toString().toByteArray(Charsets.UTF_8))
@@ -393,10 +396,10 @@ internal class PurV2SceneWriter(
             val width = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
             val height = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
             val scaled = if (width == bitmap.width && height == bitmap.height) bitmap
-            else Bitmap.createScaledBitmap(bitmap, width, height, true)
+            else bitmap.scale(width, height, filter = true)
             try {
                 ByteArrayOutputStream().use { output ->
-                    val canvasBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    val canvasBitmap = createBitmap(width, height, Bitmap.Config.ARGB_8888)
                     val canvas = android.graphics.Canvas(canvasBitmap)
                     canvas.drawColor(AndroidColor.WHITE)
                     canvas.drawBitmap(scaled, 0f, 0f, null)
@@ -412,7 +415,7 @@ internal class PurV2SceneWriter(
     }
 
     private fun fallbackThumbnail(): ByteArray = ByteArrayOutputStream().use { output ->
-        val bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(1, 1, Bitmap.Config.ARGB_8888)
         bitmap.eraseColor(AndroidColor.WHITE)
         check(bitmap.compress(Bitmap.CompressFormat.JPEG, 72, output))
         bitmap.recycle()
@@ -482,7 +485,12 @@ internal class PurV2SceneWriter(
         buffer.putInt(0x400); buffer.putInt(0); buffer.put((type.size + 1).toByte()); buffer.put(type); buffer.putInt(0)
         buffer.put(renderable.size.toByte())
         renderable.forEach { stroke ->
-            buffer.put(byteArrayOf(0x64, 0x01, 0xC8.toByte(), 0xC8.toByte(), 0x2E, 0x2E, 0x84.toByte(), 0x84.toByte(), 0xAA.toByte(), 0xAA.toByte(), 0, 0))
+            val argb = stroke.color.toArgb()
+            buffer.put(0x64.toByte()); buffer.put(1.toByte())
+            buffer.putShort(((argb ushr 24) * stroke.opacity * 257).roundToInt().coerceIn(0,65535).toShort())
+            buffer.putShort(((argb ushr 16 and 255)*257).toShort())
+            buffer.putShort(((argb ushr 8 and 255)*257).toShort())
+            buffer.putShort(((argb and 255)*257).toShort()); buffer.putShort(0)
             buffer.putDouble(max(stroke.lineWidth, 1f).toDouble())
             buffer.putInt(stroke.points.size)
             stroke.points.forEachIndexed { index, point ->

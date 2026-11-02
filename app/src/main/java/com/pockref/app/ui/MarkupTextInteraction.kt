@@ -22,8 +22,11 @@ internal fun markupTextScreenBounds(
     val textSize = (item.fontSize * scale).coerceAtLeast(8f)
     val lineHeight = textSize * MarkupTextLineHeightFactor
     val widestLine = lines.maxOf { it.length }.coerceAtLeast(1)
-    val contentWidth = (widestLine * textSize * MarkupTextWidthFactor).coerceAtLeast(MarkupTextMinHitSizePx)
-    val contentHeight = (lines.size * lineHeight).coerceAtLeast(MarkupTextMinHitSizePx)
+    val baseWidth = (item.boxSize?.width?.times(scale) ?: (widestLine * textSize * MarkupTextWidthFactor)).coerceAtLeast(MarkupTextMinHitSizePx)
+    val baseHeight = (item.boxSize?.height?.times(scale) ?: (lines.size * lineHeight)).coerceAtLeast(MarkupTextMinHitSizePx)
+    val c = kotlin.math.abs(kotlin.math.cos(item.rotation)); val sin = kotlin.math.abs(kotlin.math.sin(item.rotation))
+    val contentWidth = baseWidth*c + baseHeight*sin
+    val contentHeight = baseWidth*sin + baseHeight*c
     val x = centerOffset.x + canvasOffset.x + item.position.x * scale
     val y = centerOffset.y + canvasOffset.y + item.position.y * scale
     return Rect(
@@ -40,8 +43,26 @@ internal fun hitTestMarkupText(
     centerOffset: Offset,
     canvasOffset: Offset,
     canvasScale: Float,
-): CanvasMarkupText? = texts.asReversed().firstOrNull { item ->
-    markupTextScreenBounds(item, centerOffset, canvasOffset, canvasScale)?.contains(point) == true
+): CanvasMarkupText? = texts.asReversed().sortedByDescending { it.zOrder }.firstOrNull { item ->
+    val center = centerOffset + canvasOffset + item.position * canvasScale
+    val delta = point - center
+    val c = kotlin.math.cos(item.rotation); val s = kotlin.math.sin(item.rotation)
+    val localPoint = center + Offset(delta.x * c + delta.y * s, -delta.x * s + delta.y * c)
+    !item.locked && markupTextScreenBounds(item.copy(rotation = 0f), centerOffset, canvasOffset, canvasScale)?.contains(localPoint) == true
+}
+
+internal fun hitMarkupTextAlongSegment(item: CanvasMarkupText, from: Offset, to: Offset): Boolean {
+    if (item.locked) return false
+    val bounds = markupTextScreenBounds(item.copy(rotation = 0f), Offset.Zero, Offset.Zero, 1f) ?: return false
+    fun local(point: Offset): Offset {
+        val delta = point - item.position
+        val c = kotlin.math.cos(item.rotation); val s = kotlin.math.sin(item.rotation)
+        return item.position + Offset(delta.x*c + delta.y*s, -delta.x*s + delta.y*c)
+    }
+    val a = local(from); val b = local(to)
+    if (bounds.contains(a) || bounds.contains(b)) return true
+    val corners = listOf(bounds.topLeft, bounds.topRight, bounds.bottomRight, bounds.bottomLeft, bounds.topLeft)
+    return corners.zipWithNext().any { (c, d) -> markupSegmentDistance(a, b, c, d) < 0.001f }
 }
 
 internal fun moveMarkupTextState(
@@ -52,7 +73,7 @@ internal fun moveMarkupTextState(
     if (delta == Offset.Zero) return state
     return state.copy(
         markupTexts = state.markupTexts.map { item ->
-            if (item.id == textId) item.copy(position = item.position + delta) else item
+            if (item.id == textId && !item.locked) item.copy(position = item.position + delta) else item
         },
     )
 }
@@ -70,11 +91,11 @@ internal fun commitPendingMarkupTextState(state: PockRefUiState): PockRefUiState
             bottomRightPanelExpanded = false,
         )
     }
-    val fontSize = state.pendingMarkupTextFontSize.coerceIn(24f, 240f)
+    val fontSize = state.pendingMarkupTextFontSize.coerceIn(0.01f, 10000f)
     val texts = if (editingId != null && state.markupTexts.any { it.id == editingId }) {
         state.markupTexts.map { item ->
             if (item.id == editingId) {
-                item.copy(text = text, position = position, fontSize = fontSize)
+                item.copy(text = text, position = position, fontSize = fontSize, boxSize = if (item.text == text && item.fontSize == fontSize) item.boxSize else null)
             } else {
                 item
             }
@@ -84,6 +105,8 @@ internal fun commitPendingMarkupTextState(state: PockRefUiState): PockRefUiState
             text = text,
             position = position,
             fontSize = fontSize,
+            color = state.markupColor,
+            zOrder = (state.markupStrokes.map { it.zOrder } + state.markupTexts.map { it.zOrder }).maxOrNull()?.plus(1) ?: 0,
         )
     }
     return state.copy(

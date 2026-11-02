@@ -1,5 +1,6 @@
 package com.pockref.app
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -70,6 +71,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -152,7 +154,12 @@ private class FloatingWindowLifecycleOwner : LifecycleOwner {
     }
 }
 
-/** Observes overlay-window input before forwarding it unchanged to Compose. */
+/**
+ * Observes overlay-window input before forwarding it unchanged to Compose.
+ * Created only in code (never inflated from XML), so it doesn't need the
+ * standard `(Context, AttributeSet)` constructors.
+ */
+@SuppressLint("ViewConstructor")
 private class SpenInputFrameLayout(
     context: Context,
     private val onMotionEvent: (MotionEvent) -> Unit,
@@ -252,6 +259,9 @@ class FloatingWindowService : Service() {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
         } else {
+            // Pre-O devices have no notification channels; the channel-less
+            // constructor is the only option there.
+            @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
         return builder
@@ -405,7 +415,9 @@ class FloatingWindowService : Service() {
             gravity = Gravity.TOP or Gravity.START
             this.x = x
             this.y = y
-            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            // The non-deprecated path is WindowInsets-based IME handling,
+            // which the overlay doesn't implement yet; keep the legacy mode.
+            softInputMode = @Suppress("DEPRECATION") WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
     }
 
@@ -440,12 +452,12 @@ class FloatingWindowService : Service() {
         val params = layoutParams ?: return
         update(params, resources.displayMetrics)
         windowManager.updateViewLayout(view, params)
-        preferences().edit()
-            .putInt(KEY_WIDTH, params.width)
-            .putInt(KEY_HEIGHT, params.height)
-            .putInt(KEY_X, params.x)
-            .putInt(KEY_Y, params.y)
-            .apply()
+        preferences().edit {
+            putInt(KEY_WIDTH, params.width)
+            putInt(KEY_HEIGHT, params.height)
+            putInt(KEY_X, params.x)
+            putInt(KEY_Y, params.y)
+        }
     }
 
     private fun restoreFullScreen() {
@@ -466,7 +478,10 @@ class FloatingWindowService : Service() {
     private fun minimizeToBubble() {
         val view = overlayView ?: return
         val params = layoutParams ?: return
-        preferences().edit().putInt(KEY_X, params.x).putInt(KEY_Y, params.y).apply()
+        preferences().edit {
+            putInt(KEY_X, params.x)
+            putInt(KEY_Y, params.y)
+        }
         windowManager.removeViewImmediate(view)
         overlayView = null
         overlayOwner?.destroy()
@@ -516,6 +531,11 @@ class FloatingWindowService : Service() {
             }
             elevation = dp(6).toFloat()
             contentDescription = getString(R.string.app_name)
+            // Taps arrive via BubbleTouchListener -> performClick(); TalkBack's
+            // click action reaches this listener directly.
+            setOnClickListener { restoreFromBubble() }
+            // Lint cannot see that BubbleTouchListener calls performClick() on tap.
+            @Suppress("ClickableViewAccessibility")
             setOnTouchListener(BubbleTouchListener(params))
         }
         bubbleView = bubble
@@ -570,7 +590,7 @@ class FloatingWindowService : Service() {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (!dragged && event.actionMasked == MotionEvent.ACTION_UP) {
-                        restoreFromBubble()
+                        view.performClick()
                     } else {
                         snapBubbleToNearestEdge(view)
                     }
@@ -592,7 +612,10 @@ class FloatingWindowService : Service() {
         val topInset = statusBarInsetPx()
         params.y = params.y.coerceIn(topInset, (metrics.heightPixels - params.height).coerceAtLeast(topInset))
         windowManager.updateViewLayout(view, params)
-        preferences().edit().putInt(KEY_BUBBLE_X, params.x).putInt(KEY_BUBBLE_Y, params.y).apply()
+        preferences().edit {
+            putInt(KEY_BUBBLE_X, params.x)
+            putInt(KEY_BUBBLE_Y, params.y)
+        }
     }
 
     private fun statusBarInsetPx(): Int {
@@ -602,6 +625,10 @@ class FloatingWindowService : Service() {
         } else {
             0
         }
+        // statusBars() insets are 0 while the bar is hidden and don't exist
+        // before API 30, so the framework dimen stays as the floor that keeps
+        // the overlay below the status bar (2.2.3 fix).
+        @Suppress("InternalInsetResource", "DiscouragedApi")
         val resourceId = resources.getIdentifier("status_bar_height", "dimen", "android")
         val resourceInset = if (resourceId > 0) {
             resources.getDimensionPixelSize(resourceId)

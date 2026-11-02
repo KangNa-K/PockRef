@@ -206,10 +206,11 @@ class BlankCanvasFlowTest {
 
     @Test
     fun closeBlankCanvas_fromTrulyBlankState_closesCanvas() {
-        val result = PockRefUiState(blankCanvasOpen = true).closeBlankCanvas()
+        val result = PockRefUiState(blankCanvasOpen = true, settingsSheetOpen = true).closeBlankCanvas()
 
         assertFalse(result.blankCanvasOpen)
         assertFalse(result.isCanvasOpen)
+        assertFalse(result.settingsSheetOpen)
     }
 
     @Test

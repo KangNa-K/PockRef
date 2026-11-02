@@ -2,6 +2,7 @@
 
 package com.pockref.app.ui
 
+import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -18,12 +19,14 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronLeft
@@ -32,6 +35,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -47,22 +51,29 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.pockref.app.data.PurFileParser
 import com.pockref.app.data.SceneImageDecoder
 import com.pockref.app.model.PracticePhase
 import com.pockref.app.model.PracticeState
 import com.pockref.app.model.PracticeStatus
 import com.pockref.app.model.SceneImage
 import com.pockref.app.ui.theme.Dimens
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * V_NOW (2026-06-08 速写练习 commit 3 — Material 3
@@ -178,12 +189,20 @@ fun BoxScope.PracticeScreen(
     state: PracticeState,
     images: List<SceneImage>,
     imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
     onAction: (PockRefAction) -> Unit,
 ) {
     val currentImage = remember(state.currentImageId, images) {
         images.firstOrNull { it.id == state.currentImageId }
     }
+    // Decoded once here and shared by RUNNING and PAUSED, so
+    // pause / resume shows the same bitmap without a re-decode.
+    // FINISHED passes null, which releases the bitmap.
+    val practiceBitmap = rememberPracticeBitmap(
+        image = currentImage.takeIf {
+            state.status == PracticeStatus.RUNNING || state.status == PracticeStatus.PAUSED
+        },
+        imageDecoder = imageDecoder,
+    )
 
     // Ticker: drift-free phaseEndMs - now math. Keyed on
     // the phase-identity tuple so any state transition
@@ -192,10 +211,6 @@ fun BoxScope.PracticeScreen(
     val phaseKey = "${state.status.name}|${state.phase.name}|${state.currentIndex}|${state.config.practiceDurationMs}|${state.config.restDurationMs}"
     LaunchedEffect(phaseKey) {
         if (state.status != PracticeStatus.RUNNING) return@LaunchedEffect
-        val phaseDuration = when (state.phase) {
-            PracticePhase.COUNTDOWN -> state.config.practiceDurationMs
-            PracticePhase.REST -> state.config.restDurationMs
-        }
         val phaseEndMs = System.currentTimeMillis() + state.remainingMs.coerceAtLeast(0L)
         while (true) {
             val remaining = phaseEndMs - System.currentTimeMillis()
@@ -237,16 +252,12 @@ fun BoxScope.PracticeScreen(
     when (state.status) {
         PracticeStatus.RUNNING -> PracticeRunningView(
             state = state,
-            currentImage = currentImage,
-            imageDecoder = imageDecoder,
-            imageLazyLoader = imageLazyLoader,
+            practiceBitmap = practiceBitmap,
             onAction = onAction,
         )
         PracticeStatus.PAUSED -> PracticePausedView(
             state = state,
-            currentImage = currentImage,
-            imageDecoder = imageDecoder,
-            imageLazyLoader = imageLazyLoader,
+            practiceBitmap = practiceBitmap,
             onAction = onAction,
         )
         PracticeStatus.FINISHED -> PracticeFinishedOverlay(
@@ -266,9 +277,7 @@ fun BoxScope.PracticeScreen(
 @Composable
 private fun PracticeRunningView(
     state: PracticeState,
-    currentImage: SceneImage?,
-    imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
+    practiceBitmap: PracticeBitmap?,
     onAction: (PockRefAction) -> Unit,
 ) {
     val restDim = state.phase == PracticePhase.REST
@@ -294,9 +303,11 @@ private fun PracticeRunningView(
             // Cross-fade image. M3 standard medium-emphasis
             // motion: 300ms with FastOutSlowInEasing (the
             // M3 default "in-element" easing per the M3
-            // motion spec).
+            // motion spec). Keyed on the decoded frame, so
+            // the fade starts once the next image is ready
+            // and each slot draws its own frame (old → new).
             AnimatedContent(
-                targetState = currentImage?.id,
+                targetState = practiceBitmap,
                 transitionSpec = {
                     fadeIn(
                         animationSpec = tween(
@@ -312,11 +323,9 @@ private fun PracticeRunningView(
                 },
                 label = "practice-image-crossfade",
                 modifier = Modifier.fillMaxSize(),
-            ) { _ ->
+            ) { frame ->
                 PracticeImageLayer(
-                    image = currentImage,
-                    imageDecoder = imageDecoder,
-                    imageLazyLoader = imageLazyLoader,
+                    frame = frame,
                     alpha = imageAlpha,
                 )
             }
@@ -483,9 +492,7 @@ private fun BoxScope.PracticePageNavigation(
 @Composable
 private fun PracticePausedView(
     state: PracticeState,
-    currentImage: SceneImage?,
-    imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
+    practiceBitmap: PracticeBitmap?,
     onAction: (PockRefAction) -> Unit,
 ) {
     // No opaque scrim here — the image needs to be
@@ -522,23 +529,39 @@ private fun PracticePausedView(
             // gives the modal context without darkening
             // the image.
         PracticeImageLayer(
-            image = currentImage,
-            imageDecoder = imageDecoder,
-            imageLazyLoader = imageLazyLoader,
+            frame = practiceBitmap,
             alpha = 1f,
         )
 
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val sheetShape = RoundedCornerShape(
+            topStart = Dimens.SheetCornerRadius,
+            topEnd = Dimens.SheetCornerRadius,
+        )
         ModalBottomSheet(
+            shape = sheetShape,
+            containerColor = Color.Transparent,
+            tonalElevation = 0.dp,
+            // Handle and insets live inside the glass Column below.
+            dragHandle = null,
+            contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
             onDismissRequest = { onAction(PockRefAction.ResumePractice) },
             sheetState = sheetState,
         ) {
+            // Glass goes on the content, not on ModalBottomSheet's modifier:
+            // M3 applies that modifier before offsetting the sheet to the
+            // bottom, so it blurred the window top and clipped the content.
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                    .glassMaterial(sheetShape, GlassRole.Popup)
+                    .windowInsetsPadding(BottomSheetDefaults.windowInsets)
+                    .padding(start = 24.dp, end = 24.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
+                BottomSheetDefaults.DragHandle(
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
                 // Summary line: "⏸ 已暂停 · 3 / 10".
                 // Single-row layout (no big icon) so the
                 // sheet stays short — the user is going
@@ -617,7 +640,7 @@ private fun PracticeFinishedOverlay(
             modifier = Modifier.fillMaxSize(),
             contentAlignment = Alignment.Center,
         ) {
-            Surface(
+            GlassSurface(
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 // P1 (2026-06-11 chrome unify): dialog
                 // tier (24dp). 4dp tighter than the M3
@@ -703,9 +726,9 @@ private fun CountdownBadge(
         state.phase == PracticePhase.REST -> "休息 " + formatMmSs(state.remainingMs)
         else -> formatMmSs(state.remainingMs)
     }
-    Surface(
-        color = MaterialTheme.colorScheme.inverseSurface,
-        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+    GlassSurface(
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         // P1 (2026-06-11 chrome unify): card tier (16dp).
         // 4dp tighter than the dialog tier so the
         // small inline badge doesn't visually compete
@@ -726,61 +749,101 @@ private fun CountdownBadge(
 }
 
 /**
- * V_NOW: image layer. Decodes the [SceneImage] via the
- * existing [SceneImageDecoder] pipeline at the screen's
- * pixel dimensions so the decoder picks the closest
- * DECODE_LADDER level (e.g. 1080×1920 phone → level 3 =
- * 1024px long side). The bitmap is cached by
- * `remember(image.id)` so the same image across multiple
- * ticker frames doesn't re-decode.
+ * V_NOW: image layer. Draws an already-decoded frame
+ * from [rememberPracticeBitmap]; nothing is decoded here.
  *
  * [alpha] applies the rest-phase dim transition (M3
  * medium-emphasis 300ms motion, see [PracticeRunningView]).
  */
 @Composable
 private fun PracticeImageLayer(
-    image: SceneImage?,
-    imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
+    frame: PracticeBitmap?,
     alpha: Float,
 ) {
-    if (image == null) return
-    val configuration = LocalConfiguration.current
-    val displayWidth = configuration.screenWidthDp
-    val displayHeight = configuration.screenHeightDp
-    val bitmap = remember(image.id, displayWidth, displayHeight) {
-        decodePracticeImage(
-            image = image,
-            imageDecoder = imageDecoder,
-            imageLazyLoader = imageLazyLoader,
-            displayWidth = displayWidth,
-            displayHeight = displayHeight,
-        )
-    } ?: return
+    if (frame == null) return
     Image(
-        bitmap = bitmap.asImageBitmap(),
+        bitmap = frame.bitmap,
         contentDescription = null,
         contentScale = ContentScale.Fit,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .glassBackdropSource()
+            .background(Color.Black)
+            .testTag(PRACTICE_IMAGE_TAG),
         alpha = alpha,
     )
 }
 
+internal const val PRACTICE_IMAGE_TAG = "practice_image"
+
+/** A decoded practice frame, tagged with the image it came from. */
+internal class PracticeBitmap(val imageId: String, val bitmap: ImageBitmap)
+
 /**
- * V_NOW: image-bytes resolver + bitmap decode. Mirrors
- * the canvas path: [SceneImageDecoder.decode] with the
- * screen dimensions so the decoder picks the closest
- * DECODE_LADDER level.
+ * Decodes [image] at the window's px size (see
+ * [practiceImageDecodeSide]) through the shared
+ * [SceneImageDecoder] pipeline. Reading the size from
+ * [LocalWindowInfo] also tracks the floating-window overlay;
+ * bucketing it to a ladder rung means a window resize only
+ * re-decodes when the rung changes.
  */
-private fun decodePracticeImage(
-    image: SceneImage,
+@Composable
+private fun rememberPracticeBitmap(
+    image: SceneImage?,
     imageDecoder: SceneImageDecoder?,
-    imageLazyLoader: PurFileParser?,
-    displayWidth: Int,
-    displayHeight: Int,
-): android.graphics.Bitmap? {
-    if (imageDecoder == null) return null
-    return imageDecoder.decode(image, displayWidth, displayHeight)?.bitmap
+): PracticeBitmap? {
+    val containerSize = LocalWindowInfo.current.containerSize
+    val decodeSide = practiceImageDecodeSide(containerSize.width, containerSize.height)
+    return producePracticeBitmap(
+        image = image.takeIf { decodeSide != null },
+        decodeSide = decodeSide ?: 0,
+        decoderKey = imageDecoder,
+        decode = { target, side -> imageDecoder?.decode(target, side, side)?.bitmap },
+    )
+}
+
+/**
+ * Runs [decode] off the main thread. Cold decodes of large
+ * images take hundreds of ms, which used to stall
+ * composition. Behaviour:
+ * - the previous frame stays visible until the next one is
+ *   ready, so the cross-fade never flashes black;
+ * - a failed decode or a null [image] clears the frame;
+ * - decodes run one at a time; a request superseded while it
+ *   waits for the lock is dropped, so fast paging does not
+ *   stack several full-size decodes in memory.
+ */
+@Composable
+internal fun producePracticeBitmap(
+    image: SceneImage?,
+    decodeSide: Int,
+    decoderKey: Any?,
+    decode: (SceneImage, Int) -> Bitmap?,
+): PracticeBitmap? {
+    val decodeLock = remember { Mutex() }
+    val frame by produceState<PracticeBitmap?>(null, image?.id, decodeSide, decoderKey) {
+        if (image == null) {
+            value = null
+            return@produceState
+        }
+        val decoded = decodeLock.withLock {
+            withContext(Dispatchers.IO) { decode(image, decodeSide) }
+        }
+        value = decoded?.let { PracticeBitmap(image.id, it.asImageBitmap()) }
+    }
+    return frame
+}
+
+/**
+ * Maps the practice window size in px to the DECODE_LADDER
+ * rung that covers its long side, capped at the largest rung.
+ * Returns null for a not-yet-measured (0×0) window.
+ */
+internal fun practiceImageDecodeSide(containerWidthPx: Int, containerHeightPx: Int): Int? {
+    if (containerWidthPx <= 0 || containerHeightPx <= 0) return null
+    val longSide = maxOf(containerWidthPx, containerHeightPx)
+    val ladder = SceneImageDecoder.DECODE_LADDER
+    return ladder.firstOrNull { it >= longSide } ?: ladder.last()
 }
 
 /** Format milliseconds as zero-padded MM:SS. */

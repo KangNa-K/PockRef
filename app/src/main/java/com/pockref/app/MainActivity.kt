@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
+import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pockref.app.data.AppPreferences
 import com.pockref.app.data.CrashHandler
@@ -102,6 +103,7 @@ class MainActivity : ComponentActivity() {
      * silently ignored here.
      */
     private fun dispatchSpenEvent(event: SpenButtonDetector.ButtonEvent) {
+        if (viewModel.uiState.value.markupModeActive) return
         when (event) {
             SpenButtonDetector.ButtonEvent.BoxStart -> {
                 viewModel.onAction(PockRefAction.SetSelectionMode(SelectionMode.BOX))
@@ -183,7 +185,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
-            PockRefTheme(themeMode = state.themeMode) {
+            PockRefTheme(themeMode = state.themeMode, frostedGlassEnabled = state.frostedGlassEnabled) {
                 PockRefApp(
                     state = state,
                     updateController = viewModel.appUpdateController,
@@ -221,7 +223,7 @@ class MainActivity : ComponentActivity() {
             startActivity(
                 Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName"),
+                    "package:$packageName".toUri(),
                 ),
             )
             return
@@ -394,9 +396,9 @@ class MainActivity : ComponentActivity() {
                     clipData.getItemAt(i).uri?.let { uris.add(it) }
                 }
                 if (uris.isNotEmpty()) {
-                    viewModel.onAction(PockRefAction.DropImages(uris, permission))
+                    viewModel.onAction(PockRefAction.DropImages(uris, permission, androidx.compose.ui.geometry.Offset(event.x, event.y)))
                 } else {
-                    permission.release()
+                    permission?.release()
                 }
                 viewModel.onAction(PockRefAction.SetDragOver(false))
                 uris.isNotEmpty()

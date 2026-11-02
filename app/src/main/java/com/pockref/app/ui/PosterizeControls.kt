@@ -45,7 +45,7 @@ internal fun CompactSegmentedControl(
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(999.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .glassMaterial(RoundedCornerShape(999.dp))
             .padding(3.dp),
     ) {
         options.forEachIndexed { index, label ->

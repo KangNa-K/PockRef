@@ -9,6 +9,9 @@ import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.withSave
+import androidx.core.net.toUri
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.ImageOptimizer
 import com.pockref.app.data.ImageTileKey
@@ -116,7 +119,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             // an image address as text" case.
             val uri = item.uri
                 ?: try {
-                    Uri.parse(item.coerceToText(app)?.toString()?.trim() ?: "")
+                    (item.coerceToText(app)?.toString()?.trim() ?: "").toUri()
                 } catch (_: Exception) { null }
             if (uri == null) {
                 failedCount++
@@ -229,8 +232,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         val failedCount: Int,
     )
 
-    fun dropImages(uris: List<Uri>, dragPermission: android.view.DragAndDropPermissions? = null) {
+    fun dropImages(uris: List<Uri>, dragPermission: android.view.DragAndDropPermissions? = null, positionInWindow: Offset? = null) {
         if (uris.isEmpty()) return
+        val dropState = mainVm._uiState.value
         val operationToken = mainVm.beginSceneOperation()
         mainVm.viewModelScope.launch {
             mainVm.setBusy(true)
@@ -246,42 +250,23 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
                     val existingImages = mainVm._uiState.value.images
                     val existingCount = existingImages.size
-                    val viewport = mainVm._uiState.value.canvasViewportSize
-                    val containerPadding = 16f
-                    val imageSpacing = 8f
-                    val minColumnWidth = 120f
-                    val maxColumns = 4
-                    val availableWidth = viewport.width - containerPadding * 2
-                    val columns = if (availableWidth <= 0f) maxColumns
-                        else ((availableWidth + imageSpacing) / (minColumnWidth + imageSpacing))
-                            .toInt().coerceIn(1, maxColumns)
-                    val columnWidth = if (availableWidth <= 0f) minColumnWidth
-                        else (availableWidth - imageSpacing * (columns - 1)) / columns
-
                     filtered.mapIndexedNotNull { index, uri ->
                         val rawBytes = mainVm.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                             ?: return@mapIndexedNotNull null
                         val originalMime = mainVm.contentResolver.getType(uri) ?: "application/octet-stream"
                         val importedImage = decodeOriginalImage(rawBytes, originalMime)
                             ?: return@mapIndexedNotNull null
-                        val displayH = importedImage.height.toFloat() * columnWidth /
-                            importedImage.width.coerceAtLeast(1)
-
-                        val placementOrigin = computePlacementOrigin(existingImages, imageSpacing)
+                        val columnWidth = importedImage.width.toFloat().coerceAtMost(720f)
                         val totalIndex = existingCount + index
-                        val col = totalIndex % columns
-                        val row = totalIndex / columns
-                        val centerX = placementOrigin.x + col * (columnWidth + imageSpacing) + columnWidth / 2f
-                        val centerY = placementOrigin.y + row * (displayH + imageSpacing) + displayH / 2f
 
                         sceneImageFromOriginalImport(
                             name = mainVm.queryDisplayName(uri) ?: "image_${totalIndex + 1}",
                             imported = importedImage,
-                            center = Offset(centerX, centerY),
+                            center = Offset.Zero,
                             zIndex = totalIndex,
                             displayWidth = columnWidth,
                         )
-                    }
+                    }.let { layoutDroppedImages(it, dropState, positionInWindow) }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 dragPermission?.release()
@@ -304,13 +289,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 return@launch
             }
             mainVm.recordUndoState()
-            // Snapshot the pre-import image list so the
-            // auto-arrange path below can decide between
-            // [executeAutoLayout] (empty → nice grid for the new
-            // images) and [fitToScreen] (populated → preserve
-            // the user's manual layout, just zoom out so the
-            // new ones are visible).
-            val preImportImages = mainVm._uiState.value.images
             val hasOpenPur = mainVm.currentSceneUri != null && mainVm.isImportedPurFile
             if (!hasOpenPur) {
                 mainVm.untitledCounter++
@@ -350,18 +328,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 }
             }
             mainVm.notifyContentChanged()
-            // First-import auto-arrange: when the scene was empty
-            // before this import, run [executeAutoLayout]. For a
-            // populated scene, arrange only this batch beside the
-            // existing content, including the active group.
-            if (preImportImages.isEmpty()) {
-                mainVm.batchController.executeAutoLayout()
-            } else {
-                mainVm.batchController.executeImportedAutoLayout(
-                    imported.mapTo(linkedSetOf()) { it.id },
-                )
-                mainVm.batchController.fitToScreen()
-            }
+            // Preserve release-point placement and the user's current view.
             mainVm.setBusy(false)
         }
     }
@@ -662,6 +629,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     editingGroupId = null,
                     markupStrokes = scene.markupStrokes,
                     markupTexts = scene.markupTexts,
+                    markupSourceMetadata = scene.markupSourceMetadata,
+                    markupCompatibilityWarning = scene.markupCompatibilityWarning,
                     sceneDefaultSpacing = scene.defaultSpacing,
                     sceneDefaultAlignment = scene.defaultAlignment,
                     markupVisible = true,
@@ -720,6 +689,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 editingGroupId = null,
                 markupStrokes = scene.markupStrokes,
                 markupTexts = scene.markupTexts,
+                    markupSourceMetadata = scene.markupSourceMetadata,
+                    markupCompatibilityWarning = scene.markupCompatibilityWarning,
                 sceneDefaultSpacing = scene.defaultSpacing,
                 sceneDefaultAlignment = scene.defaultAlignment,
                 markupVisible = true,
@@ -975,7 +946,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
     fun retryFailedOptimization() {
         val lazyTasks = mainVm.pendingLazyTasks ?: return
-        val bDir = mainVm.backupDir
         mainVm._uiState.update {
             it.copy(
                 batchOptimizeState = it.batchOptimizeState.copy(
@@ -1069,7 +1039,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
 
     private suspend fun writeSceneToFile(uri: Uri, truncate: Boolean, images: List<SceneImage>): Boolean {
         mainVm.setBusy(true)
-        var success = false
         try {
             withContext(Dispatchers.IO) {
                 val scene = mainVm._uiState.value.toScene().copy(images = images)
@@ -1102,10 +1071,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         mainVm._uiState.update { it.copy(images = images) }
         mainVm.lastSaveSnapshotHash = mainVm.computeQuickHash(mainVm._uiState.value.toScene())
         mainVm.syncDirectSaveState()
-        success = true
         mainVm.setBusy(false)
         mainVm._uiState.update { it.copy(isSaving = false) }
-        return success
+        return true
     }
 
     fun undoLastOptimization() {
@@ -1270,7 +1238,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
      * are copied verbatim so JPEG/GIF/WebP data never receives another
      * lossy encode.
      */
-    fun exportSelected(uri: Uri, _format: ExportFormat) {
+    fun exportSelected(uri: Uri) {
         val state = mainVm._uiState.value
         val targets = if (state.selectedImageIds.isNotEmpty()) {
             state.images.filter { it.id in state.selectedImageIds }
@@ -1997,12 +1965,15 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 backgroundColor = defaultBg,
                 backgroundCustomColor = defaultBg,
                 showBackgroundPicker = false,
+                settingsSheetOpen = false,
                 images = emptyList(),
                 groups = emptyList(),
                 requiresGroupFlattening = false,
                 editingGroupId = null,
                 markupStrokes = emptyList(),
                 markupTexts = emptyList(),
+                markupSourceMetadata = null,
+                markupCompatibilityWarning = null,
                 markupVisible = true,
                 markupModeActive = false,
                 draftMarkupStroke = null,
@@ -2078,15 +2049,16 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         mainVm._uiState.update { it.copy(pendingSaveSceneLaunch = false) }
     }
 
-    fun updateCanvasViewport(width: Float, height: Float) {
+    fun updateCanvasViewport(width: Float, height: Float, originInWindow: Offset? = null) {
         val safeWidth = width.coerceAtLeast(0f)
         val safeHeight = height.coerceAtLeast(0f)
         mainVm._uiState.update { state ->
             val current = state.canvasViewportSize
-            if (current.width == safeWidth && current.height == safeHeight) {
+            val origin = originInWindow ?: state.canvasOriginInWindow
+            if (current.width == safeWidth && current.height == safeHeight && state.canvasOriginInWindow == origin) {
                 state
             } else {
-                state.copy(canvasViewportSize = Size2D(safeWidth, safeHeight))
+                state.copy(canvasViewportSize = Size2D(safeWidth, safeHeight), canvasOriginInWindow = origin)
             }
         }
     }
@@ -2474,7 +2446,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     val outputWidth = (canvasWidth * exportDensity * scale).toInt().coerceAtLeast(1)
                     val outputHeight = (canvasHeight * exportDensity * scale).toInt().coerceAtLeast(1)
                     val bitmap = try {
-                        Bitmap.createBitmap(
+                        createBitmap(
                             outputWidth,
                             outputHeight,
                             Bitmap.Config.ARGB_8888,
@@ -2612,26 +2584,13 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         }
                     }
 
-                    markupStrokes.forEach { stroke ->
-                        renderMarkupStrokeToCanvas(
-                            canvas = canvas,
-                            stroke = stroke,
-                            minX = minX,
-                            minY = minY,
-                            scale = scale,
-                            exportDensity = exportDensity,
-                        )
-                    }
-                    markupTexts.forEach { item ->
-                        renderMarkupTextToCanvas(
-                            canvas = canvas,
-                            item = item,
-                            minX = minX,
-                            minY = minY,
-                            scale = scale,
-                            exportDensity = exportDensity,
-                        )
-                    }
+                    val markupSave = canvas.save()
+                    try {
+                        val factor = scale * exportDensity
+                        canvas.scale(factor, factor)
+                        canvas.translate(-minX, -minY)
+                        SharedMarkupRenderer.draw(canvas, markupStrokes, markupTexts)
+                    } finally { canvas.restoreToCount(markupSave) }
 
                     // Write PNG to URI
                     val resolver = mainVm.contentResolver
@@ -2750,8 +2709,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             ?: return false
         if (!probeTile.isRecycled) probeTile.recycle()
 
-        canvas.save()
-        try {
+        canvas.withSave {
             canvas.translate(canvasCenterX, canvasCenterY)
             canvas.rotate(image.rotationDegrees)
             canvas.scale(
@@ -2803,8 +2761,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             (decodedRight - cropLeft) / cropWidth * dstW
                         val expandedBottom = -dstH / 2f +
                             (decodedBottom - cropTop) / cropHeight * dstH
-                        canvas.save()
-                        try {
+                        canvas.withSave {
                             canvas.clipRect(left, top, right, bottom)
                             canvas.drawBitmap(
                                 tile,
@@ -2817,18 +2774,14 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                 ),
                                 paint,
                             )
-                        } finally {
-                            canvas.restore()
                         }
                     } finally {
                         if (!tile.isRecycled) tile.recycle()
                     }
                 }
             }
-            return true
-        } finally {
-            canvas.restore()
         }
+        return true
     }
 
     private fun renderImageToCanvas(
@@ -2882,8 +2835,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             -dstW / 2f, -dstH / 2f, dstW / 2f, dstH / 2f,
         )
 
-        canvas.save()
-        try {
+        canvas.withSave {
             canvas.translate(canvasCenterX, canvasCenterY)
             canvas.rotate(image.rotationDegrees)
             canvas.scale(
@@ -2891,8 +2843,6 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 if (image.flipY) -1f else 1f,
             )
             canvas.drawBitmap(source, srcRect, dstRect, paint)
-        } finally {
-            canvas.restore()
         }
     }
 
@@ -2901,7 +2851,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         include: (Float, Float) -> Unit,
     ) {
         val padding = (stroke.lineWidth / 2f).coerceAtLeast(1f)
-        stroke.points.forEach { point ->
+        markupPolylines(stroke).flatten().forEach { point ->
             include(point.x - padding, point.y - padding)
             include(point.x + padding, point.y + padding)
         }
@@ -2911,14 +2861,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         item: CanvasMarkupText,
         include: (Float, Float) -> Unit,
     ) {
-        val lines = item.text.lines().filter { it.isNotBlank() }
-        if (lines.isEmpty()) return
-        val fontSize = item.fontSize.coerceAtLeast(1f)
-        val width = lines.maxOf { it.length }.coerceAtLeast(1) * fontSize * 0.6f
-        val lineHeight = fontSize * 1.18f
-        val height = (lines.size * lineHeight).coerceAtLeast(fontSize)
-        include(item.position.x - width / 2f, item.position.y - height / 2f - fontSize * 0.25f)
-        include(item.position.x + width / 2f, item.position.y + height / 2f + fontSize * 0.25f)
+        markupTextScreenBounds(item, Offset.Zero, Offset.Zero, 1f)?.let {
+            include(it.left,it.top); include(it.right,it.bottom)
+        }
     }
 
     private fun renderMarkupStrokeToCanvas(
@@ -2929,42 +2874,12 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         scale: Float,
         exportDensity: Float,
     ) {
-        if (!stroke.isRenderable) return
-        val factor = exportDensity * scale
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = stroke.color.toArgb()
-            style = android.graphics.Paint.Style.STROKE
-            strokeCap = android.graphics.Paint.Cap.ROUND
-            strokeJoin = android.graphics.Paint.Join.ROUND
-            strokeWidth = (stroke.lineWidth * factor).coerceAtLeast(1f)
-        }
-        val mapped = stroke.points.map { point ->
-            android.graphics.PointF(
-                (point.x - minX) * factor,
-                (point.y - minY) * factor,
-            )
-        }
-        val first = mapped.firstOrNull() ?: return
-        val path = android.graphics.Path().apply {
-            moveTo(first.x, first.y)
-            if (mapped.size == 2) {
-                lineTo(mapped[1].x, mapped[1].y)
-            } else {
-                for (index in 1 until mapped.lastIndex) {
-                    val current = mapped[index]
-                    val next = mapped[index + 1]
-                    quadTo(
-                        current.x,
-                        current.y,
-                        (current.x + next.x) / 2f,
-                        (current.y + next.y) / 2f,
-                    )
-                }
-                val last = mapped.last()
-                lineTo(last.x, last.y)
-            }
-        }
-        canvas.drawPath(path, paint)
+        val save = canvas.save()
+        try {
+            val factor = scale * exportDensity
+            canvas.scale(factor,factor); canvas.translate(-minX,-minY)
+            SharedMarkupRenderer.drawStroke(canvas,stroke)
+        } finally { canvas.restoreToCount(save) }
     }
 
     private fun renderMarkupTextToCanvas(
@@ -2975,23 +2890,14 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         scale: Float,
         exportDensity: Float,
     ) {
-        val lines = item.text.lines().filter { it.isNotBlank() }
-        if (lines.isEmpty()) return
-        val factor = exportDensity * scale
-        val x = (item.position.x - minX) * factor
-        val y = (item.position.y - minY) * factor
-        val textSize = (item.fontSize * factor).coerceAtLeast(8f)
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = item.color.toArgb()
-            this.textSize = textSize
-            textAlign = android.graphics.Paint.Align.CENTER
-        }
-        val lineHeight = textSize * 1.18f
-        val firstBaseline = y - (lineHeight * (lines.size - 1) / 2f)
-        lines.forEachIndexed { index, line ->
-            canvas.drawText(line, x, firstBaseline + index * lineHeight, paint)
-        }
+        val save = canvas.save()
+        try {
+            val factor = scale * exportDensity
+            canvas.scale(factor,factor); canvas.translate(-minX,-minY)
+            SharedMarkupRenderer.drawText(canvas,item)
+        } finally { canvas.restoreToCount(save) }
     }
+
 }
 
 internal data class ImportedSceneMerge(

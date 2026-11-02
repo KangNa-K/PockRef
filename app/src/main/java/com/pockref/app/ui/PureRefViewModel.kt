@@ -11,6 +11,8 @@ import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.pockref.app.data.AppPreferences
@@ -23,6 +25,7 @@ import com.pockref.app.data.PurSceneCodec
 import com.pockref.app.data.RecoverySessionManager
 import com.pockref.app.data.SceneImageDecoder
 import com.pockref.app.model.BackgroundPreset
+import com.pockref.app.model.CanvasMarkupTool
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.PockRefScene
 import com.pockref.app.model.decodeRecentScenes
@@ -230,6 +233,9 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
     internal val undoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
     internal val redoStack: ArrayDeque<HistoryEntry> = ArrayDeque()
     internal val markupHistory = MarkupHistory()
+    private var markupGestureBase: MarkupHistorySnapshot? = null
+    private var markupGesturePoint: Offset? = null
+    private var markupHandleGesture: Triple<PockRefUiState, MarkupHandle, Offset>? = null
     internal var sceneGestureActive: Boolean = false
     internal var gestureUndoRecorded: Boolean = false
         // Resetting the flag (e.g. by loadScene in PockRefViewModelScene, which
@@ -274,6 +280,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             backgroundColor = appPrefs.defaultBackgroundPreset.color,
             backgroundCustomColor = appPrefs.defaultBackgroundPreset.color,
             themeMode = appPrefs.themeMode,
+            frostedGlassEnabled = appPrefs.frostedGlassEnabled,
             // V_NOW: spenMode pref → uiState. The detector in
             // MainActivity reads the pref directly (not the
             // uiState) on construction — see MainActivity.onCreate
@@ -686,6 +693,10 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             sb.append(group.positionLocked)
         }
         sb.append(scene.requiresGroupFlattening)
+        sb.append(scene.markupSourceMetadata)
+        sb.append(scene.markupCompatibilityWarning)
+        sb.append(scene.markupStrokes.hashCode())
+        sb.append(scene.markupTexts.hashCode())
         sb.append(scene.markupStrokes.size)
         scene.markupStrokes.forEach { stroke ->
             sb.append(stroke.id)
@@ -868,7 +879,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             is PockRefAction.OpenSceneFromPicker -> openSceneFromPicker(action.uri)
             is PockRefAction.SaveScene -> sceneController.saveScene(action.uri)
             is PockRefAction.OpenRecentScene -> sceneController.loadScene(
-                Uri.parse(action.uri),
+                action.uri.toUri(),
                 dropRecentOnFailure = true,
             )
             is PockRefAction.RemoveRecentScene -> removeRecentScene(action.uri)
@@ -1028,6 +1039,28 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
             is PockRefAction.SetMarkupModeActive -> setMarkupModeActive(action.active)
+            is PockRefAction.SetMarkupTool -> {
+                cancelMarkupStroke()
+                _uiState.update { it.copy(markupTool = action.tool, selectedMarkupId = null, selectedMarkupIds = emptySet()) }
+            }
+            is PockRefAction.SetMarkupColor -> {
+                _uiState.update { it.copy(markupColor = action.color) }
+                editSelectedMarkup { state, ids -> state.copy(
+                    markupStrokes = state.markupStrokes.map { if (it.id in ids && !it.locked) it.copy(color = action.color) else it },
+                    markupTexts = state.markupTexts.map { if (it.id in ids && !it.locked) it.copy(color = action.color) else it }) }
+            }
+            is PockRefAction.SetMarkupWidth -> if (action.width.isFinite()) {
+                val width = action.width.coerceIn(1f, 40f)
+                _uiState.update { it.copy(markupLineWidth = width) }
+                editSelectedMarkup { state, ids -> state.copy(markupStrokes = state.markupStrokes.map {
+                    if (it.id in ids && !it.locked) it.copy(lineWidth = (width / state.canvasScale.coerceAtLeast(0.001f)).coerceIn(0.01f, 10000f)) else it
+                }) }
+            }
+            PockRefAction.DeleteSelectedMarkup -> editSelectedMarkup { state, ids -> state.copy(
+                markupStrokes = state.markupStrokes.filterNot { it.id in ids && !it.locked },
+                markupTexts = state.markupTexts.filterNot { it.id in ids && !it.locked }, selectedMarkupId = null, selectedMarkupIds = emptySet()) }
+            PockRefAction.DuplicateSelectedMarkup -> editSelectedMarkup { state, _ -> duplicateMarkupSelection(state) }
+            is PockRefAction.TransformSelectedMarkup -> transformSelectedMarkup(action.scale, action.rotation)
             is PockRefAction.BeginMarkupStroke -> beginMarkupStroke(action.point)
             is PockRefAction.UpdateMarkupStroke -> updateMarkupStroke(action.point)
             PockRefAction.CommitMarkupStroke -> commitMarkupStroke()
@@ -1040,7 +1073,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(pendingMarkupTextValue = action.value)
             }
             is PockRefAction.SetPendingMarkupTextFontSize -> _uiState.update {
-                it.copy(pendingMarkupTextFontSize = action.size.coerceIn(24f, 240f))
+                if (action.size.isFinite()) it.copy(pendingMarkupTextFontSize = action.size.coerceIn(1f, 2000f)) else it
             }
             PockRefAction.CommitMarkupText -> commitMarkupText()
             PockRefAction.CancelMarkupText -> _uiState.update {
@@ -1403,7 +1436,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             PockRefAction.CancelExport -> _uiState.update { it.copy(showExportDialog = false) }
             is PockRefAction.ConfirmExport -> {
                 _uiState.update { it.copy(showExportDialog = false) }
-                sceneController.exportSelected(action.uri, action.format)
+                sceneController.exportSelected(action.uri)
             }
             is PockRefAction.ConfirmExportGif -> {
                 _uiState.update { it.copy(showExportDialog = false) }
@@ -1478,7 +1511,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     imageIds = action.imageIds,
                 )
             }
-            is PockRefAction.UpdateCanvasViewport -> sceneController.updateCanvasViewport(action.width, action.height)
+            is PockRefAction.UpdateCanvasViewport -> sceneController.updateCanvasViewport(action.width, action.height, action.originInWindow)
             is PockRefAction.SetSceneName -> sceneController.setSceneName(action.value)
             is PockRefAction.EnterCropMode -> sceneController.enterCropMode()
             PockRefAction.CancelCrop -> sceneController.cancelCrop()
@@ -1529,12 +1562,16 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.SetBackgroundColor -> setBackgroundColor(action.color)
             is PockRefAction.ShowBackgroundPicker -> setBackgroundPickerVisible(action.show)
             is PockRefAction.SetThemeMode -> setThemeMode(action.mode)
+            is PockRefAction.SetFrostedGlassEnabled -> {
+                appPrefs.frostedGlassEnabled = action.enabled
+                _uiState.update { it.copy(frostedGlassEnabled = action.enabled) }
+            }
             PockRefAction.ConsumeError -> consumeError()
             is PockRefAction.SetHover -> setHover(action.imageId, action.position)
             PockRefAction.ClearHover -> clearHover()
             is PockRefAction.SetHoverPreview -> setHoverPreview(action.imageId)
             is PockRefAction.SetDragOver -> setDragOver(action.isOver)
-            is PockRefAction.DropImages -> sceneController.dropImages(action.uris, action.dragPermission)
+            is PockRefAction.DropImages -> sceneController.dropImages(action.uris, action.dragPermission, action.positionInWindow)
             is PockRefAction.SetTopToolbarExpanded -> setTopToolbarExpanded(action.expanded)
             is PockRefAction.SetBottomRightPanelExpanded -> setBottomRightPanelExpanded(action.expanded)
             is PockRefAction.SetMinimapPosition -> setMinimapPosition(action.x, action.y)
@@ -2202,7 +2239,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         if (oldUri != null && oldUri != newUri) {
             runCatching {
                 contentResolver.releasePersistableUriPermission(
-                    Uri.parse(oldUri),
+                    oldUri.toUri(),
                     android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
                         android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                 )
@@ -2346,6 +2383,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         }
 
     internal fun undoMarkupStep() {
+        cancelMarkupStroke()
         val current = _uiState.value
         if (!current.markupModeActive) return
         val snapshot = markupHistory.undo(current.toMarkupHistorySnapshot()) ?: return
@@ -2353,6 +2391,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     internal fun redoMarkupStep() {
+        cancelMarkupStroke()
         val current = _uiState.value
         if (!current.markupModeActive) return
         val snapshot = markupHistory.redo(current.toMarkupHistorySnapshot()) ?: return
@@ -2361,10 +2400,16 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun setMarkupModeActive(active: Boolean) {
         if (active) {
+            _uiState.value.markupCompatibilityWarning?.let { reportError(it); return }
+            if (_uiState.value.markupModeActive) return
             markupHistory.clear()
             _uiState.update { current ->
                 current.copy(
                     markupModeActive = true,
+                    markupVisible = true,
+                    selectedMarkupId = null,
+                    selectedMarkupIds = emptySet(),
+                    markupLassoPoints = emptyList(),
                     bottomRightPanelExpanded = false,
                     selectedImageId = null,
                     selectedImageIds = emptySet(),
@@ -2387,11 +2432,16 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             return
         }
 
+        commitMarkupStroke()
+        if (_uiState.value.pendingMarkupTextPosition != null) commitMarkupText()
         val beforeState = _uiState.value
         val baseStrokes = beforeState.markupSessionBaseStrokes
         val baseTexts = beforeState.markupSessionBaseTexts
         val afterState = beforeState.copy(
             markupModeActive = false,
+            selectedMarkupId = null,
+            selectedMarkupIds = emptySet(),
+            markupLassoPoints = emptyList(),
             draftMarkupStroke = null,
             markupSessionBaseStrokes = null,
             markupSessionBaseTexts = null,
@@ -2423,17 +2473,84 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     internal fun beginMarkupStroke(point: Offset) {
+        val state = _uiState.value
+        if (!state.markupModeActive || state.markupCompatibilityWarning != null || !validMarkupPoint(point)) return
+        if (state.markupTool == CanvasMarkupTool.SELECT) {
+            hitMarkupHandle(state, point)?.let { handle ->
+                markupGestureBase = state.toMarkupHistorySnapshot()
+                markupHandleGesture = Triple(state, handle, point)
+                return
+            }
+        }
+        if (state.markupTool == CanvasMarkupTool.LASSO) {
+            _uiState.update { it.copy(markupLassoPoints = listOf(point), selectedMarkupId = null, selectedMarkupIds = emptySet()) }
+            return
+        }
+        if (state.markupTool == CanvasMarkupTool.TEXT) {
+            val text = hitTestMarkupText(state.markupTexts, point, Offset.Zero, Offset.Zero, 1f)
+            if (text != null) editMarkupText(text.id) else {
+                requestMarkupText()
+                _uiState.update { it.copy(pendingMarkupTextPosition = point) }
+            }
+            return
+        }
+        if (state.markupTool in setOf(CanvasMarkupTool.SELECT, CanvasMarkupTool.ERASER, CanvasMarkupTool.INK_ERASER)) {
+            markupGestureBase = state.toMarkupHistorySnapshot()
+            markupGesturePoint = point
+            val text = hitTestMarkupText(state.markupTexts, point, Offset.Zero, Offset.Zero, 1f)
+            val stroke = state.markupStrokes.asReversed().sortedByDescending { it.zOrder }
+                .firstOrNull { hitMarkupStroke(it, point, 14f/state.canvasScale.coerceAtLeast(0.001f)) }
+            val hit = if (text != null && (stroke == null || text.zOrder >= stroke.zOrder)) text.id else stroke?.id
+            val ids = if (hit != null && hit in state.markupSelection) state.markupSelection else setOfNotNull(hit)
+            _uiState.update { it.copy(selectedMarkupId = hit, selectedMarkupIds = ids) }
+            if (state.markupTool == CanvasMarkupTool.ERASER || state.markupTool == CanvasMarkupTool.INK_ERASER) eraseMarkupAt(point)
+            return
+        }
         _uiState.update { current ->
             if (!current.markupModeActive) current else current.copy(
                 draftMarkupStroke = CanvasMarkupStroke(
-                    lineWidth = (4f / current.canvasScale).coerceIn(1f, 80f),
+                    color = current.markupColor,
+                    lineWidth = (current.markupLineWidth / current.canvasScale).coerceIn(0.01f, 10000f),
                     points = listOf(point),
+                    kind = current.markupTool.name.lowercase(),
+                    opacity = if (current.markupTool == CanvasMarkupTool.HIGHLIGHTER) 0.35f else 1f,
+                    zOrder = (current.markupStrokes.map { it.zOrder } + current.markupTexts.map { it.zOrder }).maxOrNull()?.plus(1) ?: 0,
                 ),
             )
         }
     }
 
     internal fun updateMarkupStroke(point: Offset) {
+        if (!validMarkupPoint(point)) return
+        val state = _uiState.value
+        markupHandleGesture?.let { (base, handle, start) ->
+            val transformed = dragMarkupHandle(base, handle, start, point)
+            _uiState.value = state.copy(markupStrokes = transformed.markupStrokes, markupTexts = transformed.markupTexts)
+            return
+        }
+        if (state.markupLassoPoints.isNotEmpty()) {
+            if ((point-state.markupLassoPoints.last()).getDistance() >= 2f/state.canvasScale.coerceAtLeast(0.001f) &&
+                state.markupLassoPoints.size < 8192) {
+                _uiState.update { it.copy(markupLassoPoints = it.markupLassoPoints + point) }
+            }
+            return
+        }
+        if (markupGestureBase != null) {
+            val previousPoint = markupGesturePoint ?: point
+            val delta = point - previousPoint
+            markupGesturePoint = point
+            if (state.markupTool == CanvasMarkupTool.ERASER || state.markupTool == CanvasMarkupTool.INK_ERASER) eraseMarkupAt(point, previousPoint)
+            else if (state.markupTool == CanvasMarkupTool.SELECT) {
+                val ids = state.markupSelection
+                val next = state.copy(
+                    markupStrokes = state.markupStrokes.map { stroke -> if (stroke.id in ids && !stroke.locked) stroke.copy(points = stroke.points.map { p -> p+delta }) else stroke },
+                    markupTexts = state.markupTexts.map { text -> if (text.id in ids && !text.locked) text.copy(position = text.position+delta) else text })
+                if (next.markupStrokes.all { it.points.all(::validMarkupPoint) } && next.markupTexts.all { validMarkupPoint(it.position) }) {
+                    _uiState.value = next
+                }
+            }
+            return
+        }
         _uiState.update { current ->
             val draft = current.draftMarkupStroke
             if (!current.markupModeActive || draft == null) {
@@ -2445,19 +2562,35 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 if (last != null && (last - point).getDistance() < minWorldDistance) {
                     current
                 } else {
-                    current.copy(draftMarkupStroke = draft.copy(points = draft.points + point))
+                    current.copy(draftMarkupStroke = draft.copy(points = if (draft.kind in setOf("line", "arrow", "rectangle", "ellipse")) listOf(draft.points.first(), point) else draft.points + point))
                 }
             }
         }
     }
 
     internal fun commitMarkupStroke() {
+        markupHandleGesture = null
+        val selectionState = _uiState.value
+        if (selectionState.markupLassoPoints.isNotEmpty()) {
+            val ids = selectMarkupInLasso(selectionState, selectionState.markupLassoPoints)
+            _uiState.value = selectionState.copy(selectedMarkupIds = ids, selectedMarkupId = ids.firstOrNull(),
+                markupLassoPoints = emptyList(), markupTool = CanvasMarkupTool.SELECT)
+            return
+        }
+        markupGestureBase?.let { before ->
+            val current = _uiState.value
+            if (before != current.toMarkupHistorySnapshot()) markupHistory.record(before)
+            markupGestureBase = null
+            markupGesturePoint = null
+            _uiState.value = syncVisibleHistoryFlags(current)
+            return
+        }
         _uiState.update { current ->
             val draft = current.draftMarkupStroke
             if (!current.markupModeActive || draft == null) {
                 current
             } else {
-                val committed = regularizeMarkupStrokeForCommit(draft)
+                val committed = if (draft.kind == "pen" || draft.kind == "highlighter") regularizeMarkupStrokeForCommit(draft) else draft
                 if (committed.isRenderable) {
                     markupHistory.record(current.toMarkupHistorySnapshot())
                 }
@@ -2472,16 +2605,50 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     }
 
     internal fun cancelMarkupStroke() {
-        _uiState.update { it.copy(draftMarkupStroke = null) }
+        markupHandleGesture = null
+        val before = markupGestureBase
+        markupGestureBase = null
+        markupGesturePoint = null
+        _uiState.update { (if (before == null) it else it.restoreMarkupHistorySnapshot(before)).copy(draftMarkupStroke = null, markupLassoPoints = emptyList()) }
+    }
+
+    private fun eraseMarkupAt(point: Offset, from: Offset = point) {
+        _uiState.update { state ->
+            val tolerance = 16f/state.canvasScale.coerceAtLeast(0.001f)
+            if (state.markupTool == CanvasMarkupTool.INK_ERASER) return@update state.copy(
+                markupStrokes = state.markupStrokes.flatMap { eraseMarkupInk(it, from, point, tolerance) },
+                selectedMarkupId = null, selectedMarkupIds = emptySet())
+            state.copy(markupStrokes = state.markupStrokes.filterNot { hitMarkupStrokeAlongSegment(it,from,point,tolerance) },
+                markupTexts = state.markupTexts.filterNot { hitMarkupTextAlongSegment(it,from,point) },
+                selectedMarkupId = null, selectedMarkupIds = emptySet())
+        }
+    }
+
+    private fun editSelectedMarkup(transform: (PockRefUiState, Set<String>) -> PockRefUiState) {
+        val current = _uiState.value
+        if (!current.markupModeActive || current.markupCompatibilityWarning != null) return
+        val ids = current.markupSelection
+        if (ids.isEmpty()) return
+        val next = transform(current,ids)
+        if (next.toMarkupHistorySnapshot() != current.toMarkupHistorySnapshot()) markupHistory.record(current.toMarkupHistorySnapshot())
+        _uiState.value = syncVisibleHistoryFlags(next)
+    }
+
+    private fun transformSelectedMarkup(scale: Float, rotation: Float) {
+        editSelectedMarkup { state, _ -> transformMarkupSelection(state, scale, rotation) }
     }
 
     internal fun cancelMarkupSession() {
+        cancelMarkupStroke()
         markupHistory.clear()
         _uiState.update { current ->
             current.copy(
                 markupStrokes = current.markupSessionBaseStrokes ?: current.markupStrokes,
                 markupTexts = current.markupSessionBaseTexts ?: current.markupTexts,
                 markupModeActive = false,
+                selectedMarkupId = null,
+                selectedMarkupIds = emptySet(),
+                markupLassoPoints = emptyList(),
                 draftMarkupStroke = null,
                 markupSessionBaseStrokes = null,
                 markupSessionBaseTexts = null,
@@ -2495,6 +2662,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun requestMarkupText() {
         val current = _uiState.value
+        current.markupCompatibilityWarning?.let { reportError(it); return }
         val viewportCenter = Offset(
             x = -current.canvasOffset.x / current.canvasScale,
             y = -current.canvasOffset.y / current.canvasScale,
@@ -2512,12 +2680,13 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun editMarkupText(textId: String) {
         val current = _uiState.value
-        val text = current.markupTexts.firstOrNull { it.id == textId } ?: return
+        current.markupCompatibilityWarning?.let { reportError(it); return }
+        val text = current.markupTexts.firstOrNull { it.id == textId && !it.locked } ?: return
         _uiState.update {
             it.copy(
                 pendingMarkupTextPosition = text.position,
                 pendingMarkupTextValue = text.text,
-                pendingMarkupTextFontSize = text.fontSize.coerceIn(24f, 240f),
+                pendingMarkupTextFontSize = text.fontSize.coerceIn(0.01f, 10000f),
                 editingMarkupTextId = text.id,
                 bottomRightPanelExpanded = false,
             )
@@ -2543,6 +2712,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
 
     internal fun moveMarkupText(textId: String, delta: Offset) {
         val current = _uiState.value
+        if (current.markupCompatibilityWarning != null) return
         if (current.markupModeActive) {
             if (sceneGestureActive && !gestureUndoRecorded) {
                 markupHistory.record(current.toMarkupHistorySnapshot())
@@ -2590,50 +2760,45 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             add(normalized)
             addAll(_uiState.value.recentScenes.filterNot { it.uri == normalized.uri }.take(19))
         }
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
+        prefs.edit {
+            putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                listOf(
+                    it.uri,
+                    it.label.replace("|", "/"),
+                    it.source,
+                    it.timestamp.toString(),
+                    it.filePath.replace("|", "/"),
+                    it.fileSize.toString(),
+                    if (it.pinned) "1" else "0",
+                    it.coverImageId.orEmpty(),
+                ).joinToString("|")
+            })
+        }
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
-    // V_NOW (L2 polish 2026-06-10 + 2026-06-11 "label 与磁盘不同步"
-    // fix): rename a recent entry's display label. For file:// URIs
-    // the on-disk .pur file is also renamed so the start-page label
-    // and the file manager view stay in sync. The prefs row is
-    // re-serialized with the new label + (for file URIs) the new
-    // filePath + new uri. Empty newLabel is silently dropped.
     internal fun renameRecentScene(uri: String, newLabel: String) {
-        if (newLabel.isBlank()) return
+        val trimmed = newLabel.trim()
+        val label = (if (trimmed.endsWith(".pur", ignoreCase = true)) trimmed.dropLast(4) else trimmed).trim()
+        if (label.isEmpty() || label == "." || label == ".." ||
+            label.any { it == '/' || it == '\\' || it == '|' || it.isISOControl() }
+        ) {
+            reportError("文件名无效，请检查后重试")
+            return
+        }
         if (_uiState.value.recentScenes.none { it.uri == uri }) return
-
-        // Try to rename the on-disk .pur file when we can.
-        // The function returns the (uri, filePath) to use in
-        // the persisted row — they may differ from the input
-        // if the file was actually renamed, or may be the
-        // original values if rename isn't supported for this
-        // URI (e.g. content:// on Android 11+ where the SAF
-        // tree doesn't expose writable rename for files the
-        // app didn't create).
-        val (resolvedUri, resolvedFilePath) = renameUnderlyingFile(
-            uri = Uri.parse(uri),
-            oldLabel = _uiState.value.recentScenes.first { it.uri == uri }.label,
-            newLabel = newLabel,
-        )
+        val renamed = renameUnderlyingFile(uri.toUri(), "$label.pur")
+        if (renamed == null) {
+            reportError("重命名失败，文件可能已存在或存储位置不支持重命名")
+            return
+        }
+        val (resolvedUri, resolvedFilePath) = renamed
         val resolvedUriString = resolvedUri.toString()
 
         val updated = _uiState.value.recentScenes.map {
             if (it.uri == uri) {
                 it.copy(
-                    label = newLabel,
+                    label = resolvedFilePath,
                     uri = resolvedUriString,
                     filePath = resolvedFilePath,
                 )
@@ -2641,74 +2806,50 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                 it
             }
         }
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
+        prefs.edit {
+            putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                listOf(
+                    it.uri,
+                    it.label.replace("|", "/"),
+                    it.source,
+                    it.timestamp.toString(),
+                    it.filePath.replace("|", "/"),
+                    it.fileSize.toString(),
+                    if (it.pinned) "1" else "0",
+                    it.coverImageId.orEmpty(),
+                ).joinToString("|")
+            })
+        }
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
-    /**
-     * Try to rename the underlying .pur file so the start-page
-     * label and the file manager view stay in sync.
-     *
-     * Returns the (uri, filePath) pair to persist in
-     * [RecentSceneEntry]. For file:// URIs we use
-     * [java.io.File.renameTo] and rebuild the uri. For SAF
-     * document URIs we attempt
-     * [android.provider.DocumentsContract.renameDocument] —
-     * this works on most providers (Files app, Documents UI,
-     * Drive, SD card) but is a no-op on MediaStore (which
-     * doesn't allow renaming through the SAF tree). On a
-     * no-op we keep the original uri/filePath.
-     */
     private fun renameUnderlyingFile(
         uri: Uri,
-        oldLabel: String,
-        newLabel: String,
-    ): Pair<Uri, String> {
+        newName: String,
+    ): Pair<Uri, String>? {
         val context = getApplication<Application>()
-        val currentEntry = _uiState.value.recentScenes.firstOrNull { it.uri == uri.toString() }
-        val currentFilePath = currentEntry?.filePath ?: ""
-        // V_NOW (2026-06-11): strip the .pur extension
-        // from oldLabel before computing the desired
-        // new name — the new label typed by the user may
-        // or may not include the extension, and we want
-        // the file on disk to always end in .pur.
-        val newName = if (newLabel.endsWith(".pur", ignoreCase = true)) {
-            newLabel
-        } else {
-            "$newLabel.pur"
-        }
         try {
             when (uri.scheme) {
                 "file" -> {
-                    val oldFile = java.io.File(uri.path ?: return uri to currentFilePath)
-                    val parent = oldFile.parentFile ?: return uri to currentFilePath
+                    val oldFile = java.io.File(uri.path ?: return null)
+                    val parent = oldFile.parentFile ?: return null
                     val newFile = java.io.File(parent, newName)
                     if (oldFile.absolutePath == newFile.absolutePath) {
-                        return uri to currentFilePath
+                        return if (oldFile.exists()) uri to newName else null
                     }
-                    if (!oldFile.renameTo(newFile)) {
+                    if (newFile.exists() || !oldFile.renameTo(newFile)) {
                         android.util.Log.w(
                             "PockRefRename",
                             "File.renameTo returned false for ${oldFile.absolutePath} -> ${newFile.absolutePath}",
                         )
-                        return uri to currentFilePath
+                        return null
                     }
                     return Uri.fromFile(newFile) to newName
                 }
                 "content" -> {
                     val resolver = context.contentResolver
                     val newDisplayName = newName
+                    val persisted = resolver.persistedUriPermissions.firstOrNull { it.uri == uri }
                     val renamed = runCatching {
                         android.provider.DocumentsContract.renameDocument(
                             resolver,
@@ -2717,27 +2858,23 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                         )
                     }.getOrNull()
                     return if (renamed != null) {
+                        if (renamed != uri && persisted != null) {
+                            takePersistablePermission(renamed, persisted.isReadPermission, persisted.isWritePermission)
+                        }
                         // Re-query the display name so the
                         // persisted [filePath] matches the
                         // new file.
                         val refreshedName = queryDisplayNameSync(renamed) ?: newDisplayName
                         renamed to refreshedName
                     } else {
-                        // Provider doesn't support rename
-                        // (e.g. MediaStore on some OEMs).
-                        // Just keep the original uri but
-                        // update the persisted label so
-                        // the start page shows the new
-                        // name even if the file manager
-                        // shows the old one.
-                        uri to currentFilePath
+                        null
                     }
                 }
-                else -> return uri to currentFilePath
+                else -> return null
             }
         } catch (t: Throwable) {
             android.util.Log.e("PockRefRename", "rename failed", t)
-            return uri to currentFilePath
+            return null
         }
     }
 
@@ -2809,22 +2946,24 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
     // regardless of timestamp sort. Re-serializes the prefs
     // entry so the flag survives process death.
     internal fun togglePinRecentScene(uri: String) {
-        val target = _uiState.value.recentScenes.firstOrNull { it.uri == uri } ?: return
+        if (_uiState.value.recentScenes.none { it.uri == uri }) return
         val updated = _uiState.value.recentScenes.map {
             if (it.uri == uri) it.copy(pinned = !it.pinned) else it
         }
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
+        prefs.edit {
+            putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                listOf(
+                    it.uri,
+                    it.label.replace("|", "/"),
+                    it.source,
+                    it.timestamp.toString(),
+                    it.filePath.replace("|", "/"),
+                    it.fileSize.toString(),
+                    if (it.pinned) "1" else "0",
+                    it.coverImageId.orEmpty(),
+                ).joinToString("|")
+            })
+        }
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
@@ -2862,18 +3001,20 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
      * writes it as a single atomic `apply()`.
      */
     private fun persistRecentScenes(updated: List<RecentSceneEntry>) {
-        prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-            listOf(
-                it.uri,
-                it.label.replace("|", "/"),
-                it.source,
-                it.timestamp.toString(),
-                it.filePath.replace("|", "/"),
-                it.fileSize.toString(),
-                if (it.pinned) "1" else "0",
-                it.coverImageId.orEmpty(),
-            ).joinToString("|")
-        }).apply()
+        prefs.edit {
+            putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                listOf(
+                    it.uri,
+                    it.label.replace("|", "/"),
+                    it.source,
+                    it.timestamp.toString(),
+                    it.filePath.replace("|", "/"),
+                    it.fileSize.toString(),
+                    if (it.pinned) "1" else "0",
+                    it.coverImageId.orEmpty(),
+                ).joinToString("|")
+            })
+        }
         _uiState.update { it.copy(recentScenes = updated) }
     }
 
@@ -3078,18 +3219,20 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     updated.map { it.uri }.toSet(),
                 )
                 val newMultiSelectMode = current.recentMultiSelectMode && updated.isNotEmpty()
-                prefs.edit().putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
-                    listOf(
-                        it.uri,
-                        it.label.replace("|", "/"),
-                        it.source,
-                        it.timestamp.toString(),
-                        it.filePath.replace("|", "/"),
-                        it.fileSize.toString(),
-                        if (it.pinned) "1" else "0",
-                        it.coverImageId.orEmpty(),
-                    ).joinToString("|")
-                }).apply()
+                prefs.edit {
+                    putString(RECENT_SCENES_KEY, updated.joinToString("\n") {
+                        listOf(
+                            it.uri,
+                            it.label.replace("|", "/"),
+                            it.source,
+                            it.timestamp.toString(),
+                            it.filePath.replace("|", "/"),
+                            it.fileSize.toString(),
+                            if (it.pinned) "1" else "0",
+                            it.coverImageId.orEmpty(),
+                        ).joinToString("|")
+                    })
+                }
                 _uiState.update {
                     it.copy(
                         recentScenes = updated,
@@ -3177,7 +3320,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         val deleted = mutableSetOf<String>()
         val failed = mutableSetOf<String>()
         uris.forEach { uriString ->
-            val uri = Uri.parse(uriString)
+            val uri = uriString.toUri()
             try {
                 DocumentsContract.deleteDocument(contentResolver, uri)
                 deleted.add(uriString)
@@ -3342,15 +3485,15 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
                     val numericId = documentId.substringAfter(':').toLongOrNull()
                     if (numericId != null) {
                         candidates += ContentUris.withAppendedId(
-                            Uri.parse("content://downloads/public_downloads"),
+                            "content://downloads/public_downloads".toUri(),
                             numericId,
                         )
                         candidates += ContentUris.withAppendedId(
-                            Uri.parse("content://downloads/my_downloads"),
+                            "content://downloads/my_downloads".toUri(),
                             numericId,
                         )
                         candidates += ContentUris.withAppendedId(
-                            Uri.parse("content://downloads/all_downloads"),
+                            "content://downloads/all_downloads".toUri(),
                             numericId,
                         )
                         candidates += ContentUris.withAppendedId(

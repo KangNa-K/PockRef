@@ -234,7 +234,7 @@ fun BottomSheetPanel(
                 .windowInsetsPadding(WindowInsets.navigationBars),
             contentAlignment = Alignment.BottomCenter,
         ) {
-            Surface(
+            GlassSurface(
                 modifier = Modifier
                     .widthIn(max = sheetMaxWidth)
                     .fillMaxWidth(),

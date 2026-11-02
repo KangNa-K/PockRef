@@ -2,6 +2,9 @@
 
 package com.pockref.app.ui
 
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
+
 import android.app.Activity
 import android.content.ContentResolver
 import android.content.Intent
@@ -75,13 +78,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.googlefonts.Font
 import androidx.compose.ui.text.googlefonts.GoogleFont
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.rounded.Contrast
 import androidx.compose.material.icons.automirrored.rounded.RotateLeft
 import androidx.compose.material.icons.automirrored.rounded.RotateRight
 import androidx.compose.material.icons.automirrored.rounded.Undo
@@ -126,6 +131,7 @@ import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Brush
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
@@ -171,6 +177,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Scaffold
@@ -182,6 +189,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipAnchorPosition
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
@@ -212,7 +220,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.shadow
@@ -226,6 +233,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.Brush
@@ -245,9 +253,11 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLocale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
@@ -345,6 +355,7 @@ import com.pockref.app.model.SceneNaming
 import com.pockref.app.model.SelectionMode
 import com.pockref.app.model.hasSceneContent
 import com.pockref.app.model.isCanvasOpen
+import com.pockref.app.model.isCanvasOpen
 import com.pockref.app.model.isImageLocked
 import com.pockref.app.model.Size2D
 import com.pockref.app.ui.settings.SettingsPanel
@@ -357,6 +368,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.util.LinkedHashMap
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.PI
 import kotlin.math.abs
@@ -451,7 +463,7 @@ private val LockedGlowColor: Color = Color(0x55E57373)
 private val GoogleFontsProvider = GoogleFont.Provider(
     providerAuthority = "com.google.android.gms.fonts",
     providerPackage = "com.google.android.gms",
-    certificates = com.pockref.app.R.array.com_google_android_gms_fonts_certs,
+    certificates = com.pockref.app.R.array.pockref_gms_fonts_certs,
 )
 private val NunitoFont = GoogleFont("Nunito")
 private val NunitoFontFamily = FontFamily(
@@ -471,7 +483,6 @@ private val NunitoFontFamily = FontFamily(
 //   DRAG_TAP       4f         4 px         8 dp       17 px     ← scale UP: 0.3→0.5 mm (was a 6× undershoot)
 //   TAP_MAX_DRAG   8f         8 px        12 dp       26 px     ← scale UP: 0.5→0.8 mm
 //   GESTURE_MOVED  4f         4 px         8 dp       17 px     ← scale UP (multi-finger "any finger moved")
-//   EDGE_SCROLL   20f        20 px        48 dp      102 px     ← scale UP: 0.6→1.4 mm (was way too easy to hit)
 //   DOUBLE_TAP    20f        20 px        32 dp       68 px     ← scale UP: 0.6→1.0 mm
 //   SCALE        12f        12 %         12 % (unchanged — already unit-agnostic)
 //   ROTATE       10f        10°          10°  (unchanged)
@@ -480,11 +491,11 @@ private val NunitoFontFamily = FontFamily(
 // at the call site multiplies by [LocalDensity.current.density]
 // to get the actual pixel threshold. The dp numbers
 // are calibrated to "human-perceived" millimetres on
-// a 340 dpi tablet: 8 dp ≈ 0.5 mm hand jitter floor,
-// 48 dp edge zone ≈ 1.4 mm "I'm at the edge" intent.
+// a 340 dpi tablet: 8 dp ≈ 0.5 mm hand jitter floor.
+// Edge auto-scroll uses its own zone
+// ([autoScrollEdgeZoneDp] in [PockRefCanvas]).
 private const val DRAG_TAP_THRESHOLD_DP = 8f
 private const val TAP_MAX_DRAG_DP = 12f
-private const val EDGE_AUTO_SCROLL_THRESHOLD_DP = 48f
 private const val GESTURE_MOVED_THRESHOLD_DP = 8f
 private const val DOUBLE_TAP_MAX_DIST_DP = 32f
 
@@ -569,7 +580,10 @@ private class CreateDocumentWithInitialUri : ActivityResultContract<CreateDocume
             .setType(input.mimeType)
             .putExtra(Intent.EXTRA_TITLE, input.fileName)
             .apply {
-                input.initialUri?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+                // EXTRA_INITIAL_URI is API 26+; older pickers just open their default location.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    input.initialUri?.let { putExtra(DocumentsContract.EXTRA_INITIAL_URI, it) }
+                }
             }
     }
 
@@ -747,14 +761,8 @@ fun PockRefApp(
     // Inline scene-name editor state. Lifted out of [TopToolbar]
     // so the tap-outside-cancel scrim below can read the same
     // boolean and dismiss the editor when the user taps on the
-    // canvas. The state is otherwise identical to what was
-    // previously local: a TextFieldValue for the in-progress
-    // edit, a [FocusRequester] for auto-focus, and a session
-    // start timestamp for the 200ms focus-settling race window.
+    // canvas.
     var isEditingSceneName by remember { mutableStateOf(false) }
-    val editingSceneValue = remember { mutableStateOf(TextFieldValue("")) }
-    val titleFocusRequester = remember { FocusRequester() }
-    val editSessionStartMs = remember { mutableLongStateOf(0L) }
     // Back-press handling.
     //
     // V6: dismissed the recent-files menu (replaces the
@@ -1172,12 +1180,9 @@ fun PockRefApp(
     // [CanvasPanel] / [EmptyCanvasState] for the "Import" /
     // "Open" buttons. V_NOW: 顶栏只保留 标题 / 撤回 / 重做 /
     // 关闭 — Save / Import / 3-dots / BoxSelectToggle 都下线。
-    // [onImport] + [onOpenScene] 仍然供 [CanvasPanel] →
-    // [EmptyCanvasState] 使用(空画布上的"导入图片" /
-    // "打开 pur" 入口),[onSaveScene] 整体下线(顶栏 Save
-    // 按钮取消;保存动作只走 [LaunchedEffect] →
-    // [saveSceneLauncher] 路径,即 unsaved-changes-dialog
-    // 的 "Save As" 流程)。
+    // [onImport] + [onOpenScene] 现在只接到导入来源下拉菜单
+    // (onPickFiles / onOpenScene),[onSaveScene] 只接到右下角
+    // 操作面板;[CanvasPanel] 不再接收这三个回调。
     val onImport: () -> Unit = { importLauncher.launch(arrayOf("image/*")) }
     // V_NOW: open-scene picker accepts the dedicated .pur
     // MIME plus the legacy `application/octet-stream` (so
@@ -1249,33 +1254,15 @@ fun PockRefApp(
         }
     }
 
-    // V_NOW (2026-06-10, "全局锁定/冻结模式只显示
-    // 全局锁定按钮"): single source of truth for
-    // "global lock or freeze is engaged" used by
-    // every chrome element's render gate. Declared
-    // at the [PockRefApp] function scope (NOT
-    // inside [CanvasPanel]) because the
-    // [TopToolbar] / [BottomRightActionPanel]
-    // gates and the inner-CanvasPanel chrome
-    // ([MinimapChrome] / [SelectionModeOverlay]
-    // / [SelectionBottomSheet] / etc.) all need
-    // to see the same boolean — declaring it
-    // here keeps a single recomposition-driven
-    // value consistent across every sibling
-    // chrome layer. When the user is in either
-    // of those modes they explicitly want the
-    // canvas to be a read-only viewing surface
-    // — the [GlobalLockButton] is the ONLY
-    // chrome element that stays on top so the
-    // user can click / long-press it to step
-    // back out of the mode. Every other
-    // element (top toolbar, bottom-right FAB +
-    // 4-item panel, minimap + collapsed icon,
-    // selection sheet, practice config sheet,
-    // top-centre mode chip) hides itself via
-    // `&& !isLockEngaged` so the screen is as
-    // close to a pure canvas as possible.
-    val isLockEngaged = state.globalImageLock || state.lockCanvasFrozen
+    val chromePolicy = remember(state) { CanvasChromePolicy.resolve(state) }
+    var topToolbarWidth by remember { mutableStateOf(224.dp) }
+    var layerPanelExpanded by remember(state.isCanvasOpen) { mutableStateOf(false) }
+    LaunchedEffect(state.isCanvasOpen) {
+        if (!state.isCanvasOpen && state.settingsSheetOpen) {
+            onAction(PockRefAction.SetSettingsSheetOpen(false))
+        }
+    }
+    val chromeDensity = LocalDensity.current
     // Snackbar surface for runtime errors emitted by the ViewModel. We use a
     // remember-durable host and pump the flow inside a LaunchedEffect that
     // also calls PockRefAction.ConsumeError on dismiss so the VM can clear
@@ -1444,12 +1431,13 @@ fun PockRefApp(
                     }
                 },
         ) {
+            val actionPanelBottomInset = Dimens.CornerInset
             CanvasPanel(
+                layerPanelBottomInset = actionPanelBottomInset,
+                layerPanelExpanded = layerPanelExpanded,
+                onLayerPanelExpandedChange = { layerPanelExpanded = it },
                 state = state,
                 onAction = onAction,
-                onImport = onImport,
-                onOpenScene = onOpenScene,
-                onSaveScene = onSaveScene,
                 // [BottomRightActionPanel] is rendered as a
                 // separate sibling of this [BoxWithConstraints]
                 // below, so [CanvasPanel] stays focused on canvas
@@ -1464,7 +1452,6 @@ fun PockRefApp(
                  onStartLogExport = onStartLogExport,
                  modifier = Modifier
                      .fillMaxSize(),
-                hoverProgress = hoverProgress,
                 canvasBitmapCache = canvasBitmapCache,
                 canvasBitmapWorkingSet = canvasBitmapWorkingSet,
                 canvasTileCache = canvasTileCache,
@@ -1543,20 +1530,14 @@ fun PockRefApp(
             // Keep this panel above both the canvas sheets and the
             // full-screen import/title dismiss scrims. Otherwise a
             // visible FAB tap dismisses the popup without running layout.
-            val fabOverlapsSheet = state.selectedImageIds.isNotEmpty() && run {
-                val containerWidthDp = with(LocalDensity.current) { constraints.maxWidth.toDp() }
-                val sheetWidthDp = minOf(containerWidthDp, Dimens.SheetMaxWidth)
-                val sheetRightDp = (containerWidthDp + sheetWidthDp) / 2
-                val fabLeftDp = containerWidthDp - Dimens.CornerInset -
-                    Dimens.BottomPanelChromeSize
-                fabLeftDp < sheetRightDp
-            }
-            if (state.hasSceneContent && state.cropImageId == null &&
-                state.practiceState == null && !isLockEngaged &&
-                !state.markupModeActive && !fabOverlapsSheet
-            ) {
+            // A newly-created blank canvas is still an open canvas and should
+            // keep the bottom-right auto-layout/action panel available.
+            if (chromePolicy.showActionPanel) {
                 BottomRightActionPanel(
-                    state = state,
+                    settingsOpen = state.settingsSheetOpen,
+                    showLayerButton = chromePolicy.showLayerPanel,
+                    onOpenLayers = { layerPanelExpanded = !layerPanelExpanded },
+                    bottomInset = actionPanelBottomInset,
                     onAction = { action ->
                         if (state.importSourceMenuOpen) {
                             onAction(PockRefAction.SetImportSourceMenuOpen(false))
@@ -1601,10 +1582,9 @@ fun PockRefApp(
             // A temporary blank canvas has no lockable scene content, so its
             // add/open toolbar must remain reachable even if lock mode was
             // persisted from the previous scene.
-            if (state.practiceState == null && state.isCanvasOpen &&
-                (!isLockEngaged || state.blankCanvasOpen)
-            ) {
+            if (chromePolicy.showTopToolbar) {
                 TopToolbar(
+                onWidthChanged = { topToolbarWidth = with(chromeDensity) { it.toDp() } },
                 state = state,
                 // V_NOW: any click on the top toolbar
                 // collapses the right-bottom action panel
@@ -1750,7 +1730,9 @@ fun PockRefApp(
                 com.pockref.app.ui.settings.LocalAppUpdateController provides updateController,
             ) {
             SettingsPanel(
-                open = state.settingsSheetOpen,
+                topInset = statusBarTopDp + Dimens.CornerInset,
+                bottomInset = actionPanelBottomInset,
+                open = state.isCanvasOpen && state.settingsSheetOpen,
                 onDismiss = { onAction(PockRefAction.SetSettingsSheetOpen(false)) },
                 state = state,
                 onAction = onAction,
@@ -1847,7 +1829,7 @@ fun PockRefApp(
             // the two reset paths).
             if (state.practiceState == null && !state.markupModeActive &&
                 !state.lockButtonHidden) {
-                val hasLockButton = state.images.isNotEmpty()
+                val hasLockButton = chromePolicy.showGlobalLock
                 val hasMarkup = state.markupStrokes.any { it.isRenderable } ||
                     state.markupTexts.any { it.text.isNotBlank() }
                 if (hasMarkup) {
@@ -2042,26 +2024,12 @@ fun PockRefApp(
     private fun CanvasPanel(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
-    onImport: () -> Unit,
-    onOpenScene: () -> Unit,
-    // V_NOW: bottom-right action panel's "Save" item needs a
-    // callback that fires the system save-as picker. Defined
-    // in [PockRefApp] (where [saveSceneLauncher] lives) and
-    // threaded through to [BottomRightActionPanel].
-    onSaveScene: () -> Unit,
     modifier: Modifier = Modifier,
     imageLazyLoader: com.pockref.app.data.PurFileParser? = null,
+    layerPanelBottomInset: Dp = Dimens.CornerInset,
+    layerPanelExpanded: Boolean = false,
+    onLayerPanelExpandedChange: (Boolean) -> Unit = {},
     imageDecoder: com.pockref.app.data.SceneImageDecoder? = null,
-    // V2: hover-magnifier state lifted from
-    // [PockRefCanvas] to the [PockRefApp] scope. See
-    // the comments there for why. Both values are
-    // threaded through this Box's children — the
-    // [PockRefCanvas] (for the in-canvas draw path,
-    // which is now empty; the actual draw happens in
-    // the [HoverMagnifierOverlay] sibling) and the
-    // overlay (which is the LAST child of this Box
-    // so the magnifier image sits ABOVE the chrome).
-    hoverProgress: Float = 0f,
     canvasBitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
     canvasBitmapWorkingSet: CanvasBitmapWorkingSet,
     canvasTileCache: androidx.compose.runtime.snapshots.SnapshotStateMap<com.pockref.app.data.ImageTileKey, ImageBitmap>,
@@ -2091,10 +2059,10 @@ fun PockRefApp(
     // WindowInsets read per recomposition, which is negligible.
     val statusBarTopPx = WindowInsets.statusBars.getTop(LocalDensity.current)
     val statusBarTopDp = with(LocalDensity.current) { statusBarTopPx.toDp() }
+    val chromePolicy = remember(state) { CanvasChromePolicy.resolve(state) }
     // V_NOW (2026-06-10, "全局锁定/冻结模式只显示
-    // 全局锁定按钮"): re-derive the same
-    // [isLockEngaged] boolean the outer [PockRefApp]
-    // function uses, but locally inside [CanvasPanel]
+    // 全局锁定按钮"): "global lock or freeze is
+    // engaged", derived locally inside [CanvasPanel]
     // so the inner chrome layers
     // ([MinimapChrome] /
     // [SelectionModeOverlay] / [SelectionBottomSheet]
@@ -2102,9 +2070,8 @@ fun PockRefApp(
     // can reference it without being threaded through
     // the parameter list. The boolean is a pure
     // function of [state] (no async I/O), so
-    // recomputing it here matches the outer value
-    // exactly on every recomposition and keeps the
-    // signature of [CanvasPanel] short.
+    // deriving it here keeps the signature of
+    // [CanvasPanel] short.
     val isLockEngaged = state.globalImageLock || state.lockCanvasFrozen
     Box(
         modifier
@@ -2112,11 +2079,11 @@ fun PockRefApp(
     ) {
         PockRefCanvas(
             state = state,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().glassBackdropSource(
+                enabled = state.isCanvasOpen && state.practiceState == null,
+            ),
             onAction = onAction,
-            imageLazyLoader = imageLazyLoader,
             imageDecoder = imageDecoder,
-            hoverProgress = hoverProgress,
             bitmapCache = canvasBitmapCache,
             bitmapWorkingSet = canvasBitmapWorkingSet,
             tileCache = canvasTileCache,
@@ -2124,84 +2091,30 @@ fun PockRefApp(
             gifFrameBitmapCache = gifFrameBitmapCache,
             gifPlaybackSources = gifPlaybackSources,
             gifPlaybackStates = gifPlaybackStates,
-            selectedGifPlaybackImageId = selectedGifPlaybackImageId,
         )
         if (state.markupModeActive) {
+            var showMarkupColors by rememberSaveable { mutableStateOf(false) }
+            MarkupToolPalette(state, onAction, Modifier.align(Alignment.BottomCenter)
+                .padding(horizontal = 12.dp, vertical = 12.dp).navigationBarsPadding().imePadding(),
+                onColorRequested = { showMarkupColors = true })
+            MarkupSelectionActions(state, onAction, Modifier.align(Alignment.TopEnd)
+                .padding(top = statusBarTopDp + Dimens.CornerInset + 64.dp,
+                    end = Dimens.CornerInset))
+            if (showMarkupColors) {
+                MarkupColorPicker(state.markupColor,
+                    onColor = { onAction(PockRefAction.SetMarkupColor(it)) },
+                    onDismiss = { showMarkupColors = false })
+            }
             MarkupModeBar(
                 onCancel = { onAction(PockRefAction.CancelMarkupSession) },
                 onDone = { onAction(PockRefAction.SetMarkupModeActive(false)) },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = statusBarTopDp + Dimens.CornerInset),
+                    .padding(top = statusBarTopDp + Dimens.CornerInset,
+                        start = Dimens.CornerInset, end = Dimens.CornerInset),
             )
         }
         if (!state.hasSceneContent && !state.blankCanvasOpen) {
-            // V_NOW (2026-06-10, "启动页多选 + 底部 Bulk
-            // Action Bar 置顶"): the start-page multi-select
-            // chrome. Three siblings of the centered
-            // [EmptyCanvasState]:
-            //   1. [RecentMultiSelectTopBar] (top-aligned) —
-            //      only renders when [PockRefUiState.recentMultiSelectMode]
-            //      is true. Shows the "已选 N 项" count + a
-            //      close (X) button to exit the mode.
-            //   2. [RecentMultiSelectBottomBar] (bottom-
-            //      aligned) — only renders when in multi-
-            //      select mode AND [recentScenes] is not
-            //      empty (an empty list would mean no actions
-            //      to do, so the bar is hidden). Hosts the
-            //      全选/置顶/取消置顶/删除 bulk actions.
-            //   3. [BulkDeleteConfirmDialog] — sibling
-            //      overlay (not positioned; uses
-            //      [AlertDialog]'s built-in window). Only
-            //      renders when [PockRefUiState.bulkDeleteConfirmOpen]
-            //      is true. Confirms the user's intent
-            //      before the destructive [BulkDeleteRecentScenes]
-            //      dispatch fires.
-            // The three siblings are independent of the
-            // [EmptyCanvasState] — they don't move or
-            // re-layout it, the [Modifier.align] in
-            // [EmptyCanvasState] keeps it centred while
-            // the chrome slides in from the top and
-            // bottom edges.
-            //
-            // V_NOW (2026-06-10, sheet 统一): the v1.0
-            // dual top-bar + bottom-bar chrome has
-            // been collapsed into a SINGLE bottom
-            // sheet — [RecentMultiSelectSheet]. The
-            // sheet itself owns the
-            // "visible = recentMultiSelectMode &&
-            // recentScenes.isNotEmpty()" gate, so
-            // the call site just renders it
-            // unconditionally; the sheet no-ops
-            // when the gate is false. This matches
-            // the [com.pockref.app.ui.PureRefApp.SelectionBottomSheet]
-            // / crop overlay's [BottomSheetPanel]
-            // usage — one sheet, one chrome element,
-            // visual contract identical to every
-            // other sheet in the app.
-            //
-            // V_NOW (BackHandler — see further down): the
-            // system back button, when the start page is
-            // in multi-select mode, exits multi-select
-            // first (before the existing "close scene" /
-            // "finish activity" priority chain). The chain
-            // is updated so the recent-multi-select case
-            // ranks ABOVE the scene-is-open case, which is
-            // a no-op for the start page anyway (no
-            // scene is open there — the [EmptyCanvasState]
-            // is the canvas-empty branch). The sheet's
-            // own back handler is disabled
-            // ([dismissOnBackPress] = false) so the
-            // PockRefApp-level chain is the single
-            // back-press authority.
-            RecentMultiSelectSheet(
-                state = state,
-                onAction = onAction,
-            )
-            BulkDeleteConfirmDialog(
-                state = state,
-                onAction = onAction,
-            )
             // V_NOW (2026-06-16 user feedback "把导出日志按钮
             // 改成默认不显示,点 pockref 图标 7 次后才会显示"):
             // the FAB visibility is now gated by a local
@@ -2223,10 +2136,17 @@ fun PockRefApp(
                 state = state,
                 onAction = onAction,
                 onOpenBlankCanvas = { onAction(PockRefAction.OpenBlankCanvas) },
-                showLogExportFab = showLogExportFab.value,
                 onLogExportFab = { showLogExportFab.value = true },
                 modifier = Modifier.align(Alignment.Center),
             )
+            RecentMultiSelectToolbar(
+                state = state,
+                onAction = onAction,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = Dimens.EdgeInset, vertical = Dimens.CornerInset),
+            )
+            BulkDeleteConfirmDialog(state = state, onAction = onAction)
             // V_NOW (2026-06-16, "启动页导出运行日志" feature):
             // Bottom-right export FAB. Mounted ONLY on the start
             // page branch; once a scene is loaded the FAB
@@ -2305,9 +2225,7 @@ fun PockRefApp(
                     },
                 )
             } else if (
-                state.practiceState != null ||
-                (state.selectedImageIds.isNotEmpty() && !isLockEngaged &&
-                    !state.markupModeActive)
+                chromePolicy.showSelectionPanel
             ) {
                 // V_NOW (P2-C1): M3 ModalBottomSheet
                 // replaces the legacy
@@ -2369,13 +2287,14 @@ fun PockRefApp(
                 // without taking the parent Box as a
                 // parameter.
                 if (state.practiceState != null) {
-                    PracticeScreen(
-                        state = state.practiceState,
-                        images = state.images,
-                        imageDecoder = imageDecoder,
-                        imageLazyLoader = imageLazyLoader,
-                        onAction = onAction,
-                    )
+                    GlassBackdropHost {
+                        PracticeScreen(
+                            state = state.practiceState,
+                            images = state.images,
+                            imageDecoder = imageDecoder,
+                            onAction = onAction,
+                        )
+                    }
                 }
                 // V_NOW (2026-06-08 速写练习 commit 2):
                 // pre-flight config sheet. Lives next to
@@ -2415,6 +2334,7 @@ fun PockRefApp(
                     androidx.compose.ui.platform.LocalContext.current,
                 )
                 PracticeConfigSheet(
+                    topInset = statusBarTopDp + Dimens.CornerInset,
                     // V_NOW (2026-06-10, "全局锁定/
                     // 冻结模式只显示全局锁定按钮"):
                     // mask the practice config
@@ -2471,8 +2391,7 @@ fun PockRefApp(
                 // select mode — irrelevant during the
                 // practice session (the user is staring
                 // at an image, not selecting).
-                if (state.practiceState == null && !isLockEngaged &&
-                    !state.markupModeActive &&
+                if (chromePolicy.showSelectionMode &&
                     // V_NOW (2026-06-10, "使用 sheet
                     // 时取消 chip 显示"): the top-
                     // centre mode chip and the
@@ -2498,83 +2417,8 @@ fun PockRefApp(
   )
  }
             }
-            // Bottom-left minimap. The composable itself
-            // returns early when state.canvasScale ≤ 1, so we
-            // don't gate it here.
-            //
-            // V_NOW (re-applied): the user wants minimap to
-            // support free dragging (Android Picture-in-Picture
-            // / floating-window style). Behavior:
-            //   1. Long-press the panel → enter "moving" mode
-            //      (500ms threshold, default Compose
-            //      [ViewConfiguration.LongPressTimeout]).
-            //   2. Drag → position is updated continuously and
-            //      persisted to
-            //      [com.pockref.app.data.AppPreferences.minimapPositionX]
-            //      / [Y] on every frame.
-            //   3. On release: if the panel is within 48dp of
-            //      a screen edge, dock to that edge and collapse
-            //      to the [CollapsedMinimapIcon] (the user
-            //      wanted the "auto-hide to edge" behavior).
-            //   4. Tap or hover the docked edge icon → expand
-            //      back to the full panel at the last persisted
-            //      position.
-            //   5. 3s of no interaction on the full panel →
-            //      collapse to the last dock edge (or BOTTOM
-            //      if not yet docked), matching the top
-            //      toolbar's auto-collapse contract.
-            //
-            // Coexistence with the existing canvas-pan-by-
-            // minimap-drag: the existing [CanvasMinimap]
-            // inner [pointerInput] uses [awaitEachGesture]
-            // with [awaitFirstDown] + a manual move loop, so
-            // a quick tap-and-drag fires its drag handler
-            // (canvas pan). Our OUTER [pointerInput] used to
-            // use [detectDragGesturesAfterLongPress] which
-            // only fires after a 500ms hold WITHOUT movement
-            // — that long-press handler was REMOVED by user
-            // spec "minimap 去掉长按功能". The panel now has
-            // zero touch interactivity of its own (it's a
-            // static [Alignment.BottomStart] surface), so
-            // every pointer event flows through to the inner
-            // [CanvasMinimap] gesture untouched. The inner
-            // canvas-pan is the only minimap-related drag
-            // handler that exists.
-            // interactions are mutually exclusive by
-            // construction.
-            //
-            // V_NOW (mobile UX): hide the minimap during crop
-            // mode. The crop overlay's bottom row (aspect ratio
-            // chips + rotate ±90° + 取消 / 应用) sits at
-            // BottomStart just like the minimap, so the
-            // minimap's Box occludes the leftmost controls (on
-            // narrow / portrait screens, the 取消 button is
-            // directly underneath the minimap — the user
-            // can't tap it without first moving the minimap,
-            // which isn't a documented affordance). The
-            // minimap is purely a navigation aid; during crop
-            // the user is editing a single image and doesn't
-            // need the global overview, so the right move is
-            // to hide it and let the crop controls own the
-            // bottom of the screen. The [CanvasMinimap]
-            // composable already returns early when there are
-            // no images; we add a parallel early-return for
-            // crop mode here at the call site so the
-            // composable's own API surface stays unchanged.
-            //
-            // V_NOW (2026-06-08 速写练习 focus-mode
-            // revision): also gate on
-            // [state.practiceState == null] — same
-            // reasoning as the FAB / toolbar. The
-            // minimap's persistence writes
-            // (minimapPositionX/Y on every drag) are
-            // especially wasteful during practice
-            // because the user can't see the minimap
-            // anyway, so skipping the render saves a
-            // few pref writes per second of a long
-            // session.
-            if (state.cropImageId == null && state.practiceState == null && !isLockEngaged &&
-                !state.markupModeActive) {
+            // Bottom-left layer navigator for the current .pur scene.
+            if (chromePolicy.showLayerPanel) {
                 // V_NOW: wrap in BoxWithConstraints so the
                 // drag-clamping math below can read the
                 // parent size (the call site itself is outside
@@ -2587,11 +2431,14 @@ fun PockRefApp(
                 BoxWithConstraints(modifier = Modifier
                     .fillMaxSize(),
                 ) {
-                    MinimapChrome(
+                    CanvasLayersChrome(
+                        bottomInset = layerPanelBottomInset,
+                        expandedOverride = layerPanelExpanded,
+                        onExpandedChange = onLayerPanelExpandedChange,
+                        showLauncher = false,
                         state = state,
                         onAction = onAction,
-                        parentWidth = constraints.maxWidth.toFloat(),
-                        parentHeight = constraints.maxHeight.toFloat(),
+                        imageDecoder = imageDecoder,
                     )
                 }
             }
@@ -2601,13 +2448,11 @@ fun PockRefApp(
             // in lock-step. Hidden entirely when nothing is
             // selected — the user shouldn't see a stale "0 张"
             // row. Sits at BottomCenter so it never collides
-            // with the minimap (BottomStart) or the FAB
+            // with the layer navigator (BottomStart) or the FAB
             // (BottomEnd, on screens where the user has
             // triggered auto-layout).
-            // (底部 Pill 已删除:SelectionStatusBar 整体下线,只保留
-            //  TopCenter 浮动 SelectionFloatingToolbar 作为唯一
-            //  选中态 chrome。minimap 也不再因为 pill 占用底部
-            //  居中空间而需要折叠到 24dp 图标 — 永远完整展示。)
+            // (底部 Pill 已删除：SelectionBottomSheet 是唯一的选中态
+            // chrome；左下角图层入口在选中时向上避让。)
         }
         if (state.showUnsavedChangesDialog) {
             UnsavedChangesDialog(
@@ -2690,8 +2535,9 @@ private fun TopToolbar(
     onEnterFloatingWindow: () -> Unit,
     showFloatingWindowButton: Boolean,
     onTakePhoto: () -> Unit,
-    parentMaxWidth: Dp = Dp.Infinity,
     modifier: Modifier = Modifier,
+    parentMaxWidth: Dp = Dp.Infinity,
+    onWidthChanged: (Int) -> Unit = {},
 ) {
     val toolbarModifier = if (parentMaxWidth != Dp.Infinity && parentMaxWidth > 0.dp) {
         modifier.widthIn(
@@ -2701,8 +2547,10 @@ private fun TopToolbar(
         modifier
     }
 
-    Surface(
-        modifier = toolbarModifier,
+    GlassSurface(
+        modifier = toolbarModifier
+            .onSizeChanged { onWidthChanged(it.width) }
+            .testTag("canvas-top-toolbar"),
         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
         tonalElevation = 0.dp,
         color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
@@ -2837,61 +2685,19 @@ private fun ImportSourceMenuItem(
 }
 
 /**
- * V_NOW (user feedback "P2-C1 SelectionFloatingToolbar 改成
- * bottom sheet"): the previous SelectionFloatingToolbar
- * was a M3 Surface card anchored to a top-left position
- * computed by [selectionToolbarAnchor] (relative to the
- * selected image's screen AABB) with offset animation
- * by [clampSelectionToolbarOffset]. The 5-second auto-
- * hide timer, draggable box-collapse affordance, and
- * Alignment.TopStart alignment all made the floating
- * card a high-risk accidental-trigger surface — a
- * multi-finger pinch landing near the toolbar's 4
- * corners could easily cause SelectImage / Deselect
- * while the user only meant to scale the selection.
- *
- * The replacement is an M3 [ModalBottomSheet] with the
- * following design decisions (per the user's
- * "之前提到的建议全做" confirmation, mockup at
- * ~/Desktop/pockref-selection-bottom-sheet-mockup.html):
- *   - Scrim 0.32 alpha + tap-scrim-to-dismiss (same
- *     [Color.Black.copy(alpha = 0.32f)] as
- *     [BatchOptimizeProgressOverlay]).
- *   - 12-action grid (4 cols × 3 rows) for unlocked
- *     selections, 4-action fixed panel for the
- *     single-image-locked case.
- *   - Drag handle 32×4dp, slide-down to dismiss.
- *   - Title bar with "已选 N 张" + close ✕ button.
- *   - Bottom row: single / multi select mode toggle
- *     (so the user can switch selection mode
- *     without leaving the sheet).
- *   - The sheet height "jumps" between the
- *     unlocked (12 buttons, ~280dp) and locked
- *     (4 buttons, ~120dp) layouts — the user
- *     explicitly chose (a.1 in the design review)
- *     to keep the height-jump as a visual anchor
- *     for selection-state change.
- *   - Closing the sheet does NOT cancel the
- *     selection (user decision c.1). Re-tapping
- *     the same image re-raises the sheet.
- *   - All the "anchor to selected image" / "5s
- *     auto-hide" / "toolbarHidden state" logic is
- *     REMOVED. Visibility is purely derived from
- *     [state.selectedImageIds.size] (non-zero =
- *     sheet is open; user dismisses it → user
- *     re-selects the same image → sheet re-raises).
- *     The old `state.selectionToolbarHidden` field
- *     and `PockRefAction.SetSelectionToolbarHidden`
- *     action are also removed.
+ * Selection-mode capsule above an icon-only floating action toolbar.
+ * All actions remain inline and scroll horizontally in narrower windows.
  */
 @Composable
-private fun SelectionBottomSheet(
+internal fun SelectionBottomSheet(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
     gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
     gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
     selectedGifPlaybackImageId: String?,
+    onChromeHeightChanged: (Dp) -> Unit = {},
 ) {
+    val density = LocalDensity.current
     val selectedCount = state.selectedImageIds.size
     if (selectedCount == 0 && state.editingGroupId == null) return
     val selectedGroups = state.selectedGroups
@@ -2938,510 +2744,262 @@ private fun SelectionBottomSheet(
     val selectedGifPlaybackState = selectedGifPlaybackImageId
         ?.let { gifPlaybackStates[it] ?: GifPlaybackState() }
 
-    var dismissedByUser by remember { mutableStateOf(false) }
-    LaunchedEffect(state.selectionSheetShowTick) {
-        dismissedByUser = false
+    val quickActions = listOf(
+        SheetActionSpec(Icons.Rounded.Flip, "翻转", allFlippedH) {
+            onAction(PockRefAction.FlipHorizontal)
+        },
+        SheetActionSpec(
+            if (allSelectedLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+            if (allSelectedLocked) "解锁" else "锁定",
+            allSelectedLocked,
+        ) {
+            onAction(PockRefAction.ToggleLockSelected)
+        },
+        SheetActionSpec(Icons.Rounded.Contrast, "灰度", allGrayscale) {
+            onAction(PockRefAction.ConvertToGrayscale)
+        },
+        SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
+            onAction(PockRefAction.DeleteSelected)
+        },
+    )
+    // Batch align works in canvas world space, so the left/right icons must
+    // not flip under RTL; keep the non-mirrored variants on purpose.
+    @Suppress("DEPRECATION")
+    val alignLeftIcon = Icons.Rounded.AlignHorizontalLeft
+    @Suppress("DEPRECATION")
+    val alignRightIcon = Icons.Rounded.AlignHorizontalRight
+    val row1 = if (state.multiSelectMode || state.boxSelectMode) {
+        listOf(
+            SheetActionSpec(
+                icon = Icons.Rounded.Flip,
+                label = "水平翻转",
+                active = allFlippedH,
+                onClick = { onAction(PockRefAction.FlipHorizontal) },
+            ),
+            SheetActionSpec(Icons.Rounded.VerticalAlignTop, "向上对齐", false) {
+                onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_TOP))
+            },
+            SheetActionSpec(Icons.Rounded.VerticalAlignBottom, "向下对齐", false) {
+                onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_BOTTOM))
+            },
+            SheetActionSpec(alignLeftIcon, "向左对齐", false) {
+                onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_LEFT))
+            },
+            SheetActionSpec(alignRightIcon, "向右对齐", false) {
+                onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_RIGHT))
+            },
+        )
+    } else {
+        listOf(
+            SheetActionSpec(Icons.Rounded.Flip, "水平翻转", allFlippedH) {
+                onAction(PockRefAction.FlipHorizontal)
+            },
+            SheetActionSpec(Icons.Rounded.Crop, "裁切", false) {
+                onAction(PockRefAction.EnterCropMode)
+            },
+            SheetActionSpec(Icons.AutoMirrored.Rounded.RotateRight, "右旋 90°", false) {
+                onAction(PockRefAction.RotateRight)
+            },
+            SheetActionSpec(Icons.Rounded.RestartAlt, "复原", false) {
+                onAction(PockRefAction.ResetTransform)
+            },
+
+        )
     }
-
-    BottomSheetPanel(
-        visible = !dismissedByUser,
-        onDismiss = { dismissedByUser = true },
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
+    val row2 = if (state.multiSelectMode || state.boxSelectMode) {
+        listOf(
+            SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
+                onAction(PockRefAction.DuplicateSelected)
+            },
+            SheetActionSpec(
+                icon = if (allSelectedLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                label = if (allSelectedLocked) "已锁定" else "锁定",
+                active = allSelectedLocked,
             ) {
-                if (posterizeControlsVisible) {
-                    PosterizeLevelButtons(
-                        selectedLevels = state.posterizeLevels,
-                        onLevelClick = { levels ->
-                            onAction(PockRefAction.TogglePosterizeLevel(levels))
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                } else {
-                    Text(
-                        text = if (state.editingGroupId != null) {
-                            "组内编辑 · 已选 $selectedCount 张"
-                        } else {
-                            "已选 $selectedCount 张"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
+                onAction(PockRefAction.ToggleLockSelected)
+            },
+            SheetActionSpec(Icons.Rounded.Contrast, "灰度", allGrayscale) {
+                onAction(PockRefAction.ConvertToGrayscale)
+            },
+            SheetActionSpec(Icons.Rounded.Timer, "速写练习", false) {
+                onAction(PockRefAction.OpenPracticeConfigSheet)
+            },
+            SheetActionSpec(Icons.Rounded.Image, "导出", false) {
+                onAction(PockRefAction.ExportSelected)
+            },
+            SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
+                onAction(PockRefAction.DeleteSelected)
+            },
+        )
+    } else {
+        val currentSingleId = state.selectedImageId
+        listOf(
+            SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
+                onAction(PockRefAction.DuplicateSelected)
+            },
+            SheetActionSpec(
+                icon = if (allSelectedLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                label = if (allSelectedLocked) "已锁定" else "锁定",
+                active = allSelectedLocked,
+            ) {
+                onAction(PockRefAction.ToggleLockSelected)
+            },
+            SheetActionSpec(Icons.Rounded.Contrast, "灰度", allGrayscale) {
+                onAction(PockRefAction.ConvertToGrayscale)
+            },
+            SheetActionSpec(
+                icon = Icons.Rounded.Star,
+                label = "设为封面",
+                active = currentSingleId != null &&
+                    state.coverImageId == currentSingleId,
+            ) {
+                val id = currentSingleId
+                if (id != null) {
+                    val next = if (state.coverImageId == id) null else id
+                    onAction(PockRefAction.SetAsCover(next))
                 }
-                if (isLockedPanel) {
-                    Spacer(Modifier.width(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(999.dp),
-                        color = MaterialTheme.colorScheme.errorContainer,
-                    ) {
-                        Text(
-                            text = "锁定",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                        )
-                    }
-                }
-                if (posterizeControlsVisible) {
-                    Spacer(Modifier.width(8.dp))
-                } else {
-                    Spacer(Modifier.weight(1f))
-                }
-                SheetModeToggle(
-                    singleSelected = !state.multiSelectMode,
-                    boxSelectMode = state.boxSelectMode,
-                    onSingle = {
-                        if (state.boxSelectMode) onAction(PockRefAction.ToggleBoxSelectMode)
-                        if (state.multiSelectMode) onAction(PockRefAction.ToggleMultiSelectMode)
-                    },
-                    onMulti = {
-                        if (state.boxSelectMode) onAction(PockRefAction.ToggleBoxSelectMode)
-                        if (!state.multiSelectMode) onAction(PockRefAction.ToggleMultiSelectMode)
-                    },
-                    onBox = { onAction(PockRefAction.ToggleBoxSelectMode) },
-                )
+            },
+            SheetActionSpec(Icons.Rounded.Image, "导出", false) {
+                onAction(PockRefAction.ExportSelected)
+            },
+            SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
+                onAction(PockRefAction.DeleteSelected)
+            },
+        )
+    }
+    val groupActions = buildList {
+        if (!state.requiresGroupFlattening) {
+            if (state.editingGroupId != null) {
+                add(SheetActionSpec(Icons.Rounded.Close, "完成组内编辑", false) { onAction(PockRefAction.ExitGroup) })
+                if (selectedCount > 0) add(SheetActionSpec(Icons.Rounded.Layers, "移出组", false) {
+                    onAction(PockRefAction.RemoveSelectedFromGroup)
+                })
+            } else if (selectedGroup != null) {
+                add(SheetActionSpec(Icons.Rounded.Close, "解组", false) { onAction(PockRefAction.UngroupSelected) })
+                add(SheetActionSpec(Icons.Outlined.Edit, "重命名", false) {
+                    groupNameDraft = selectedGroup.name
+                    showRenameGroup = true
+                })
+                add(SheetActionSpec(Icons.Outlined.Palette, "外观", false) {
+                    groupBackgroundColor = selectedGroup.backgroundColor
+                    groupBackgroundOpacity = selectedGroup.backgroundOpacity
+                    showGroupAppearance = true
+                })
+            } else if (selectedGroups.isNotEmpty()) {
+                add(SheetActionSpec(Icons.Rounded.Close, "解组 ${selectedGroups.size} 个", false) {
+                    onAction(PockRefAction.UngroupSelected)
+                })
+            } else if (canCreateGroup) {
+                add(SheetActionSpec(Icons.Rounded.Add, "成组", false) { onAction(PockRefAction.CreateGroup) })
             }
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                thickness = 1.dp,
-            )
-            Spacer(Modifier.height(14.dp))
+        }
+    }
+    val exportAction = SheetActionSpec(Icons.Rounded.Image, "导出", false) { onAction(PockRefAction.ExportSelected) }
+    val fullActions = groupActions + when {
+        state.requiresGroupFlattening -> listOf(exportAction)
+        isLockedPanel -> quickActions + exportAction
+        else -> row1 + row2
+    }
+    val hasGifControls = selectedGifPlaybackImageId != null &&
+        selectedGifPlaybackSource != null && selectedGifPlaybackState != null
 
-            if (state.requiresGroupFlattening) {
-                Text(
-                    text = "该文件含 Android 暂不支持编辑的嵌套组或组内容；为避免保存时破坏结构，画布已设为只读。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // Center tablet controls with equal clearance for both corner panels.
+        val cornerClearance = Dimens.CornerInset + Dimens.BottomPanelChromeSize + 8.dp
+        val centerToolbar = maxWidth >= 600.dp
+        val startInset = if (centerToolbar) cornerClearance else Dimens.CornerInset
+        val availableToolbarWidth = (maxWidth - startInset - cornerClearance).coerceAtLeast(0.dp)
+        val posterizeWidth = 240.dp * LocalDensity.current.fontScale
+        Column(
+            modifier = Modifier
+                .align(if (centerToolbar) Alignment.BottomCenter else Alignment.BottomStart)
+                .padding(
+                    start = startInset,
+                    end = cornerClearance,
+                    top = Dimens.EdgeInset,
+                    bottom = Dimens.CornerInset,
                 )
-            } else if (state.editingGroupId != null || selectedGroups.isNotEmpty() || canCreateGroup) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (state.editingGroupId != null) {
-                        AssistChip(
-                            onClick = { onAction(PockRefAction.ExitGroup) },
-                            label = { Text("完成组内编辑") },
-                            leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null) },
-                        )
-                        if (selectedCount > 0) {
-                            AssistChip(
-                                onClick = { onAction(PockRefAction.RemoveSelectedFromGroup) },
-                                label = { Text("移出组") },
-                                leadingIcon = { Icon(Icons.Rounded.Layers, contentDescription = null) },
-                            )
-                        }
-                        AssistChip(
-                            onClick = { onAction(PockRefAction.ToggleSelectedGroupLock) },
-                            label = { Text(if (editingGroup?.positionLocked == true) "解锁组" else "锁定组") },
-                            leadingIcon = {
-                                Icon(
-                                    if (editingGroup?.positionLocked == true) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
-                                    contentDescription = null,
-                                )
-                            },
-                        )
-                    } else if (selectedGroup != null) {
-                        AssistChip(
-                            onClick = { onAction(PockRefAction.UngroupSelected) },
-                            label = { Text("解组") },
-                            leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null) },
-                        )
-                        AssistChip(
-                            onClick = { onAction(PockRefAction.DuplicateSelectedGroup) },
-                            label = { Text("复制组") },
-                            leadingIcon = { Icon(Icons.Rounded.ContentCopy, contentDescription = null) },
-                        )
-                        AssistChip(
-                            onClick = { groupNameDraft = selectedGroup.name; showRenameGroup = true },
-                            label = { Text("重命名") },
-                            leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
-                        )
-                        AssistChip(
-                            onClick = {
-                                groupBackgroundColor = selectedGroup.backgroundColor
-                                groupBackgroundOpacity = selectedGroup.backgroundOpacity
-                                showGroupAppearance = true
-                            },
-                            label = { Text("外观") },
-                            leadingIcon = { Icon(Icons.Rounded.Palette, contentDescription = null) },
-                        )
-                        AssistChip(
-                            onClick = { onAction(PockRefAction.ToggleSelectedGroupLock) },
-                            label = { Text(if (selectedGroup.positionLocked) "解锁组" else "锁定组") },
-                            leadingIcon = {
-                                Icon(
-                                    if (selectedGroup.positionLocked) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
-                                    contentDescription = null,
-                                )
-                            },
-                        )
-                    } else if (selectedGroups.isNotEmpty()) {
-                        AssistChip(
-                            onClick = { onAction(PockRefAction.UngroupSelected) },
-                            label = { Text("解组 ${selectedGroups.size} 个") },
-                            leadingIcon = { Icon(Icons.Rounded.Close, contentDescription = null) },
-                        )
-                        AssistChip(
-                            onClick = { onAction(PockRefAction.ToggleSelectedGroupLock) },
-                            label = {
-                                Text(if (selectedGroups.all { it.positionLocked }) "解锁组" else "锁定组")
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    if (selectedGroups.all { it.positionLocked }) Icons.Rounded.LockOpen
-                                    else Icons.Rounded.Lock,
-                                    contentDescription = null,
-                                )
-                            },
-                        )
-                    } else if (canCreateGroup) {
-                        AssistChip(
-                            onClick = { onAction(PockRefAction.CreateGroup) },
-                            label = { Text("成组") },
-                            leadingIcon = { Icon(Icons.Rounded.Add, contentDescription = null) },
-                        )
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-
+                .widthIn(max = availableToolbarWidth)
+                .onSizeChanged { size ->
+                    onChromeHeightChanged(with(density) { size.height.toDp() })
+                },
+            horizontalAlignment = if (centerToolbar) Alignment.CenterHorizontally else Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             val gifImageId = selectedGifPlaybackImageId
-            if (gifImageId != null && selectedGifPlaybackSource != null && selectedGifPlaybackState != null) {
+            if (hasGifControls) {
                 GifFrameControlBar(
                     source = selectedGifPlaybackSource,
                     playback = selectedGifPlaybackState,
-                    onPlaybackChange = { next ->
-                        gifPlaybackStates[gifImageId] = next
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
+                    onPlaybackChange = { next -> gifPlaybackStates[gifImageId] = next },
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(12.dp))
             }
-
-            if (state.requiresGroupFlattening) {
-                Row(
+            if (posterizeControlsVisible) {
+                PosterizeLevelButtons(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    SheetActionButton(
-                        icon = Icons.Rounded.Image,
-                        label = "导出",
-                        modifier = Modifier.weight(1f),
-                        onClick = { onAction(PockRefAction.ExportSelected) },
-                    )
-                }
-            } else if (isLockedPanel) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    SheetActionButton(
-                        icon = Icons.Rounded.Flip,
-                        label = "水平翻转",
-                        modifier = Modifier.weight(1f),
-                        onClick = { onAction(PockRefAction.FlipHorizontal) },
-                    )
-                    SheetActionButton(
-                        icon = Icons.Rounded.Layers,
-                        label = "灰度",
-                        active = allGrayscale,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onAction(PockRefAction.ConvertToGrayscale) },
-                    )
-                    SheetActionButton(
-                        icon = Icons.Rounded.LockOpen,
-                        label = "解锁",
-                        active = true,
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            onAction(
-                            if (selectedGroups.isNotEmpty()) PockRefAction.ToggleSelectedGroupLock
-                                else PockRefAction.ToggleLockSelected,
-                            )
-                        },
-                    )
-                    SheetActionButton(
-                        icon = Icons.Rounded.Image,
-                        label = "导出",
-                        modifier = Modifier.weight(1f),
-                        onClick = { onAction(PockRefAction.ExportSelected) },
-                    )
-                    SheetActionButton(
-                        icon = Icons.Rounded.Delete,
-                        label = "删除",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onAction(PockRefAction.DeleteSelected) },
-                    )
-                }
-            } else {
-                val gridModifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-                val row1 = if (state.multiSelectMode || state.boxSelectMode) {
-                    listOf(
-                        SheetActionSpec(
-                            icon = Icons.Rounded.Flip,
-                            label = "水平翻转",
-                            active = allFlippedH,
-                            onClick = { onAction(PockRefAction.FlipHorizontal) },
-                        ),
-                        SheetActionSpec(Icons.Rounded.VerticalAlignTop, "向上对齐", false) {
-                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_TOP))
-                        },
-                        SheetActionSpec(Icons.Rounded.VerticalAlignBottom, "向下对齐", false) {
-                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_BOTTOM))
-                        },
-                        SheetActionSpec(Icons.Rounded.AlignHorizontalLeft, "向左对齐", false) {
-                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_LEFT))
-                        },
-                        SheetActionSpec(Icons.Rounded.AlignHorizontalRight, "向右对齐", false) {
-                            onAction(PockRefAction.BatchAlign(AlignMode.ALIGN_RIGHT))
-                        },
-                        // V_NOW (2026-06-08 速写练习):
-                        // 6th entry — opens the pre-flight
-                        // config sheet (commit 2 of the
-                        // slideshow feature) where the user
-                        // picks duration / rest / shuffle /
-                        // sound. Pinned to the row1 end so
-                        // it's at the right edge of the
-                        // action grid (mirrors the legacy
-                        // SelectionFloatingToolbar's "练习"
-                        // button which was the rightmost
-                        // control). The icon is `Timer`
-                        // (clock-face with a top mark) —
-                        // universally readable as "time
-                        // based action" without depending
-                        // on text for icon-meaning.
-                        SheetActionSpec(Icons.Rounded.Timer, "速写练习", false) {
-                            onAction(PockRefAction.OpenPracticeConfigSheet)
-                        },
-                    )
-                } else {
-                    // V_NOW (2026-06-10 user spec "单选
-                    // sheet 第一行按钮 = 水平翻转 / 裁切 /
-                    // 右旋 90° / 复原 / 设为封面"): 5
-                    // buttons, single-select row1. The
-                    // previous "左旋 90°" entry is dropped
-                    // (users still have the 4-corner handle
-                    // rotate gesture on the canvas itself
-                    // for fine-grained angles — the sheet
-                    // button is the quick +/-90° path, and
-                    // -90° lives on the canvas handle). The
-                    // new 5th entry is the cover
-                    // affordance: tapping it marks the
-                    // single-selected image as the
-                    // [PockRefUiState.coverImageId] (same
-                    // id is re-tappable to clear it back to
-                    // null, matching the
-                    // [PockRefAction.SetAsCover] null =
-                    // clear semantics). Active state shows
-                    // when the currently selected image is
-                    // already the cover (subtle visual
-                    // confirmation).
-                    //
-                    // V_NOW (2026-06-10 revert repair):
-                    // re-applies the `934b80f` row1 layout
-                    // that was silently reverted by `720078f`
-                    // ("fix(L2 v6 revert): restore v5
-                    // EmptyCanvasState+ExtendedFAB; add v6
-                    // coverImageId + Pin button visual
-                    // state"). The action and viewmodel
-                    // handler are also re-added; see
-                    // [PockRefAction.SetAsCover] for the
-                    // full story.
-                    val currentSingleId = state.selectedImageId
-                    listOf(
-                        SheetActionSpec(Icons.Rounded.Flip, "水平翻转", allFlippedH) {
-                            onAction(PockRefAction.FlipHorizontal)
-                        },
-                        SheetActionSpec(Icons.Rounded.Crop, "裁切", false) {
-                            onAction(PockRefAction.EnterCropMode)
-                        },
-                        SheetActionSpec(Icons.AutoMirrored.Rounded.RotateRight, "右旋 90°", false) {
-                            onAction(PockRefAction.RotateRight)
-                        },
-                        SheetActionSpec(Icons.Rounded.RestartAlt, "复原", false) {
-                            onAction(PockRefAction.ResetTransform)
-                        },
-                        SheetActionSpec(
-                            icon = Icons.Rounded.Star,
-                            label = "设为封面",
-                            active = currentSingleId != null &&
-                                state.coverImageId == currentSingleId,
-                        ) {
-                            val id = currentSingleId
-                            if (id != null) {
-                                val next = if (state.coverImageId == id) null else id
-                                onAction(PockRefAction.SetAsCover(next))
-                            }
-                        },
-                    )
-                }
-                val row2 = if (state.multiSelectMode || state.boxSelectMode) {
-                    listOf(
-                        SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
-                            onAction(PockRefAction.DuplicateSelected)
-                        },
-                        SheetActionSpec(Icons.Rounded.Layers, "灰度", allGrayscale) {
-                            onAction(PockRefAction.ConvertToGrayscale)
-                        },
-                        // V_NOW (2026-06-08 user feedback
-                        // "把 sheet 里的锁定按钮改成激活锁定的图标是上锁的图标，没激活锁定时是解锁的图标"):
-                        // mirror the actual lock state on the
-                        // button. [allSelectedLocked] is the
-                        // existing "every selected image is
-                        // locked" boolean computed earlier in
-                        // the same composable scope. Locked
-                        // → [Icons.Rounded.Lock] (the "padlock
-                        // closed" icon), unlocked →
-                        // [Icons.Rounded.LockOpen] (the
-                        // "padlock open" icon). The "active"
-                        // slot is also wired to
-                        // [allSelectedLocked] so the visual
-                        // state matches (the previous version
-                        // hard-coded `active = false`, which
-                        // meant a locked selection still
-                        // showed the chrome as if it were
-                        // inactive).
-                        SheetActionSpec(
-                            icon = if (allSelectedLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
-                            label = if (allSelectedLocked) "已锁定" else "锁定",
-                            active = allSelectedLocked,
-                        ) {
-                            onAction(PockRefAction.ToggleLockSelected)
-                        },
-                        SheetActionSpec(Icons.Rounded.Image, "导出", false) {
-                            onAction(PockRefAction.ExportSelected)
-                        },
-                        SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
-                            onAction(PockRefAction.DeleteSelected)
-                        },
-                        // V_NOW (2026-06-08 速写练习 commit 2
-                        // + 6th-button feedback): 一键排版
-                        // shortcut, only in multi/box mode.
-                        // The bottom-right FAB also runs
-                        // [PockRefAction.ExecuteAutoLayout] but
-                        // gets covered by the sheet; this
-                        // sheet-row entry keeps the action
-                        // reachable while the sheet is up.
-                        // The FAB is moved to render AFTER the
-                        // sheet (see the reorder below) so the
-                        // canvas-FAB path also stays accessible,
-                        // but the sheet button is the primary
-                        // path when the user is interacting
-                        // with the selection.
-                        SheetActionSpec(Icons.Rounded.AutoFixHigh, "一键排版", false) {
-                            onAction(PockRefAction.ExecuteAutoLayout)
-                        },
-                    )
-                } else {
-                    listOf(
-                        SheetActionSpec(Icons.Rounded.ContentCopy, "复制", false) {
-                            onAction(PockRefAction.DuplicateSelected)
-                        },
-                        SheetActionSpec(Icons.Rounded.Layers, "灰度", allGrayscale) {
-                            onAction(PockRefAction.ConvertToGrayscale)
-                        },
-                        // V_NOW (2026-06-08 user feedback
-                        // "把 sheet 里的锁定按钮改成激活锁定的图标是上锁的图标，没激活锁定时是解锁的图标"):
-                        // mirror the actual lock state on the
-                        // button. [allSelectedLocked] is the
-                        // existing "every selected image is
-                        // locked" boolean computed earlier in
-                        // the same composable scope. Locked
-                        // → [Icons.Rounded.Lock] (the "padlock
-                        // closed" icon), unlocked →
-                        // [Icons.Rounded.LockOpen] (the
-                        // "padlock open" icon). The "active"
-                        // slot is also wired to
-                        // [allSelectedLocked] so the visual
-                        // state matches (the previous version
-                        // hard-coded `active = false`, which
-                        // meant a locked selection still
-                        // showed the chrome as if it were
-                        // inactive).
-                        SheetActionSpec(
-                            icon = if (allSelectedLocked) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
-                            label = if (allSelectedLocked) "已锁定" else "锁定",
-                            active = allSelectedLocked,
-                        ) {
-                            onAction(PockRefAction.ToggleLockSelected)
-                        },
-                        SheetActionSpec(Icons.Rounded.Image, "导出", false) {
-                            onAction(PockRefAction.ExportSelected)
-                        },
-                        SheetActionSpec(Icons.Rounded.Delete, "删除", false, tint = MaterialTheme.colorScheme.error) {
-                            onAction(PockRefAction.DeleteSelected)
-                        },
-                    )
-                }
-                Column(
-                    modifier = gridModifier,
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
+                        .width(posterizeWidth)
+                        .testTag("selection-posterize-levels"),
+                    selectedLevels = state.posterizeLevels,
+                    onLevelClick = { levels ->
+                        onAction(PockRefAction.TogglePosterizeLevel(levels))
+                    },
+                )
+            }
+            SheetModeToggle(
+                singleSelected = !state.multiSelectMode,
+                boxSelectMode = state.boxSelectMode,
+                onSingle = {
+                    if (state.boxSelectMode) onAction(PockRefAction.ToggleBoxSelectMode)
+                    if (state.multiSelectMode) onAction(PockRefAction.ToggleMultiSelectMode)
+                },
+                onMulti = {
+                    if (state.boxSelectMode) onAction(PockRefAction.ToggleBoxSelectMode)
+                    if (!state.multiSelectMode) onAction(PockRefAction.ToggleMultiSelectMode)
+                },
+                onBox = { onAction(PockRefAction.ToggleBoxSelectMode) },
+            )
+            Column(
+                modifier = Modifier
+                    .align(if (centerToolbar) Alignment.CenterHorizontally else Alignment.Start)
+                    .testTag("selection-action-toolbar")
+                    .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
+                    .glassMaterial(RoundedCornerShape(Dimens.ChromeCornerRadius))
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant,
+                        RoundedCornerShape(Dimens.ChromeCornerRadius),
+                    ),
+            ) {
+                Box {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .height(Dimens.BottomPanelChromeSize)
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        row1.forEach { spec ->
+                        fullActions.forEach { spec ->
                             SheetActionButton(
                                 icon = spec.icon,
                                 label = spec.label,
                                 active = spec.active,
                                 tint = spec.tint,
-                                modifier = Modifier.weight(1f),
+                                showLabel = false,
+                                modifier = Modifier.size(Dimens.MinTouchTarget),
                                 onClick = spec.onClick,
-                                // V_NOW (S-04): pass long-press
-                                // through. Only the multi-select
-                                // "水平翻转" sets onLongClick;
-                                // the other 4 buttons in [row1]
-                                // pass null and fall back to plain
-                                // clickable inside [SheetActionButton].
                                 onLongClick = spec.onLongClick,
                             )
                         }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        row2.forEach { spec ->
-                            SheetActionButton(
-                                icon = spec.icon,
-                                label = spec.label,
-                                active = spec.active,
-                                tint = spec.tint,
-                                modifier = Modifier.weight(1f),
-                                onClick = spec.onClick,
-                                // row2 has no long-press buttons.
-                                onLongClick = null,
-                            )
-                        }
+
                     }
                 }
             }
         }
-	    }
+    }
     if (showRenameGroup && groupActionTarget != null) {
-        AlertDialog(
+        GlassAlertDialog(
             onDismissRequest = { showRenameGroup = false },
             title = { Text("重命名组") },
             text = {
@@ -3465,7 +3023,7 @@ private fun SelectionBottomSheet(
     }
     if (showGroupAppearance && groupActionTarget != null) {
         val palette = listOf(Color.Black, Color.Red, Color(0xFF2E7D32), Color(0xFF1565C0), Color(0xFFFFC107))
-        AlertDialog(
+        GlassAlertDialog(
             onDismissRequest = { showGroupAppearance = false },
             title = { Text("组外观") },
             text = {
@@ -3524,7 +3082,7 @@ private fun GifFrameControlBar(
     val nextFrame = if (frameIndex >= timeline.lastFrameIndex) 0 else frameIndex + 1
     val sliderSteps = if (frameCount in 3..160) frameCount - 2 else 0
 
-    Surface(
+    GlassSurface(
         modifier = modifier,
         shape = RoundedCornerShape(Dimens.ChipCornerRadius),
         color = MaterialTheme.colorScheme.surface,
@@ -3671,12 +3229,14 @@ private data class SheetActionSpec(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SheetActionButton(
+internal fun SheetActionButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     modifier: Modifier = Modifier,
     active: Boolean = false,
     tint: Color? = null,
+    showLabel: Boolean = true,
+    enabled: Boolean = true,
     onClick: () -> Unit,
     // V_NOW (S-04): optional long-press handler. When
     // non-null, the button switches from `Modifier.clickable`
@@ -3728,11 +3288,12 @@ private fun SheetActionButton(
             .then(
                 if (onLongClick != null) {
                     Modifier.combinedClickable(
+                        enabled = enabled,
                         onClick = onClick,
                         onLongClick = onLongClick,
                     )
                 } else {
-                    Modifier.clickable(onClick = onClick)
+                    Modifier.clickable(enabled = enabled, onClick = onClick)
                 },
             )
             .background(
@@ -3753,20 +3314,22 @@ private fun SheetActionButton(
             // outer clickable region is always ≥48dp tall.
             .padding(vertical = 4.dp, horizontal = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+        verticalArrangement = if (showLabel) Arrangement.spacedBy(2.dp) else Arrangement.Center,
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = resolvedTint,
+            tint = resolvedTint.copy(alpha = resolvedTint.alpha * if (enabled) 1f else 0.38f),
             modifier = Modifier.size(18.dp),
         )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-        )
+        if (showLabel) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.38f),
+                maxLines = 1,
+            )
+        }
     }
 }
 
@@ -3780,6 +3343,7 @@ private fun SheetActionButton(
 ) {
     CompactSegmentedControl(
         options = listOf("单选", "多选", "框选"),
+        modifier = Modifier.testTag("selection-mode-toggle"),
         selectedIndex = when {
             boxSelectMode -> 2
             singleSelected -> 0
@@ -3809,7 +3373,6 @@ private fun BoxScope.SelectionModeOverlay(
  // default, no border cue needed).
  val isMulti = state.multiSelectMode && !state.boxSelectMode
  val isBox = state.boxSelectMode
- val isSingle = !isMulti && !isBox
  val isBoxWindow = isBox &&
  state.boxSelectKind == com.pockref.app.model.BoxSelectionKind.WINDOW
  val isBoxCrossing = isBox &&
@@ -4057,8 +3620,6 @@ private fun BoxScope.CropOverlay(
     // the weight-row layout, the floating layer can
     // NEVER overlap the toolbar — they're in disjoint
     // parent rows.
-    val safetyMarginPx = with(density) { 16.dp.toPx() }
-    val sideMarginPx = with(density) { 16.dp.toPx() }
     // V_NOW: bumped from 200dp → 280dp (user feedback "完全
     // 无法使用" + screenshot showed the floating layer
     // dominating the screen, the toolbar compressed to a
@@ -4110,9 +3671,9 @@ private fun BoxScope.CropOverlay(
     // the state mirror is still 0x0; the composable itself already has a
     // valid window size to use as a fallback.
     val viewportWidthPx = viewport.width.takeIf { it > 0f }
-        ?: with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
+        ?: LocalWindowInfo.current.containerSize.width.toFloat()
     val viewportHeightPx = viewport.height.takeIf { it > 0f }
-        ?: with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+        ?: LocalWindowInfo.current.containerSize.height.toFloat()
     val viewportDpW: Dp = with(density) { viewportWidthPx.toDp() }
     val viewportDpH: Dp = with(density) { viewportHeightPx.toDp() }
     val statusBarPx: Int = WindowInsets.statusBars.getTop(density)
@@ -4629,8 +4190,8 @@ private fun BoxScope.CropOverlay(
             val cW = cR - cL; val cH = cB - cT
 
             if (displayBitmap != null) {
-                val bmpW = displayBitmap.width.toFloat()
-                val bmpH = displayBitmap.height.toFloat()
+                val bitmapW = displayBitmap.width.toFloat()
+                val bitmapH = displayBitmap.height.toFloat()
                 // V_NOW (user feedback "裁切旋转过后的图片，
                 // 裁切图片显示不全"): for a rotated image,
                 // the image's VISUAL footprint is its
@@ -4684,18 +4245,18 @@ private fun BoxScope.CropOverlay(
                 val aabbW: Float
                 val aabbH: Float
                 if (cropRotation == 0f) {
-                    aabbW = bmpW
-                    aabbH = bmpH
+                    aabbW = bitmapW
+                    aabbH = bitmapH
                 } else {
                     val rad = Math.toRadians(cropRotation.toDouble())
                     val cosA = kotlin.math.abs(kotlin.math.cos(rad)).toFloat()
                     val sinA = kotlin.math.abs(kotlin.math.sin(rad)).toFloat()
-                    aabbW = bmpW * cosA + bmpH * sinA
-                    aabbH = bmpW * sinA + bmpH * cosA
+                    aabbW = bitmapW * cosA + bitmapH * sinA
+                    aabbH = bitmapW * sinA + bitmapH * cosA
                 }
                 val fitScale = maxOf(size.width / aabbW, size.height / aabbH)
-                val drawW = bmpW * fitScale
-                val drawH = bmpH * fitScale
+                val drawW = bitmapW * fitScale
+                val drawH = bitmapH * fitScale
                 val offX = (size.width - drawW) / 2f
                 val offY = (size.height - drawH) / 2f
                 rotate(
@@ -4851,7 +4412,7 @@ private fun BoxScope.CropOverlay(
     // `windowInsetsPadding(navigationBars)` is removed
     // (the parent Column already pads against
     // [WindowInsets.systemBars]).
-    Surface(
+    GlassSurface(
         modifier = Modifier
             .widthIn(max = Dimens.SheetMaxWidth)
             .fillMaxWidth()
@@ -5084,7 +4645,6 @@ private fun BoxScope.MinimapChrome(
         val minimapRightDp = Dimens.CornerInset + 200.dp
         if (minimapRightDp > sheetLeftDp) return
     }
-    val dockThresholdPx = with(density) { 48.dp.toPx() }
 
     // Effective position with bounds clamping. The persisted
     // [PockRefUiState.minimapPosition] is the top-left corner
@@ -5236,14 +4796,11 @@ private fun BoxScope.MinimapChrome(
 
     // RememberUpdatedState so the pointerInput coroutine
     // (which is keyed on Unit and never re-collects) sees
-    // the latest parent size / dock threshold / local
-    // position on every drag frame. The local position is
-    // already a mutableStateOf so we can read its .value
-    // directly without rememberUpdatedState.
+    // the latest parent size on every drag frame. The local
+    // position is already a mutableStateOf so we can read
+    // its .value directly without rememberUpdatedState.
     val currentParentWidth by rememberUpdatedState(parentWidth)
     val currentParentHeight by rememberUpdatedState(parentHeight)
-    val currentMinimapSize by rememberUpdatedState(estimatedMinimapSize)
-    val currentDockThreshold by rememberUpdatedState(dockThresholdPx)
 
     // V_NOW (user feedback "minimap 取消 3s 自动收起"): the
     // 3s auto-collapse (matching the top toolbar's contract)
@@ -5281,18 +4838,18 @@ private fun BoxScope.MinimapChrome(
 
     // Auto-dismiss: slider disappears after 3 s of inactivity.
     // Any slider drag resets the timer.
-    val sliderInteractionStamp = remember { mutableStateOf(0L) }
+    val sliderInteractionStamp = remember { mutableLongStateOf(0L) }
     LaunchedEffect(zoomSliderActive.value) {
         if (!zoomSliderActive.value) return@LaunchedEffect
         while (true) {
             delay(3000L)
             // If no interaction happened during the wait, dismiss.
-            if (sliderInteractionStamp.value == 0L) {
+            if (sliderInteractionStamp.longValue == 0L) {
                 zoomSliderActive.value = false
                 break
             }
             // An interaction occurred; reset stamp and wait again.
-            sliderInteractionStamp.value = 0L
+            sliderInteractionStamp.longValue = 0L
         }
     }
 
@@ -5401,7 +4958,7 @@ private fun BoxScope.MinimapChrome(
                     onLongPress = {
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                         zoomSliderActive.value = true
-                        sliderInteractionStamp.value = System.currentTimeMillis()
+                        sliderInteractionStamp.longValue = System.currentTimeMillis()
                     },
                     // V_NOW: do NOT dismiss on long-press end;
                     // slider stays for drag. Dismissed via
@@ -5422,7 +4979,7 @@ private fun BoxScope.MinimapChrome(
                         val newScale = (currentCanvasScale * (1f + scaleDelta))
                             .coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
                         currentOnAction(PockRefAction.SetCanvasZoom(newScale))
-                        sliderInteractionStamp.value = System.currentTimeMillis()
+                        sliderInteractionStamp.longValue = System.currentTimeMillis()
                     },
                 )
             }
@@ -5650,7 +5207,7 @@ private fun BoxScope.MinimapChrome(
                     onLongPress = {
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                         zoomSliderActive.value = true
-                        sliderInteractionStamp.value = System.currentTimeMillis()
+                        sliderInteractionStamp.longValue = System.currentTimeMillis()
                     },
                     // V_NOW: do NOT set zoomSliderActive = false
                     // on long-press end. The slider should remain
@@ -5679,7 +5236,7 @@ private fun BoxScope.MinimapChrome(
                         // expanded panel — so the slider
                         // overlay doesn't fade out from
                         // under the user's finger mid-drag.
-                        sliderInteractionStamp.value = System.currentTimeMillis()
+                        sliderInteractionStamp.longValue = System.currentTimeMillis()
                     },
                 )
         }
@@ -5799,7 +5356,7 @@ private fun BoxScope.MinimapChrome(
                         onDragStart = {
                             hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                             zoomSliderActive.value = true
-                            sliderInteractionStamp.value = System.currentTimeMillis()
+                            sliderInteractionStamp.longValue = System.currentTimeMillis()
                         },
                         onDrag = { _, dragAmount ->
                             // dragAmount.y: negative when
@@ -5815,7 +5372,7 @@ private fun BoxScope.MinimapChrome(
                             val newScale = (currentCanvasScale * (1f + scaleDelta))
                                 .coerceIn(MIN_CANVAS_SCALE, MAX_CANVAS_SCALE)
                             currentOnAction(PockRefAction.SetCanvasZoom(newScale))
-                            sliderInteractionStamp.value = System.currentTimeMillis()
+                            sliderInteractionStamp.longValue = System.currentTimeMillis()
                         },
                         onDragEnd = {
                             // Don't collapse here — the
@@ -5885,7 +5442,7 @@ private fun BoxScope.MinimapChrome(
                 // will trigger the dismiss.
                 .pointerInput(Unit) {
                     awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
+                        awaitFirstDown(requireUnconsumed = false)
                         var totalDragX = 0f
                         do {
                             // Use [PointerEventPass.Initial] to observe
@@ -5909,7 +5466,7 @@ private fun BoxScope.MinimapChrome(
                 orientation = sliderOrientation,
                 currentValue = currentCanvasScale,
                 onValueChange = { newValue ->
-                    sliderInteractionStamp.value = System.currentTimeMillis()
+                    sliderInteractionStamp.longValue = System.currentTimeMillis()
                     currentOnAction(PockRefAction.SetCanvasZoom(newValue))
                 },
                 onValueChangeFinished = { zoomSliderActive.value = false },
@@ -5979,17 +5536,16 @@ private fun MinimapZoomSlider(
             // never overflows the 48dp height (which becomes
             // the visual width after rotation for vertical).
             .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
-            .background(
-                colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-                RoundedCornerShape(Dimens.ChromeCornerRadius),
-            ),
+            .glassMaterial(RoundedCornerShape(Dimens.ChromeCornerRadius)),
         contentAlignment = Alignment.Center,
     ) {
         val tooltipState = rememberTooltipState(isPersistent = true)
         TooltipBox(
-            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Above),
             tooltip = {
-                PlainTooltip { Text(String.format("%.2fx", currentValue)) }
+                PlainTooltip {
+                    Text(String.format(LocalLocale.current.platformLocale, "%.2fx", currentValue))
+                }
             },
             state = tooltipState,
         ) {
@@ -6015,7 +5571,7 @@ private fun MinimapZoomSlider(
                     .padding(horizontal = 12.dp, vertical = 2.dp)
                     .semantics {
                         contentDescription =
-                            "缩放控制, 当前缩放级别 ${String.format("%.2f", currentValue)} 倍"
+                            "缩放控制, 当前缩放级别 ${String.format(Locale.getDefault(), "%.2f", currentValue)} 倍"
                         progressBarRangeInfo = ProgressBarRangeInfo(
                             current = currentValue,
                             range = ZOOM_MIN..ZOOM_MAX,
@@ -6070,21 +5626,20 @@ private fun EmptyCanvasState(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
     onOpenBlankCanvas: () -> Unit,
+    modifier: Modifier = Modifier,
     // V_NOW (2026-06-16 user feedback "把导出日志按钮改成默认
     // 不显示,点 pockref 图标 7 次后才会显示"): the start-page
     // log-export FAB is hidden by default and unlocked via
     // an easter-egg tap counter on the PockRef text title. The
     // tap counter is local (remember) — it resets on every
     // fresh app launch, matching the spec "应用每次打开启动页
-    // 的导出日志按钮都不显示". [showLogExportFab] is the parent
-    // (PockRefApp) state flag that gates the actual FAB
+    // 的导出日志按钮都不显示". The parent ([CanvasPanel]) owns
+    // the showLogExportFab flag that gates the actual FAB
     // mount. [onLogExportFab] flips that flag to true and
     // sticks for the rest of this session (no reset, no
     // auto-hide timer — once unlocked, the FAB stays until
     // the activity is destroyed).
-    showLogExportFab: Boolean = false,
     onLogExportFab: () -> Unit = {},
-    modifier: Modifier = Modifier,
 ) {
     // 7-tap easter-egg counter on the PockRef title. local
     // remember: dies with the composable, so every fresh
@@ -6096,7 +5651,7 @@ private fun EmptyCanvasState(
     // for an intermediate confirmation.
     val pockrefIconTapCount = androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
     Surface(
-        modifier = modifier.widthIn(max = 520.dp),
+        modifier = modifier.widthIn(max = 520.dp).glassBackdropSource(),
         // P1 (2026-06-11 chrome unify): mid-size card
         // tier (sits between 12dp chrome and 24dp dialog).
         shape = RoundedCornerShape(Dimens.CardCornerRadius),
@@ -6127,7 +5682,7 @@ private fun EmptyCanvasState(
                 // `pockrefIconTapCount` remember'd in this
                 // composable; on the 7th tap it calls
                 // [onLogExportFab] which flips the parent's
-                // [showLogExportFab] flag to true.
+                // showLogExportFab flag to true.
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .clickable {
@@ -6349,6 +5904,8 @@ private fun AutoShrinkTitle(
  * 5 个按钮 (chevron / 导入 / 撤销 / 重做 / 关闭) 全部走这个
  * 模板,顶栏内间距统一 8dp,见 [TopToolbar] 调用处.
  */
+// [active] is intentionally unused for now; see the note in the modifier chain.
+@Suppress("UNUSED_PARAMETER")
 @Composable
 private fun ToolbarIconButton(
     imageVector: ImageVector,
@@ -6576,22 +6133,7 @@ private fun PockRefCanvas(
     state: PockRefUiState,
     modifier: Modifier = Modifier,
     onAction: (PockRefAction) -> Unit,
-    imageLazyLoader: com.pockref.app.data.PurFileParser? = null,
     imageDecoder: com.pockref.app.data.SceneImageDecoder? = null,
-    // V_NOW (user feedback "P0-A1 阈值按 density 缩放"):
-    // [LocalDensity.current] is a @Composable getter, but the
-    // gesture handler runs inside [pointerInput { awaitEachGesture }]
-    // which is NOT a @Composable scope. We read density here
-    // (composable scope) and forward it into the handler closure.
-    // The `density` variable is then used by the threshold
-    // conversion at the start of each gesture below.
-    density: androidx.compose.ui.unit.Density = LocalDensity.current,
-    // V2: hover-magnifier progress, computed at the
-    // [PockRefApp] level so the same value is read by
-    // both the in-canvas magnifier and the
-    // sibling-overlay magnifier. 0f = hidden, 1f = fully
-    // shown, in-between = fade animation in progress.
-    hoverProgress: Float = 0f,
     // V2: bitmap cache lifted from this function to
     // [PockRefApp] so the sibling [HoverMagnifierOverlay]
     // can read decoded bitmaps. See the cache definition
@@ -6604,7 +6146,6 @@ private fun PockRefCanvas(
     gifFrameBitmapCache: GifFrameBitmapCache,
     gifPlaybackSources: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackSource>,
     gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
-    selectedGifPlaybackImageId: String?,
 ) {
     // V2: bitmapCache is now passed in from the [PockRefApp]
     // scope (see the [PockRefApp] declaration of the same
@@ -6813,7 +6354,6 @@ private fun PockRefCanvas(
             }
         }
     }
-    val currentLoaderRef by rememberUpdatedState(imageLazyLoader)
     val focusedHighResImageId = remember(
         state.fittedImageId,
         state.selectedImageIds,
@@ -6896,16 +6436,6 @@ private fun PockRefCanvas(
     // zoom on the second empty. Same 400ms / 20px tolerances.
     var lastEmptyTapTime by remember { mutableLongStateOf(0L) }
     var lastEmptyTapPos by remember { mutableStateOf(Offset.Zero) }
-
-    // V2: hoverProgress is now passed in as a parameter
-    // from the [PockRefApp] scope (see the function
-    // signature). It used to be computed here, but
-    // lifting it out lets the sibling-overlay magnifier
-    // read the same value so the two paths animate in
-    // lockstep. The label has been renamed from
-    // "spen-hover-magnifier" (an earlier name) to
-    // "hover-magnifier" since the same value now drives
-    // both the in-canvas draw and the overlay.
 
     DisposableEffect(state.images) {
         val currentIds = state.images.map { it.id }.toSet()
@@ -7083,6 +6613,13 @@ private fun PockRefCanvas(
     // gesture via beginImageDrag) cancels the pending dispatch.
     val snapHighlightStart = state.snapHighlight?.startTimeMs
     val localView = androidx.compose.ui.platform.LocalView.current
+    // S Pen diagnostics below log on every stylus DOWN/MOVE; keep them out
+    // of release builds so they don't flood logcat (and the 500-line log
+    // export).
+    val spenDebugLogging = remember(localView) {
+        (localView.context.applicationInfo.flags and
+            android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
     // V3 S Pen debug: install a raw-MotionEvent listener on
     // the underlying View so logcat captures the raw
     // buttonState regardless of whether Compose's
@@ -7090,12 +6627,15 @@ private fun PockRefCanvas(
     // listener returns false so it never consumes —
     // Compose's pointerInput still receives every event
     // for its own handling. When this DisposableEffect
-    // leaves the composition (or PockRefCanvas
-    // recomposes) the original touch listener is
-    // restored, so we never leak a hook on the root
-    // view.
+    // leaves the composition (or [localView] changes)
+    // the listener is cleared, so we never leak a hook
+    // on the root view.
     androidx.compose.runtime.DisposableEffect(localView) {
-        val previous = localView.setOnTouchListener { _, motionEvent ->
+        if (!spenDebugLogging) return@DisposableEffect onDispose { }
+        // Log-only hook: it never consumes or acts on a tap, so there is no
+        // click to forward to performClick().
+        @Suppress("ClickableViewAccessibility")
+        localView.setOnTouchListener { _, motionEvent ->
             val toolType = motionEvent.getToolType(0)
             val buttonState = motionEvent.buttonState
             val isStylus = toolType == android.view.MotionEvent.TOOL_TYPE_STYLUS
@@ -7120,11 +6660,9 @@ private fun PockRefCanvas(
             false
         }
         onDispose {
-            // Restore the previous listener (or null if
-            // there was none). setOnTouchListener accepts
-            // null to clear, which is what we want on
-            // dispose.
-            localView.setOnTouchListener(previous?.let { { _, _ -> false } })
+            // The hook always returned false, so clearing it
+            // leaves touch dispatch unchanged.
+            localView.setOnTouchListener(null)
         }
     }
     LaunchedEffect(snapHighlightStart) {
@@ -7140,7 +6678,7 @@ private fun PockRefCanvas(
             // snap gets the same confirmation.
             try {
                 @Suppress("DEPRECATION")
-                localView?.performHapticFeedback(
+                localView.performHapticFeedback(
                     android.view.HapticFeedbackConstants.VIRTUAL_KEY,
                     android.view.HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING,
                 )
@@ -7152,26 +6690,6 @@ private fun PockRefCanvas(
             currentOnAction(PockRefAction.ClearSnapHighlight)
         }
     }
-
-    // V_NOW: pre-compute the locked-image indicator colours in the
-    // Composable scope so the DrawScope block below can reference
-    // them by closure capture. Two layers, matching the
-    // selection-outline style (an outer semi-transparent glow
-    // stroke + an inner solid stroke) so the locked indicator
-    // reads as the same family of affordance as the selection
-    // rectangle — just a different colour and always-on vs
-    // on-select.
-    //
-    // The inner stroke is the [selection] blue's counterpart: a
-    // red that lives in [Color] hex (not a theme token) so the
-    // "warning / danger" semantic is consistent across light and
-    // dark themes — swapping to a [colorScheme.error] variant
-    // would make the locked indicator hue depend on the user's
-    // theme, which we explicitly do NOT want here (the lock
-    // affordance is "this image is protected", not "this is an
-    // error in the UI").
-    val lockedStrokeColor = LockedStrokeColor
-    val lockedGlowColor = LockedGlowColor
 
     // V_NOW (P2-C3): drive the selection-flash alpha
     // off a Compose State so the Canvas re-draws every
@@ -7313,6 +6831,13 @@ private fun PockRefCanvas(
             modifier = Modifier
             .fillMaxSize()
             .background(state.backgroundColor)
+            .onGloballyPositioned { coordinates ->
+                onAction(PockRefAction.UpdateCanvasViewport(
+                    coordinates.size.width.toFloat(),
+                    coordinates.size.height.toFloat(),
+                    coordinates.positionInWindow(),
+                ))
+            }
             .onSizeChanged { canvasSize ->
                 localCanvasSize = Size(
                     canvasSize.width.toFloat(),
@@ -7383,7 +6908,7 @@ private fun PockRefCanvas(
                     // pointerInput has nothing useful to do
                     // when there are no images to drag /
                     // select / transform.
-                    if (!currentState.hasSceneContent) return@awaitEachGesture
+                    if (!currentState.hasSceneContent && !currentState.markupModeActive) return@awaitEachGesture
                     down.consume()
                     // If the crop overlay is active, skip all
                     // canvas gesture processing so touches on
@@ -7402,7 +6927,6 @@ private fun PockRefCanvas(
                     val tapMaxDragPx = with(density) { TAP_MAX_DRAG_DP.dp.toPx() }
                     val gestureMovedThresholdPx = with(density) { GESTURE_MOVED_THRESHOLD_DP.dp.toPx() }
                     val doubleTapMaxDistPx = with(density) { DOUBLE_TAP_MAX_DIST_DP.dp.toPx() }
-                    val edgeAutoScrollThresholdPx = with(density) { EDGE_AUTO_SCROLL_THRESHOLD_DP.dp.toPx() }
                     if (s.markupModeActive) {
                         fun screenToMarkupWorld(point: Offset, snapshot: PockRefUiState): Offset {
                             val scale = snapshot.canvasScale.coerceAtLeast(0.0001f)
@@ -7428,14 +6952,13 @@ private fun PockRefCanvas(
                                 return
                             }
                             val distanceDelta = if (previousDistance > 0f) distance / previousDistance else 1f
+                            // Markup reserves one finger for editing; two fingers always navigate,
+                            // independently of the normal canvas single-finger pan preference.
                             val panDelta = canvasPanDeltaForPointerCount(
                                 pointerCount = activeChanges.size,
                                 previousCentroid = previousPanCentroid,
                                 centroid = centroid,
-                                singleFingerPanEnabled = isGestureEnabled(
-                                    currentState.gestureToggles,
-                                    GestureId.SINGLE_FINGER_PAN,
-                                ),
+                                singleFingerPanEnabled = false,
                             )
                             if (panDelta != Offset.Zero) {
                                 enqueueCanvasPan(panDelta)
@@ -7449,7 +6972,8 @@ private fun PockRefCanvas(
                             previousDistance = distance
                             previousPanCentroid = centroid
                         }
-                        if (firstEvent.changes.count { it.pressed } >= 2) {
+                        val stylusGesture = down.type == PointerType.Stylus || down.type == PointerType.Eraser
+                        if (!stylusGesture && firstEvent.changes.count { it.pressed } >= 2) {
                             handleMarkupCanvasTransform(firstEvent.changes)
                             firstEvent.changes.forEach { it.consume() }
                             while (true) {
@@ -7467,49 +6991,58 @@ private fun PockRefCanvas(
                         currentOnAction(PockRefAction.BeginMarkupStroke(screenToMarkupWorld(downPos, s)))
                         var cancelled = false
                         var navigatingCanvas = false
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Main)
-                            val changes = event.changes
-                            if (navigatingCanvas) {
-                                if (changes.count { it.pressed } >= 2) {
-                                    handleMarkupCanvasTransform(changes)
+                        var completed = false
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val changes = event.changes
+                                if (navigatingCanvas) {
+                                    if (changes.count { it.pressed } >= 2) {
+                                        handleMarkupCanvasTransform(changes)
+                                    }
+                                    changes.forEach { it.consume() }
+                                    if (changes.none { it.pressed }) break
+                                    continue
                                 }
-                                changes.forEach { it.consume() }
-                                if (changes.none { it.pressed }) break
-                                continue
-                            }
-                            if (changes.count { it.pressed } >= 2) {
-                                cancelled = true
-                                navigatingCanvas = true
-                                currentOnAction(PockRefAction.CancelMarkupStroke)
-                                handleMarkupCanvasTransform(changes)
-                                changes.forEach { it.consume() }
-                                if (changes.none { it.pressed }) break
-                                continue
-                            }
-                            val change = changes.firstOrNull { it.id == down.id } ?: changes.firstOrNull()
-                            if (change == null) {
-                                cancelled = true
-                                break
-                            }
-                            if (!change.pressed) {
+                                if (!stylusGesture && changes.count { it.pressed } >= 2) {
+                                    cancelled = true
+                                    navigatingCanvas = true
+                                    currentOnAction(PockRefAction.CancelMarkupStroke)
+                                    handleMarkupCanvasTransform(changes)
+                                    changes.forEach { it.consume() }
+                                    if (changes.none { it.pressed }) break
+                                    continue
+                                }
+                                val change = changes.firstOrNull { it.id == down.id }
+                                // Compose delivers ACTION_CANCEL as an already-consumed release.
+                                if (change == null || change.isConsumed) {
+                                    cancelled = true
+                                    break
+                                }
+                                if (!change.pressed) {
+                                    currentOnAction(PockRefAction.UpdateMarkupStroke(
+                                        screenToMarkupWorld(change.position, currentState)))
+                                    change.consume()
+                                    break
+                                }
+                                currentOnAction(
+                                    PockRefAction.UpdateMarkupStroke(
+                                        screenToMarkupWorld(change.position, currentState),
+                                    ),
+                                )
                                 change.consume()
-                                break
                             }
-                            currentOnAction(
-                                PockRefAction.UpdateMarkupStroke(
-                                    screenToMarkupWorld(change.position, currentState),
-                                ),
-                            )
-                            change.consume()
+                            if (!navigatingCanvas) {
+                                currentOnAction(
+                                    if (cancelled) PockRefAction.CancelMarkupStroke
+                                    else PockRefAction.CommitMarkupStroke,
+                                )
+                            }
+                            flushQueuedCanvasPan()
+                            completed = true
+                        } finally {
+                            if (!completed) currentOnAction(PockRefAction.CancelMarkupStroke)
                         }
-                        if (!navigatingCanvas) {
-                            currentOnAction(
-                                if (cancelled) PockRefAction.CancelMarkupStroke
-                                else PockRefAction.CommitMarkupStroke,
-                            )
-                        }
-                        flushQueuedCanvasPan()
                         return@awaitEachGesture
                     }
                     if (s.markupVisible) {
@@ -7575,7 +7108,8 @@ private fun PockRefCanvas(
                     // without arming image drag.
                     var tapTargetImageId: String? = null
                     var lassoActive = false
-                    var lassoStart: Offset? = null
+                    // Screen-space bounding box of the lasso path so far.
+                    var lassoBounds: Rect? = null
                     var boxSelectStart: Offset? = null
                     var boxSelectDragging = false
                     // V_NOW (4-corner scale handles):
@@ -7683,15 +7217,17 @@ private fun PockRefCanvas(
                     // relevant fields so a logcat capture
                     // can confirm which detection path is
                     // (or isn't) firing.
-                    android.util.Log.i(
-                        "PockRefSpen",
-                        "down type=${down.type} " +
-                            "primary=${firstEvent.buttons.isPrimaryPressed} " +
-                            "secondary=${firstEvent.buttons.isSecondaryPressed} " +
-                            "tertiary=${firstEvent.buttons.isTertiaryPressed} " +
-                            "isStylus=$downIsStylus " +
-                            "buttonDown=$stylusButtonDown",
-                    )
+                    if (spenDebugLogging) {
+                        android.util.Log.i(
+                            "PockRefSpen",
+                            "down type=${down.type} " +
+                                "primary=${firstEvent.buttons.isPrimaryPressed} " +
+                                "secondary=${firstEvent.buttons.isSecondaryPressed} " +
+                                "tertiary=${firstEvent.buttons.isTertiaryPressed} " +
+                                "isStylus=$downIsStylus " +
+                                "buttonDown=$stylusButtonDown",
+                        )
+                    }
 
                     // V_NOW (4-corner scale handles, SINGLE
                     // + MULTI/BOX paths): if the finger lands
@@ -7728,7 +7264,6 @@ private fun PockRefCanvas(
                         val cs2 = currentState
                         val sIds = cs2.selectedImageIds
                         val sId = cs2.selectedImageId
-                        val hasGroupSelection = sIds.size >= 2
                         val hasSingleSelection = sId != null && sIds.size <= 1
                         // V_NOW (group corner-handle
                         // anchor fix v2): the screen-to-
@@ -7813,8 +7348,7 @@ private fun PockRefCanvas(
                                     val ct = cornerImages.first()
                                     projectImageRotationHandleToScreen(
                                         imageCenter = ct.center,
-                                        imageWidth = ct.displaySize.width.toFloat() * ct.scale,
-                                        imageHeight = ct.displaySize.height.toFloat() * ct.scale,
+                                        imageHeight = ct.displaySize.height * ct.scale,
                                         rotationDegrees = ct.rotationDegrees,
                                         handleOffsetPx = rotationHandleOffsetPx,
                                         canvasScale = cs2.canvasScale,
@@ -7882,8 +7416,8 @@ private fun PockRefCanvas(
                                     val cornerAabb: Rect
                                     if (hasSingleSelection) {
                                         val ct = cornerImages.first()
-                                        val imgW = ct.displaySize.width.toFloat() * ct.scale
-                                        val imgH = ct.displaySize.height.toFloat() * ct.scale
+                                        val imgW = ct.displaySize.width * ct.scale
+                                        val imgH = ct.displaySize.height * ct.scale
                                         gProjected = projectImageCornersToScreen(
                                             imageCenter = ct.center,
                                             imageWidth = imgW,
@@ -7901,8 +7435,8 @@ private fun PockRefCanvas(
                                         )
                                         cornerAabb = rotatedFootprintAabb(
                                             center = ct.center,
-                                            displayW = ct.displaySize.width.toFloat(),
-                                            displayH = ct.displaySize.height.toFloat(),
+                                            displayW = ct.displaySize.width,
+                                            displayH = ct.displaySize.height,
                                             scale = ct.scale,
                                             rotationDegrees = ct.rotationDegrees,
                                         )
@@ -7952,8 +7486,8 @@ private fun PockRefCanvas(
                                                     img.id to
                                                         rotatedFootprintAabb(
                                                             center = img.center,
-                                                            displayW = img.displaySize.width.toFloat(),
-                                                            displayH = img.displaySize.height.toFloat(),
+                                                            displayW = img.displaySize.width,
+                                                            displayH = img.displaySize.height,
                                                             scale = img.scale,
                                                             rotationDegrees = img.rotationDegrees,
                                                         )
@@ -7983,8 +7517,8 @@ private fun PockRefCanvas(
                                         if (hasSingleSelection) {
                                             val ct = cornerImages.first()
                                             singleRot = ct.rotationDegrees
-                                            singleW = ct.displaySize.width.toFloat() * ct.scale
-                                            singleH = ct.displaySize.height.toFloat() * ct.scale
+                                            singleW = ct.displaySize.width * ct.scale
+                                            singleH = ct.displaySize.height * ct.scale
                                             singleInitScale = ct.scale
                                             // gProjected contains the image's actual
                                             // rotated corners (from projectImageCornersToScreen).
@@ -8133,16 +7667,6 @@ private fun PockRefCanvas(
                         currentOnAction(PockRefAction.BeginBoxSelectAt(downPos))
                         boxSelectStart = downPos
                         boxSelectDragging = true
-                    } else if (s.multiSelectMode && hitId != null) {
-                        // V_NOW: only start lasso if the user
-                        // touched an image in multi-select mode.
-                        // Touching empty space should pan the
-                        // canvas (same as single-select mode),
-                        // not start a lasso — the user expects
-                        // to be able to navigate the canvas in
-                        // multi-select mode.
-                        lassoActive = true
-                        lassoStart = downPos
                     }
 
                     var transformMode = ImageTransformMode.NONE
@@ -8898,7 +8422,7 @@ private fun PockRefCanvas(
                                     )
                                     boxSelectDragging = false
                                     lassoActive = true
-                                    lassoStart = change.position
+                                    lassoBounds = expandLassoBounds(null, change.position)
                                 }
                             }
 
@@ -8937,7 +8461,7 @@ private fun PockRefCanvas(
                                     currentOnAction(PockRefAction.UpdateImageDrag(Offset(dragAmount.x, dragAmount.y)))
                                 }
                             } else if (boxSelectDragging && boxSelectStart != null) {
-                                val start = boxSelectStart!!
+                                val start = boxSelectStart
                                 val cur = change.position
                                 val left = minOf(start.x, cur.x)
                                 val top = minOf(start.y, cur.y)
@@ -8945,12 +8469,7 @@ private fun PockRefCanvas(
                                 val bottom = maxOf(start.y, cur.y)
                                 currentOnAction(PockRefAction.UpdateBoxSelectRect(RectF(left, top, right, bottom), cur))
                             } else if (lassoActive) {
-                                lassoStart = lassoStart?.let { ls ->
-                                    Offset(
-                                        minOf(ls.x, change.position.x),
-                                        minOf(ls.y, change.position.y),
-                                    )
-                                } ?: change.position
+                                lassoBounds = expandLassoBounds(lassoBounds, change.position)
                             } else {
                                 val panDelta = canvasPanDeltaForPointerCount(
                                     pointerCount = 1,
@@ -8992,9 +8511,6 @@ private fun PockRefCanvas(
                     if (transformStarted) {
                         currentOnAction(PockRefAction.EndSceneGesture)
                         transformStarted = false
-                        transformMode = ImageTransformMode.NONE
-                        initialZoom = 1f
-                        initialRotation = 0f
                         selectionHdRotationActive = false
                     }
 
@@ -9019,14 +8535,11 @@ private fun PockRefCanvas(
                     // next down.
                     if (cornerDragActive) {
                         currentOnAction(PockRefAction.EndSceneGesture)
-                        cornerDragActive = false
                         groupCornerDrag = null
                     }
 
                     if (rotationHandleDragActive) {
                         currentOnAction(PockRefAction.EndSceneGesture)
-                        rotationHandleDragActive = false
-                        rotationHandleDrag = null
                         selectionHdRotationActive = false
                     }
 
@@ -9150,7 +8663,7 @@ private fun PockRefCanvas(
                     // result in deselect.
                     if (isTap && lassoActive) {
                         lassoActive = false
-                        lassoStart = null
+                        lassoBounds = null
                     }
 
                     // V_NOW (2026-06-11): combine
@@ -9439,9 +8952,6 @@ private fun PockRefCanvas(
                         val editingGroupId = currentState.editingGroupId
                         if (editingGroupId != null) {
                             val group = currentState.groups.firstOrNull { it.id == editingGroupId }
-                            val members = currentState.images.filter { image ->
-                                group?.imageIds?.contains(image.id) == true
-                            }
                             val scale = currentState.canvasScale.coerceAtLeast(0.001f)
                             val canvasPoint = Offset(
                                 x = (downPos.x - size.width / 2f - currentState.canvasOffset.x) / scale,
@@ -9567,16 +9077,19 @@ private fun PockRefCanvas(
                     }
                     if (boxSelectDragging && boxSelectStart != null) {
                         currentOnAction(PockRefAction.CommitBoxSelect)
-                        boxSelectDragging = false
-                        boxSelectStart = null
                     }
-                    if (lassoActive && lassoStart != null) {
-                        val end = lassoStart!!
-                        val left = minOf(lassoStart!!.x, end.x)
-                        val top = minOf(lassoStart!!.y, end.y)
-                        val right = maxOf(lassoStart!!.x, end.x)
-                        val bottom = maxOf(lassoStart!!.y, end.y)
-                        currentOnAction(PockRefAction.LassoSelect(RectF(left, top, right, bottom)))
+                    val finalLassoBounds = lassoBounds
+                    if (lassoActive && finalLassoBounds != null) {
+                        currentOnAction(
+                            PockRefAction.LassoSelect(
+                                RectF(
+                                    finalLassoBounds.left,
+                                    finalLassoBounds.top,
+                                    finalLassoBounds.right,
+                                    finalLassoBounds.bottom,
+                                ),
+                            ),
+                        )
                     }
                 }
             }
@@ -9594,6 +9107,10 @@ private fun PockRefCanvas(
                 val edgeThresholdPx = 20f
                 val targetSwitchCooldownMs = 500L
 
+                // Single scope that loops until the coroutine is cancelled, so no
+                // events can fall between scopes; lint only sees the lambda's
+                // implicit return value.
+                @Suppress("ReturnFromAwaitPointerEventScope")
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -9708,8 +9225,8 @@ private fun PockRefCanvas(
         val viewRect = worldViewportRect(
             canvasOffset = renderCanvasOffset,
             canvasScale = state.canvasScale,
-            viewportWidth = size.width.toFloat(),
-            viewportHeight = size.height.toFloat(),
+            viewportWidth = size.width,
+            viewportHeight = size.height,
         )
 
         val groupByFirstMember = state.groups.mapNotNull { group ->
@@ -9934,30 +9451,36 @@ private fun PockRefCanvas(
         }
 
         if (state.markupVisible) {
-            state.markupStrokes.forEach { stroke ->
-                drawMarkupStroke(
-                    stroke = stroke,
-                    centerOffset = centerOffset,
-                    canvasScale = state.canvasScale,
-                    canvasOffset = renderCanvasOffset,
-                )
+            val strokes = state.markupStrokes.associateBy { it.id }
+            val texts = state.markupTexts.associateBy { it.id }
+            (state.markupStrokes.map { it.zOrder to it.id } + state.markupTexts.map { it.zOrder to it.id })
+                .sortedBy { it.first }.forEach { (_, id) ->
+                    strokes[id]?.let { drawMarkupStroke(it,centerOffset,state.canvasScale,renderCanvasOffset) }
+                    texts[id]?.let { drawMarkupText(it,centerOffset,state.canvasScale,renderCanvasOffset) }
+                }
+            state.draftMarkupStroke?.let { drawMarkupStroke(it,centerOffset,state.canvasScale,renderCanvasOffset) }
+            if (state.markupModeActive) markupSelectionBounds(state)?.let { bounds ->
+                drawRect(Color(0xFF2196F3),
+                    Offset(worldXToScreen(bounds.left,centerOffset,renderCanvasOffset,state.canvasScale), worldYToScreen(bounds.top,centerOffset,renderCanvasOffset,state.canvasScale)),
+                    Size(bounds.width.coerceAtLeast(1f)*state.canvasScale,bounds.height.coerceAtLeast(1f)*state.canvasScale),
+                    style = Stroke(width=2f))
+                if (state.markupTool == com.pockref.app.model.CanvasMarkupTool.SELECT) {
+                    markupHandlePositions(state).forEach { (handle, point) ->
+                        val screen = centerOffset + renderCanvasOffset + point*state.canvasScale
+                        if (handle == MarkupHandle.ROTATE) drawLine(Color(0xFF2196F3),
+                            centerOffset + renderCanvasOffset + Offset(bounds.center.x,bounds.top)*state.canvasScale, screen, 2f)
+                        drawCircle(Color.White, 7f, screen)
+                        drawCircle(Color(0xFF2196F3), 7f, screen, style=Stroke(width=2f))
+                    }
+                }
             }
-            state.draftMarkupStroke?.let { stroke ->
-                drawMarkupStroke(
-                    stroke = stroke,
-                    centerOffset = centerOffset,
-                    canvasScale = state.canvasScale,
-                    canvasOffset = renderCanvasOffset,
-                )
-            }
-            state.markupTexts.forEach { text ->
-                drawMarkupText(
-                    item = text,
-                    centerOffset = centerOffset,
-                    canvasScale = state.canvasScale,
-                    canvasOffset = renderCanvasOffset,
-                    isEditing = state.editingMarkupTextId == text.id,
-                )
+            if (state.markupLassoPoints.size > 1) {
+                val points = state.markupLassoPoints + state.markupLassoPoints.first()
+                points.zipWithNext().forEach { (a,b) ->
+                    drawLine(Color(0xFF2196F3),
+                        centerOffset + renderCanvasOffset + a*state.canvasScale,
+                        centerOffset + renderCanvasOffset + b*state.canvasScale, strokeWidth = 2f)
+                }
             }
         }
 
@@ -10030,97 +9553,31 @@ private fun DrawScope.worldYToScreen(worldY: Float, centerOffset: Offset, canvas
     centerOffset.y + canvasOffset.y + worldY * canvasScale
 
 private fun DrawScope.drawMarkupStroke(
-    stroke: CanvasMarkupStroke,
-    centerOffset: Offset,
-    canvasScale: Float,
-    canvasOffset: Offset,
+    stroke: CanvasMarkupStroke, centerOffset: Offset, canvasScale: Float, canvasOffset: Offset,
 ) {
     if (!stroke.isRenderable) return
-    val strokeWidth = (stroke.lineWidth * canvasScale).coerceAtLeast(1.5f)
-    val screenPoints = stroke.points.map { point ->
-        Offset(
-            worldXToScreen(point.x, centerOffset, canvasOffset, canvasScale),
-            worldYToScreen(point.y, centerOffset, canvasOffset, canvasScale),
-        )
+    drawIntoCanvas { target ->
+        val canvas = target.nativeCanvas
+        val save = canvas.save()
+        try {
+            canvas.translate(centerOffset.x+canvasOffset.x, centerOffset.y+canvasOffset.y)
+            canvas.scale(canvasScale,canvasScale)
+            SharedMarkupRenderer.drawStroke(canvas,stroke)
+        } finally { canvas.restoreToCount(save) }
     }
-    val first = screenPoints.firstOrNull() ?: return
-    val path = androidx.compose.ui.graphics.Path().apply {
-        moveTo(first.x, first.y)
-        if (screenPoints.size == 2) {
-            lineTo(screenPoints[1].x, screenPoints[1].y)
-        } else {
-            for (index in 1 until screenPoints.lastIndex) {
-                val current = screenPoints[index]
-                val next = screenPoints[index + 1]
-                val mid = (current + next) / 2f
-                quadraticBezierTo(current.x, current.y, mid.x, mid.y)
-            }
-            val last = screenPoints.last()
-            lineTo(last.x, last.y)
-        }
-    }
-    drawPath(
-        path = path,
-        color = stroke.color,
-        style = Stroke(
-            width = strokeWidth,
-            cap = StrokeCap.Round,
-            join = StrokeJoin.Round,
-        ),
-    )
 }
 
 private fun DrawScope.drawMarkupText(
-    item: CanvasMarkupText,
-    centerOffset: Offset,
-    canvasScale: Float,
-    canvasOffset: Offset,
-    isEditing: Boolean,
+    item: CanvasMarkupText, centerOffset: Offset, canvasScale: Float, canvasOffset: Offset,
 ) {
-    val text = item.text.trim()
-    if (text.isEmpty()) return
-    val x = worldXToScreen(item.position.x, centerOffset, canvasOffset, canvasScale)
-    val y = worldYToScreen(item.position.y, centerOffset, canvasOffset, canvasScale)
-    val textSize = (item.fontSize * canvasScale).coerceAtLeast(8f)
-    val bounds = markupTextScreenBounds(item, centerOffset, canvasOffset, canvasScale)
-    if (bounds != null) {
-        drawRoundRect(
-            color = Color.White.copy(alpha = 0.88f),
-            topLeft = bounds.topLeft,
-            size = bounds.size,
-            cornerRadius = CornerRadius(8f, 8f),
-        )
-        drawRoundRect(
-            color = item.color.copy(alpha = if (isEditing) 1f else 0.72f),
-            topLeft = bounds.topLeft,
-            size = bounds.size,
-            cornerRadius = CornerRadius(8f, 8f),
-            style = Stroke(width = if (isEditing) 4f else 2.5f),
-        )
-    }
-    drawIntoCanvas { canvas ->
-        val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.White.toArgb()
-            this.textSize = textSize
-            textAlign = Paint.Align.CENTER
-            style = Paint.Style.STROKE
-            strokeWidth = (textSize * 0.12f).coerceAtLeast(2f)
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        }
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = item.color.toArgb()
-            this.textSize = textSize
-            textAlign = Paint.Align.CENTER
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-        }
-        val lineHeight = textSize * 1.18f
-        val lines = text.lines().filter { it.isNotBlank() }
-        val firstBaseline = y - (lineHeight * (lines.size - 1) / 2f)
-        lines.forEachIndexed { index, line ->
-            val baseline = firstBaseline + index * lineHeight
-            canvas.nativeCanvas.drawText(line, x, baseline, outlinePaint)
-            canvas.nativeCanvas.drawText(line, x, baseline, paint)
-        }
+    drawIntoCanvas { target ->
+        val canvas = target.nativeCanvas
+        val save = canvas.save()
+        try {
+            canvas.translate(centerOffset.x+canvasOffset.x, centerOffset.y+canvasOffset.y)
+            canvas.scale(canvasScale,canvasScale)
+            SharedMarkupRenderer.drawText(canvas,item)
+        } finally { canvas.restoreToCount(save) }
     }
 }
 
@@ -10993,7 +10450,6 @@ private fun DrawScope.drawSceneImage(
         drawRotationHandleChrome(
             geometry = projectImageRotationHandleToScreen(
                 imageCenter = image.center + dragOffset,
-                imageWidth = image.displaySize.width * image.scale,
                 imageHeight = image.displaySize.height * image.scale,
                 rotationDegrees = image.rotationDegrees,
                 handleOffsetPx = ROTATION_HANDLE_OFFSET_DP.dp.toPx(),
@@ -11055,7 +10511,7 @@ private fun DrawScope.drawImageTiles(
         val drawn = if (posterizeLevels != null && posterizeCache != null) {
             val source = tile.asAndroidBitmap()
             val request = PosterizeRequest(posterizeLevels, image.colorAdjust)
-            val key = PosterizeCacheKey(
+            val posterizeKey = PosterizeCacheKey(
                 imageId = image.id,
                 sourceToken = posterizeSourceToken,
                 decodeLevel = 0,
@@ -11066,7 +10522,7 @@ private fun DrawScope.drawImageTiles(
                 saturationBits = image.colorAdjust.saturation.toBits(),
             )
             val fallback = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                posterizeCache.getOrRequest(key, source, request)
+                posterizeCache.getOrRequest(posterizeKey, source, request)
             } else null
             var result = false
             drawIntoCanvas { canvas ->
@@ -11149,9 +10605,8 @@ private fun DrawScope.drawGifMovieFrame(
         val fallback = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             posterizeCache.getOrRequest(key, frame, request, snapshotSource = true)
         } else null
-        var drawn = false
         drawIntoCanvas { canvas ->
-            drawn = PosterizeRenderer.drawBitmap(
+            val drawn = PosterizeRenderer.drawBitmap(
                 canvas = canvas.nativeCanvas,
                 source = frame,
                 sourceRect = android.graphics.Rect(0, 0, movieWidth, movieHeight),
@@ -11609,6 +11064,22 @@ internal fun computeEdgeAutoScroll(
     return Offset(dx, dy)
 }
 
+/**
+ * Grows the lasso's screen-space bounding box to include [point].
+ * `null` starts a new (zero-size) box at [point].
+ */
+internal fun expandLassoBounds(bounds: Rect?, point: Offset): Rect =
+    if (bounds == null) {
+        Rect(point, point)
+    } else {
+        Rect(
+            left = minOf(bounds.left, point.x),
+            top = minOf(bounds.top, point.y),
+            right = maxOf(bounds.right, point.x),
+            bottom = maxOf(bounds.bottom, point.y),
+        )
+    }
+
 internal fun canvasPanDeltaForPointerCount(
     pointerCount: Int,
     previousCentroid: Offset,
@@ -11965,7 +11436,7 @@ private fun buildColorFilter(adjust: ColorAdjust): ColorFilter? {
 
 @Composable
 private fun UnsavedChangesDialog(isSaving: Boolean, onAction: (PockRefAction) -> Unit) {
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = { if (!isSaving) onAction(PockRefAction.UnsavedDialogCancel) },
         title = { Text("未保存的更改") },
         text = {
@@ -12033,7 +11504,7 @@ private fun BatchOptimizeConfirmDialog(
     onConfirm: () -> Unit,
     onSkip: () -> Unit,
 ) {
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = {},
         title = { Text("图像优化") },
         text = {
@@ -12163,7 +11634,7 @@ private fun BatchOptimizeFailureDialog(
     onRetry: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("优化完成") },
         text = {
@@ -12200,7 +11671,7 @@ private fun RenameSceneDialog(
     onDismiss: () -> Unit,
 ) {
     var text by rememberSaveable(initialValue) { mutableStateOf(initialValue) }
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("重命名场景") },
         text = {
@@ -12256,7 +11727,7 @@ private fun SaveSceneNameDialog(
     onDismiss: () -> Unit,
 ) {
     var text by rememberSaveable(initialName) { mutableStateOf(initialName) }
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("保存场景") },
         text = {
@@ -12301,7 +11772,7 @@ private fun MarkupTextDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (isEditing) "编辑文本" else "添加文本") },
         text = {
@@ -12325,7 +11796,7 @@ private fun MarkupTextDialog(
                     Slider(
                         value = fontSize,
                         onValueChange = onFontSizeChange,
-                        valueRange = 24f..240f,
+                        valueRange = minOf(1f, fontSize)..maxOf(2000f, fontSize),
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -12353,44 +11824,24 @@ private fun MarkupModeBar(
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-        tonalElevation = 0.dp,
-        border = androidx.compose.foundation.BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-        ),
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TextButton(onClick = onCancel) {
-                Text("取消")
-            }
-            Row(
-                modifier = Modifier.padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Brush,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    text = "标记",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-            TextButton(onClick = onDone) {
-                Text("完成")
-            }
+        GlassSurface(shape = RoundedCornerShape(Dimens.ChromeCornerRadius)) {
+            ToolbarIconButton(
+                imageVector = Icons.Rounded.Close,
+                contentDescription = "不保存退出标记",
+                onClick = onCancel,
+            )
+        }
+        GlassSurface(shape = RoundedCornerShape(Dimens.ChromeCornerRadius)) {
+            ToolbarIconButton(
+                imageVector = Icons.Rounded.Check,
+                contentDescription = "完成标记",
+                onClick = onDone,
+            )
         }
     }
 }
@@ -12412,7 +11863,7 @@ private fun ExportDialogHost(
     } else {
         "导出选中的 $selectedCount 张图片"
     }
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(titleText) },
         text = {
@@ -12539,7 +11990,7 @@ private fun ExportCanvasDialogHost(
     val effectiveSceneName = sceneName.ifBlank {
         if (isSelectionExport) "selected-images" else "canvas"
     }
-    AlertDialog(
+    GlassAlertDialog(
         onDismissRequest = { onAction(PockRefAction.CancelExportCanvas) },
         title = { Text("导出画布") },
         text = {
@@ -12727,113 +12178,25 @@ private fun ExportCanvasDialogHost(
 
 
 /**
- * Bottom-right action panel — replaces the previous single-FAB
- * (just auto-layout). Now a unified Surface that holds a
- * vertical list of actions, matching the top toolbar's "always
- * visible anchor + on-demand action set" pattern.
- *
- * Visual states:
- *   - **Collapsed** (default): 44dp FAB at the bottom showing the
- *     auto-layout icon. Tap = run [PockRefAction.ExecuteAutoLayout];
- *     long-press = expand the panel to reveal the other 4 actions.
- *   - **Expanded**: 4 additional 44dp icon cells (box-select /
- *     settings / import / save) grow upward from the FAB via
- *     [expandVertically]. Every cell is the same size as the FAB
- *     so the panel reads as a 44dp-wide column of 5 squares
- *     stacked vertically. The FAB still runs auto-layout on tap;
- *     long-press now collapses the panel back to the 44dp FAB
- *     state.
- *
- * Auto-collapse: 3 seconds after the last pointer Enter/Press
- * inside the panel, fires [PockRefAction.SetBottomRightPanelExpanded(false)].
- * Same contract as the top toolbar (see [TopToolbar]) but with
- * no sub-panels to gate on — the timer only depends on
- * [isInteracting] and the current [state.bottomRightPanelExpanded].
- *
- * The whole panel sits at [Alignment.BottomEnd] with
- * [Dimens.CornerInset] (24dp) from the window edges, so the
- * bottom edge of the FAB sits at the same baseline as the
- * bottom-left minimap's bottom edge — the two bottom-corner
- * elements share the same 24dp inset by design.
+ * Always-expanded bottom-right action panel. All actions remain available
+ * while the canvas chrome is visible; idle time and long presses do not
+ * collapse the panel. Tapping the bottom cell still runs auto-layout.
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun BoxScope.BottomRightActionPanel(
-    state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
     onSaveScene: () -> Unit,
     onExportCanvas: () -> Unit,
+    bottomInset: Dp = Dimens.CornerInset,
+    settingsOpen: Boolean = false,
+    showLayerButton: Boolean = false,
+    onOpenLayers: () -> Unit = {},
 ) {
-    // V_NOW: same wall-clock polling pattern as the top toolbar.
-    // [lastInteractionMs] tracks the wall-clock timestamp of the
-    // last REAL interaction (Press / Move-with-pressed / Exit-
-    // with-pressed / Release-with-no-pressed). The hover-only
-    // events (Enter with no buttons, Exit with no buttons) DO
-    // NOT refresh the timestamp — that's the bug the old
-    // [isInteracting] pattern had: an S Pen just flying over
-    // the panel re-launched the auto-collapse effect on every
-    // Enter/Exit, cancelling the in-flight 3s delay so the
-    // panel never collapsed while the user was drawing. The
-    // polling loop reads [lastInteractionMs] via snapshot,
-    // so hover noise can't keep resetting the timer.
-    var lastInteractionMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(state.bottomRightPanelExpanded) {
-        if (state.bottomRightPanelExpanded) {
-            while (true) {
-                val elapsed = System.currentTimeMillis() - lastInteractionMs
-                if (elapsed >= 3000L) {
-                    onAction(PockRefAction.SetBottomRightPanelExpanded(false))
-                    break
-                }
-                val waitMs = (3000L - elapsed).coerceIn(100L, 1000L)
-                delay(waitMs)
-            }
-        }
-    }
-
-    Surface(
+    GlassSurface(
         modifier = Modifier
             .align(Alignment.BottomEnd)
-            .padding(end = Dimens.CornerInset, bottom = Dimens.CornerInset)
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        when (event.type) {
-                            PointerEventType.Press -> {
-                                lastInteractionMs = System.currentTimeMillis()
-                            }
-                            PointerEventType.Move -> {
-                                if (event.changes.any { it.pressed }) {
-                                    lastInteractionMs = System.currentTimeMillis()
-                                }
-                            }
-                            PointerEventType.Exit -> {
-                                // Pointer left the panel bounds.
-                                // If they were pressing (drag in
-                                // progress, e.g. dragging from a
-                                // list item to the canvas), keep
-                                // the countdown paused. If they
-                                // were NOT pressing (just an
-                                // unhover), ignore.
-                                if (event.changes.any { it.pressed }) {
-                                    lastInteractionMs = System.currentTimeMillis()
-                                }
-                            }
-                            else -> {
-                                // Release / others. If all
-                                // pointers are up, the gesture
-                                // ended — mark the start of the
-                                // idle countdown so the polling
-                                // loop sees a fresh "now".
-                                if (!event.changes.any { it.pressed }) {
-                                    lastInteractionMs = System.currentTimeMillis()
-                                }
-                            }
-                        }
-                    }
-                }
-            },
+            .padding(end = Dimens.CornerInset, bottom = bottomInset),
         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
         color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
         // V_NOW (2026-06-09 chrome unify): tonalElevation 从
@@ -12861,85 +12224,54 @@ private fun BoxScope.BottomRightActionPanel(
         ),
     ) {
         Column(
+            modifier = Modifier.verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.End,
         ) {
-            AnimatedVisibility(
-                visible = state.bottomRightPanelExpanded,
-                enter = expandVertically(
-                    animationSpec = tween(200, easing = FastOutSlowInEasing),
-                ),
-                exit = shrinkVertically(
-                    animationSpec = tween(200, easing = FastOutSlowInEasing),
-                ),
-            ) {
-                Column {
+            Column {
+                BottomPanelListItem(
+                    icon = Icons.Rounded.Brush,
+                    contentDescription = "标记",
+                    onClick = {
+                        onAction(PockRefAction.SetMarkupModeActive(true))
+                    },
+                )
+                if (showLayerButton) {
                     BottomPanelListItem(
-                        icon = Icons.Rounded.Brush,
-                        contentDescription = "标记",
-                        onClick = {
-                            onAction(PockRefAction.SetMarkupModeActive(true))
-                        },
-                    )
-                    BottomPanelListItem(
-                        icon = Icons.Rounded.TextFields,
-                        contentDescription = "添加文本",
-                        onClick = {
-                            onAction(PockRefAction.RequestMarkupText)
-                        },
-                    )
-                    // 1. Settings — dispatches
-                    //    [PockRefAction.SetSettingsSheetOpen(true)]
-                    //    which the reducer applies to
-                    //    [PockRefUiState.settingsSheetOpen]. The
-                    //    [SettingsPanel] ModalBottomSheet (rendered
-                    //    at the [PockRefApp] level) reads that field
-                    //    and shows itself. This is the same state
-                    //    the top toolbar's gear button (when
-                    //    restored) will drive, so both entry points
-                    //    open the same sheet instance.
-                    BottomPanelListItem(
-                        icon = Icons.Rounded.Settings,
-                        contentDescription = "Settings",
-                        onClick = {
-                            onAction(PockRefAction.SetSettingsSheetOpen(true))
-                        },
-                    )
-                    // 4. Export canvas — export the entire
-                    //    canvas as a single PNG with
-                    //    transparent background.
-                    BottomPanelListItem(
-                        icon = Icons.Rounded.Image,
-                        contentDescription = "Export canvas",
-                        onClick = {
-                            onExportCanvas()
-                        },
-                    )
-                    // 5. Save — same handler as the top
-                    //    toolbar's Save button.
-                    BottomPanelListItem(
-                        icon = Icons.Rounded.Save,
-                        contentDescription = "Save scene",
-                        onClick = {
-                            onSaveScene()
-                        },
+                        icon = Icons.Rounded.Layers,
+                        contentDescription = "打开图层窗口",
+                        onClick = onOpenLayers,
                     )
                 }
+                // The same settings button opens and closes the non-modal popup.
+                BottomPanelListItem(
+                    icon = Icons.Rounded.Settings,
+                    contentDescription = "Settings",
+                    onClick = {
+                        onAction(PockRefAction.SetSettingsSheetOpen(!settingsOpen))
+                    },
+                )
+                // 4. Export canvas — export the entire
+                //    canvas as a single PNG with
+                //    transparent background.
+                BottomPanelListItem(
+                    icon = Icons.Rounded.Image,
+                    contentDescription = "Export canvas",
+                    onClick = {
+                        onExportCanvas()
+                    },
+                )
+                // 5. Save — same handler as the top
+                //    toolbar's Save button.
+                BottomPanelListItem(
+                    icon = Icons.Rounded.Save,
+                    contentDescription = "Save scene",
+                    onClick = {
+                        onSaveScene()
+                    },
+                )
             }
-            // Always-visible FAB — the panel's anchor.
-            // Gesture contract:
-            //   - **Tap** = always run auto-layout (the FAB's
-            //     primary action, same in both states).
-            //   - **Long-press** = toggle the panel's
-            //     expanded state.
-            //
-            // Size: pinned to [Dimens.BottomPanelChromeSize]
-            // (48dp) so the FAB satisfies the M3 minimum touch
-            // target (WCAG 2.5.5 Level AAA). The 4 expandable
-            // ListItems above also use [Dimens.BottomPanelChromeSize]
-            // so the column still reads as 5 identical squares
-            // stacked vertically (just one notch larger than the
-            // pre-P0-fix 44dp).
-            //
+            // Auto-layout is the panel's permanent bottom cell. Long presses
+            // have no expansion/collapse behavior.
             // V_NOW (user feedback "右下角的一键排版按钮为什
             // 么并不是和顶栏一个颜色"): the previous design
             // used [primaryContainer] (the M3 "filled FAB"
@@ -13002,28 +12334,17 @@ private fun BoxScope.BottomRightActionPanel(
                     // [BottomPanelListItem]) — "only the
                     // OUTER ring" on the whole panel, no
                     // internal grid lines.
-                    .background(
-                        color = MaterialTheme.colorScheme.surface
-                            .copy(alpha = Dimens.ChromeSurfaceAlpha),
-                        shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-                    )
+                    .background(Color.Transparent, RoundedCornerShape(Dimens.ChromeCornerRadius))
                     .background(
                         color = fabStateLayer,
                         shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
                     )
                     .hoverable(interactionSource = fabInteractionSource)
-                    .combinedClickable(
+                    .clickable(
                         interactionSource = fabInteractionSource,
                         indication = LocalIndication.current,
                         onClick = {
                             onAction(PockRefAction.ExecuteAutoLayout)
-                        },
-                        onLongClick = {
-                            onAction(
-                                PockRefAction.SetBottomRightPanelExpanded(
-                                    !state.bottomRightPanelExpanded,
-                                ),
-                            )
                         },
                     ),
                 contentAlignment = Alignment.Center,
@@ -13169,12 +12490,12 @@ private fun BoxScope.MarkupVisibilityButton(
         modifier = Modifier
             .align(Alignment.TopEnd)
             .padding(
-                top = statusBarTopDp + Dimens.CornerInset,
-                end = if (hasLockButton) {
-                    Dimens.CornerInset + Dimens.BottomPanelChromeSize + 8.dp
+                top = statusBarTopDp + Dimens.CornerInset + if (hasLockButton) {
+                    Dimens.BottomPanelChromeSize + 8.dp
                 } else {
-                    Dimens.CornerInset
+                    0.dp
                 },
+                end = Dimens.CornerInset,
             )
             .size(Dimens.BottomPanelChromeSize)
             .border(
@@ -13182,10 +12503,7 @@ private fun BoxScope.MarkupVisibilityButton(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
             )
-            .background(
-                color = MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-            )
+            .glassMaterial(RoundedCornerShape(Dimens.ChromeCornerRadius))
             .background(
                 color = stateLayer,
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
@@ -13250,17 +12568,13 @@ private fun BoxScope.GlobalLockButton(
                 },
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
             )
-            .background(
-                color = MaterialTheme.colorScheme.surface
-                    .copy(alpha = Dimens.ChromeSurfaceAlpha),
-                shape = RoundedCornerShape(Dimens.ChromeCornerRadius),
-            )
+            .glassMaterial(RoundedCornerShape(Dimens.ChromeCornerRadius))
             .background(
                 color = when {
                     state.lockCanvasFrozen ->
-                        MaterialTheme.colorScheme.errorContainer
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
                     state.globalImageLock ->
-                        MaterialTheme.colorScheme.primaryContainer
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
                     else -> Color.Transparent
                 },
                 shape = RoundedCornerShape(Dimens.ChromeCornerRadius),

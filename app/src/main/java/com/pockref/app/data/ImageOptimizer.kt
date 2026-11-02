@@ -7,6 +7,8 @@ import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Build
 import android.util.Log
+import androidx.core.graphics.get
+import androidx.core.graphics.scale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -425,7 +427,6 @@ class ImageOptimizer(private val context: Context) {
     fun retryFailed(
         originalTasks: List<BatchTask>,
         config: OptimizeConfig = saveOptimizeConfig(),
-        concurrency: Int = 1,
         onItemComplete: (OptimizeResult) -> Unit = {},
         onProgress: (BatchProgress) -> Unit = {},
         onComplete: (BatchProgress) -> Unit = {},
@@ -588,7 +589,7 @@ class ImageOptimizer(private val context: Context) {
             val scale = config.maxLongSide.toFloat() / maxOf(decoded.width, decoded.height).toFloat()
             val newW = (decoded.width * scale).toInt().coerceAtLeast(1)
             val newH = (decoded.height * scale).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(decoded, newW, newH, true).also {
+            decoded.scale(newW, newH, filter = true).also {
                 if (it !== decoded) decoded.recycle()
             }
         } else decoded
@@ -628,7 +629,6 @@ class ImageOptimizer(private val context: Context) {
         mimeType: String,
         config: OptimizeConfig = saveOptimizeConfig(),
     ): OptimizeResult {
-        val t0 = System.nanoTime()
         val originalSize = imageBytes.size
 
         if (originalSize < config.minCompressThreshold) {
@@ -661,7 +661,6 @@ class ImageOptimizer(private val context: Context) {
             )
         }
 
-        val t1 = System.nanoTime()
         val decoded = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }) ?: return OptimizeResult(
@@ -672,7 +671,6 @@ class ImageOptimizer(private val context: Context) {
             originalSize = originalSize,
             optimizedSize = originalSize,
         )
-        val t2 = System.nanoTime()
 
         val imageType = classifyImage(decoded, mimeType)
         val hasAlpha = hasTransparency(decoded)
@@ -680,7 +678,6 @@ class ImageOptimizer(private val context: Context) {
         val quality = chooseQuality(imageType, outputFormat, config)
 
         val compressed = compressBitmap(decoded, outputFormat, quality)
-        val t3 = System.nanoTime()
 
         val finalBytes = if (compressed.size >= originalSize) {
             if (originalSize > config.maxCompressTarget) {
@@ -691,7 +688,6 @@ class ImageOptimizer(private val context: Context) {
         } else {
             compressed
         }
-        val t4 = System.nanoTime()
 
         val result = OptimizeResult(
             bytes = finalBytes,
@@ -703,8 +699,6 @@ class ImageOptimizer(private val context: Context) {
         )
 
         decoded.recycle()
-
-        val elapsed = (t4 - t0) / 1_000_000
 
         return result
     }
@@ -747,7 +741,7 @@ class ImageOptimizer(private val context: Context) {
         if (step >= width && step >= height) {
             // Sample size >= image: just probe one corner pixel via the
             // batch path; calling getPixels for a 1x1 lookup is wasted work.
-            return Color.alpha(bitmap.getPixel(0, 0)) < 255
+            return Color.alpha(bitmap[0, 0]) < 255
         }
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)

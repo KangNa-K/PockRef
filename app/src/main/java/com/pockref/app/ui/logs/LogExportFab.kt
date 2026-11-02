@@ -1,5 +1,7 @@
 package com.pockref.app.ui.logs
 
+import com.pockref.app.ui.glassMaterial
+
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.pockref.app.R
@@ -74,6 +77,9 @@ fun LogExportFab(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    // Configuration-aware resources for toast strings (Compose lint
+    // LocalContextGetResourceValueCall).
+    val resources = LocalResources.current
     val appLabel = remember(context) {
         try {
             context.applicationInfo.loadLabel(context.packageManager).toString()
@@ -107,14 +113,14 @@ fun LogExportFab(
             onSuccess = {
                 Toast.makeText(
                     context,
-                    context.getString(R.string.log_export_toast_success, name ?: ""),
+                    resources.getString(R.string.log_export_toast_success, name ?: ""),
                     Toast.LENGTH_LONG,
                 ).show()
             },
             onFailure = { t ->
                 Toast.makeText(
                     context,
-                    context.getString(
+                    resources.getString(
                         R.string.log_export_toast_write_failed,
                         t.message ?: t::class.java.simpleName,
                     ),
@@ -132,9 +138,7 @@ fun LogExportFab(
         modifier = modifier
             .size(Dimens.BottomPanelChromeSize)
             .clip(RoundedCornerShape(Dimens.ChromeCornerRadius))
-            .background(
-                MaterialTheme.colorScheme.surface.copy(alpha = Dimens.ChromeSurfaceAlpha),
-            )
+            .glassMaterial(RoundedCornerShape(Dimens.ChromeCornerRadius))
             .border(
                 1.dp,
                 MaterialTheme.colorScheme.outlineVariant,
@@ -184,7 +188,7 @@ fun LogExportFab(
             val msg = (state as LogExportState.Error).message
             Toast.makeText(
                 context,
-                context.getString(R.string.log_export_toast_build_failed, msg),
+                resources.getString(R.string.log_export_toast_build_failed, msg),
                 Toast.LENGTH_LONG,
             ).show()
             delay(1500L)

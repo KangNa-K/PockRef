@@ -180,7 +180,7 @@ sealed interface PockRefAction {
       val backgroundMode: com.pockref.app.model.ExportCanvasBackgroundMode,
       val imageIds: Set<String>? = null,
   ) : PockRefAction
-    data class UpdateCanvasViewport(val width: Float, val height: Float) : PockRefAction
+    data class UpdateCanvasViewport(val width: Float, val height: Float, val originInWindow: Offset? = null) : PockRefAction
     data class ImportImages(val uris: List<Uri>) : PockRefAction
     /**
      * Import an image from the system clipboard. The ViewModel
@@ -660,6 +660,7 @@ sealed interface PockRefAction {
     data class SetBackgroundColor(val color: Color) : PockRefAction
     data class ShowBackgroundPicker(val show: Boolean) : PockRefAction
     data class SetThemeMode(val mode: ThemeMode) : PockRefAction
+    data class SetFrostedGlassEnabled(val enabled: Boolean) : PockRefAction
     /**
      * Acknowledge the most recent UiError after the Snackbar has been displayed.
      * The UI fires this when the snackbar is dismissed so the VM can clear
@@ -675,7 +676,7 @@ sealed interface PockRefAction {
 
     data class SetDragOver(val isOver: Boolean) : PockRefAction
 
-    data class DropImages(val uris: List<Uri>, val dragPermission: android.view.DragAndDropPermissions? = null) : PockRefAction
+    data class DropImages(val uris: List<Uri>, val dragPermission: android.view.DragAndDropPermissions? = null, val positionInWindow: Offset? = null) : PockRefAction
 
     data class SetTopToolbarExpanded(val expanded: Boolean) : PockRefAction
 
@@ -821,6 +822,12 @@ sealed interface PockRefAction {
     data object RestoreMenuBarsOnFocus : PockRefAction
 
     data class SetMarkupModeActive(val active: Boolean) : PockRefAction
+    data class SetMarkupTool(val tool: com.pockref.app.model.CanvasMarkupTool) : PockRefAction
+    data class SetMarkupColor(val color: androidx.compose.ui.graphics.Color) : PockRefAction
+    data class SetMarkupWidth(val width: Float) : PockRefAction
+    data object DeleteSelectedMarkup : PockRefAction
+    data object DuplicateSelectedMarkup : PockRefAction
+    data class TransformSelectedMarkup(val scale: Float = 1f, val rotation: Float = 0f) : PockRefAction
     data class BeginMarkupStroke(val point: Offset) : PockRefAction
     data class UpdateMarkupStroke(val point: Offset) : PockRefAction
     data object CommitMarkupStroke : PockRefAction
