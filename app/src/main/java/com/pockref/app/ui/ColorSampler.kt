@@ -84,15 +84,8 @@ internal fun BoxScope.ColorSamplerOverlay(
     panelBounds: Rect? = null,
     onClose: () -> Unit,
 ) {
-    Canvas(Modifier.fillMaxSize().testTag("color-sampler-marker")) {
-        if (sample != null && lens == null) {
-            val point = sample.screenPosition
-            drawCircle(Color.Black.copy(alpha = 0.72f), radius = 17.dp.toPx(), center = point)
-            drawCircle(Color.White, radius = 13.dp.toPx(), center = point, style = Stroke(2.dp.toPx()))
-            drawCircle(Color(sample.argb), radius = 7.dp.toPx(), center = point)
-            drawCircle(Color.Black, radius = 7.dp.toPx(), center = point, style = Stroke(1.dp.toPx()))
-        }
-        if (lens != null && bitmap != null) {
+    if (lens != null && bitmap != null) {
+        Canvas(Modifier.fillMaxSize().testTag("color-sampler-lens")) {
             val diameter = 128.dp.toPx().coerceAtMost(size.width).coerceAtMost(size.height)
             val center = colorSamplerLensCenter(lens.point, size, diameter, 24.dp.toPx(), 8.dp.toPx())
             val outer = diameter / 2f - 1.dp.toPx()

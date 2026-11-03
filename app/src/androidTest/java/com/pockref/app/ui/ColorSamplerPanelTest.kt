@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -51,6 +52,31 @@ class ColorSamplerPanelTest {
             assertEquals("#408020", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
             assertEquals(null, sample)
         }
+    }
+
+    @Test fun releasingPickerRemovesLensButKeepsPanel() {
+        val image = SceneImage(
+            id = "image", name = "image", mimeType = "image/png", intrinsicWidth = 100,
+            intrinsicHeight = 100, center = Offset.Zero, displaySize = Size2D(100f, 100f),
+        )
+        val sample = ColorSample("image", Offset(100f, 100f), 0, 0, 0xff408020.toInt(), 100f, 0.75f, 0.5f, 1f, "#408020")
+        var lens by mutableStateOf<ColorSamplerLens?>(
+            ColorSamplerLens(image, sample.screenPosition,
+                ColorSamplerMath.PreviewGeometry(Offset(100f, 100f), 100f, 100f), false),
+        )
+        val bitmap = ImageBitmap(100, 100)
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.fillMaxSize()) {
+                    ColorSamplerOverlay(sample, lens, bitmap, onClose = {})
+                }
+            }
+        }
+
+        compose.onNodeWithTag("color-sampler-lens").assertExists()
+        compose.runOnIdle { lens = null }
+        compose.onNodeWithTag("color-sampler-lens").assertDoesNotExist()
+        compose.onNodeWithTag("color-sampler-panel").assertExists()
     }
 
     @Test fun hoverPanelMatchesSelectionPanelBoundsAndRemainsClickable() {
