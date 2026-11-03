@@ -93,6 +93,8 @@ class SceneImageDecoder(
         private const val DISK_CACHE_VERSION = 2
         private const val DISK_CACHE_DIR = "image_decode_cache"
         private const val DISK_CACHE_MAX_BYTES = 64L * 1024 * 1024 // 64MB
+        private const val ORIGINAL_SAMPLE_TILE_EDGE = 256
+        private const val ORIGINAL_SAMPLE_CACHE_TILES = 6
     }
 
     // ── File reference management ──────────────────────────────────
@@ -138,6 +140,10 @@ class SceneImageDecoder(
         tileSourceKey = null
         tileSourceBytes = null
         regionDecoders.clear()
+        synchronized(originalSampleTiles) {
+            originalSampleTiles.values.forEach { it.recycle() }
+            originalSampleTiles.clear()
+        }
     }
 
     // ── BitmapRegionDecoder pool ───────────────────────────────────
@@ -149,6 +155,21 @@ class SceneImageDecoder(
     private val regionDecoders = ConcurrentHashMap<DecoderKey, BitmapRegionDecoder>()
 
     private data class DecoderKey(val offset: Int, val length: Int)
+
+    private data class OriginalSampleTileKey(
+        val imageId: String,
+        val sourceIdentity: Int,
+        val offset: Int,
+        val length: Int,
+        val column: Int,
+        val row: Int,
+    )
+
+    private val originalSampleTiles = LinkedHashMap<OriginalSampleTileKey, Bitmap>(
+        ORIGINAL_SAMPLE_CACHE_TILES,
+        0.75f,
+        true,
+    )
 
     // `image` stays in the signature so re-enabling the pool only touches the body.
     @Suppress("UNUSED_PARAMETER")
@@ -365,6 +386,91 @@ class SceneImageDecoder(
             }
         } catch (e: Exception) {
             Log.w(TAG, "Tile decode failed for ${image.name}", e)
+            null
+        } finally {
+            decoder.recycle()
+        }
+    }
+
+    /** Reads one exact pixel from the original source, never from a display LOD. */
+    internal fun sampleOriginalPixel(image: SceneImage, sourceX: Int, sourceY: Int): Int? {
+        if (sourceX !in 0 until image.intrinsicWidth || sourceY !in 0 until image.intrinsicHeight) {
+            return null
+        }
+        if (image.mimeType.equals("image/gif", ignoreCase = true)) return null
+
+        val column = sourceX / ORIGINAL_SAMPLE_TILE_EDGE
+        val row = sourceY / ORIGINAL_SAMPLE_TILE_EDGE
+        val sourceIdentity = if (image.imageBytes.isNotEmpty()) {
+            System.identityHashCode(image.imageBytes)
+        } else {
+            sourceFingerprint.hashCode()
+        }
+        val key = OriginalSampleTileKey(
+            imageId = image.id,
+            sourceIdentity = sourceIdentity,
+            offset = image.imageByteOffset,
+            length = image.imageByteLength,
+            column = column,
+            row = row,
+        )
+        synchronized(originalSampleTiles) {
+            val cached = originalSampleTiles[key]
+            if (cached != null && !cached.isRecycled) {
+                return cached.getPixel(sourceX % ORIGINAL_SAMPLE_TILE_EDGE, sourceY % ORIGINAL_SAMPLE_TILE_EDGE)
+            }
+            if (cached != null) originalSampleTiles.remove(key)
+        }
+
+        val tile = decodeOriginalSampleTile(image, column, row) ?: return null
+        synchronized(originalSampleTiles) {
+            val existing = originalSampleTiles[key]
+            if (existing != null && !existing.isRecycled) {
+                tile.recycle()
+                return existing.getPixel(sourceX % ORIGINAL_SAMPLE_TILE_EDGE, sourceY % ORIGINAL_SAMPLE_TILE_EDGE)
+            }
+            originalSampleTiles[key] = tile
+            while (originalSampleTiles.size > ORIGINAL_SAMPLE_CACHE_TILES) {
+                val eldest = originalSampleTiles.entries.iterator().next()
+                originalSampleTiles.remove(eldest.key)
+                if (!eldest.value.isRecycled) eldest.value.recycle()
+            }
+            return tile.getPixel(sourceX % ORIGINAL_SAMPLE_TILE_EDGE, sourceY % ORIGINAL_SAMPLE_TILE_EDGE)
+        }
+    }
+
+    private fun decodeOriginalSampleTile(image: SceneImage, column: Int, row: Int): Bitmap? {
+        val bytes = tileSourceBytesFor(image) ?: return null
+        val left = column * ORIGINAL_SAMPLE_TILE_EDGE
+        val top = row * ORIGINAL_SAMPLE_TILE_EDGE
+        val decoder = try {
+            @Suppress("DEPRECATION")
+            BitmapRegionDecoder.newInstance(bytes, 0, bytes.size, false)
+        } catch (error: Exception) {
+            Log.w(TAG, "Original pixel sampler cannot decode ${image.name}", error)
+            return null
+        }
+        return try {
+            if (left >= decoder.width || top >= decoder.height ||
+                decoder.width != image.intrinsicWidth || decoder.height != image.intrinsicHeight
+            ) {
+                null
+            } else {
+                decoder.decodeRegion(
+                    Rect(
+                        left,
+                        top,
+                        minOf(left + ORIGINAL_SAMPLE_TILE_EDGE, decoder.width),
+                        minOf(top + ORIGINAL_SAMPLE_TILE_EDGE, decoder.height),
+                    ),
+                    BitmapFactory.Options().apply {
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                        inMutable = false
+                    },
+                )
+            }
+        } catch (error: Exception) {
+            Log.w(TAG, "Original pixel tile decode failed for ${image.name}", error)
             null
         } finally {
             decoder.recycle()

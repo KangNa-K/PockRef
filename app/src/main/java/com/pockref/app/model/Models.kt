@@ -48,6 +48,20 @@ data class SceneImage(
     val showsOriginalResolution: Boolean = false,
 )
 
+/** Transient original-pixel sample; deliberately excluded from scene data. */
+data class ColorSample(
+    val imageId: String,
+    val screenPosition: Offset,
+    val sourceX: Int,
+    val sourceY: Int,
+    val argb: Int,
+    val hue: Float,
+    val saturation: Float,
+    val value: Float,
+    val alpha: Float,
+    val rgbHex: String,
+)
+
 /** A flat, non-destructive group of canvas images. */
 data class SceneGroup(
     val id: String = UUID.randomUUID().toString(),
@@ -1325,6 +1339,7 @@ data class PockRefUiState(
     val hoveredImageId: String? = null,
     val hoverPointScreen: Offset? = null,
     val hoverPreviewImageId: String? = null,
+    val colorSample: ColorSample? = null,
     val isDragOver: Boolean = false,
     val topToolbarExpanded: Boolean = true,
     /**

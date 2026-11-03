@@ -1570,6 +1570,7 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.SetHover -> setHover(action.imageId, action.position)
             PockRefAction.ClearHover -> clearHover()
             is PockRefAction.SetHoverPreview -> setHoverPreview(action.imageId)
+            is PockRefAction.SetColorSample -> setColorSample(action.sample)
             is PockRefAction.SetDragOver -> setDragOver(action.isOver)
             is PockRefAction.DropImages -> sceneController.dropImages(action.uris, action.dragPermission, action.positionInWindow)
             is PockRefAction.SetTopToolbarExpanded -> setTopToolbarExpanded(action.expanded)
@@ -1695,6 +1696,12 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             } else {
                 current.copy(hoverPreviewImageId = imageId)
             }
+        }
+    }
+
+    internal fun setColorSample(sample: com.pockref.app.model.ColorSample?) {
+        _uiState.update { current ->
+            if (current.colorSample == sample) current else current.copy(colorSample = sample)
         }
     }
 

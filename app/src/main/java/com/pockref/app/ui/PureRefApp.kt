@@ -227,6 +227,7 @@ import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -313,6 +314,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -345,6 +347,7 @@ import com.pockref.app.model.ColorAdjust
 import com.pockref.app.ui.theme.Dimens
 import com.pockref.app.model.CropAspect
 import com.pockref.app.model.CropRect
+import com.pockref.app.model.ColorSample
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.model.SceneGroup
 import com.pockref.app.model.groupContaining
@@ -854,7 +857,11 @@ fun PockRefApp(
     // above the top toolbar / minimap / FAB. Both the
     // canvas (in case the in-canvas draw path is still
     // hit) and the overlay read the same state.
-    val isHoveringImage = state.hoverPreviewImageId != null && !state.markupModeActive
+    val pinnedHoverPreview = remember { mutableStateOf<PinnedHoverPreview?>(null) }
+    val colorSamplerLens = remember { mutableStateOf<ColorSamplerLens?>(null) }
+    val colorPanelBounds = remember { mutableStateOf<Rect?>(null) }
+    var colorOverlayOrigin by remember { mutableStateOf(Offset.Zero) }
+    val isHoveringImage = (state.hoverPreviewImageId != null || pinnedHoverPreview.value != null) && !state.markupModeActive
     val hoverProgress by animateFloatAsState(
         targetValue = if (isHoveringImage) 1f else 0f,
         animationSpec = tween(durationMillis = 350, easing = { t -> 1f - (1f - t) * (1f - t) }),
@@ -867,6 +874,9 @@ fun PockRefApp(
     // decode pipeline (LaunchedEffects) flow through to
     // the overlay's read on the next recomposition.
     val canvasBitmapCache = remember { mutableStateMapOf<String, Pair<Int, ImageBitmap>>() }
+    val activeHoverImageId = pinnedHoverPreview.value?.imageId ?: state.hoverPreviewImageId
+    val colorPanelAboveHover = activeHoverImageId != null && hoverProgress > 0f &&
+        canvasBitmapCache.containsKey(activeHoverImageId) && colorPanelBounds.value != null
     val canvasBitmapWorkingSet = remember { CanvasBitmapWorkingSet() }
     val canvasTileCache = remember {
         mutableStateMapOf<com.pockref.app.data.ImageTileKey, ImageBitmap>()
@@ -1438,6 +1448,11 @@ fun PockRefApp(
                 onLayerPanelExpandedChange = { layerPanelExpanded = it },
                 state = state,
                 onAction = onAction,
+                hoverProgress = hoverProgress,
+                pinnedHoverPreview = pinnedHoverPreview,
+                colorSamplerLens = colorSamplerLens,
+                colorPanelBounds = colorPanelBounds,
+                colorPanelAboveHover = colorPanelAboveHover,
                 // [BottomRightActionPanel] is rendered as a
                 // separate sibling of this [BoxWithConstraints]
                 // below, so [CanvasPanel] stays focused on canvas
@@ -2004,7 +2019,19 @@ fun PockRefApp(
                 state = state,
                 bitmapCache = canvasBitmapCache,
                 posterizeCache = posterizeCache,
-                progress = hoverProgress,
+                progress = pinnedHoverPreview.value?.progress ?: hoverProgress,
+                pinnedImageId = pinnedHoverPreview.value?.imageId,
+            )
+        }
+        Box(modifier = Modifier.fillMaxSize().onGloballyPositioned { colorOverlayOrigin = it.positionInWindow() }) {
+            ColorSamplerOverlay(
+                sample = state.colorSample,
+                lens = colorSamplerLens.value,
+                bitmap = colorSamplerLens.value?.let { canvasBitmapCache[it.image.id]?.second },
+                showPanel = !chromePolicy.showSelectionPanel || colorPanelAboveHover,
+                panelBounds = colorPanelBounds.value?.takeIf { chromePolicy.showSelectionPanel && colorPanelAboveHover }
+                    ?.translate(-colorOverlayOrigin),
+                onClose = { onAction(PockRefAction.SetColorSample(null)) },
             )
         }
         updateController?.let {
@@ -2024,6 +2051,11 @@ fun PockRefApp(
     private fun CanvasPanel(
     state: PockRefUiState,
     onAction: (PockRefAction) -> Unit,
+    hoverProgress: Float,
+    pinnedHoverPreview: MutableState<PinnedHoverPreview?>,
+    colorSamplerLens: MutableState<ColorSamplerLens?>,
+    colorPanelBounds: MutableState<Rect?>,
+    colorPanelAboveHover: Boolean,
     modifier: Modifier = Modifier,
     imageLazyLoader: com.pockref.app.data.PurFileParser? = null,
     layerPanelBottomInset: Dp = Dimens.CornerInset,
@@ -2083,6 +2115,9 @@ fun PockRefApp(
                 enabled = state.isCanvasOpen && state.practiceState == null,
             ),
             onAction = onAction,
+            hoverProgress = hoverProgress,
+            pinnedHoverPreview = pinnedHoverPreview,
+            colorSamplerLens = colorSamplerLens,
             imageDecoder = imageDecoder,
             bitmapCache = canvasBitmapCache,
             bitmapWorkingSet = canvasBitmapWorkingSet,
@@ -2259,6 +2294,8 @@ fun PockRefApp(
                     gifPlaybackSources = gifPlaybackSources,
                     gifPlaybackStates = gifPlaybackStates,
                     selectedGifPlaybackImageId = selectedGifPlaybackImageId,
+                    colorPanelBounds = colorPanelBounds,
+                    colorPanelAboveHover = colorPanelAboveHover,
                 )
                 // V_NOW (2026-06-08 速写练习 commit 3):
                 // full-screen practice view. Renders only
@@ -2696,8 +2733,13 @@ internal fun SelectionBottomSheet(
     gifPlaybackStates: androidx.compose.runtime.snapshots.SnapshotStateMap<String, GifPlaybackState>,
     selectedGifPlaybackImageId: String?,
     onChromeHeightChanged: (Dp) -> Unit = {},
+    colorPanelBounds: MutableState<Rect?>? = null,
+    colorPanelAboveHover: Boolean = false,
 ) {
     val density = LocalDensity.current
+    DisposableEffect(colorPanelBounds) {
+        onDispose { colorPanelBounds?.value = null }
+    }
     val selectedCount = state.selectedImageIds.size
     if (selectedCount == 0 && state.editingGroupId == null) return
     val selectedGroups = state.selectedGroups
@@ -2944,6 +2986,17 @@ internal fun SelectionBottomSheet(
                     onLevelClick = { levels ->
                         onAction(PockRefAction.TogglePosterizeLevel(levels))
                     },
+                )
+            }
+            state.colorSample?.let { sample ->
+                ColorSamplerPanel(
+                    sample = sample,
+                    modifier = Modifier.onGloballyPositioned { colorPanelBounds?.value = it.boundsInWindow() }
+                        .then(
+                            if (colorPanelAboveHover) Modifier.graphicsLayer(alpha = 0f).clearAndSetSemantics { }
+                            else Modifier,
+                        ),
+                    onClose = { onAction(PockRefAction.SetColorSample(null)) },
                 )
             }
             SheetModeToggle(
@@ -6133,6 +6186,9 @@ private fun PockRefCanvas(
     state: PockRefUiState,
     modifier: Modifier = Modifier,
     onAction: (PockRefAction) -> Unit,
+    hoverProgress: Float,
+    pinnedHoverPreview: MutableState<PinnedHoverPreview?>,
+    colorSamplerLens: MutableState<ColorSamplerLens?>,
     imageDecoder: com.pockref.app.data.SceneImageDecoder? = null,
     // V2: bitmap cache lifted from this function to
     // [PockRefApp] so the sibling [HoverMagnifierOverlay]
@@ -6274,9 +6330,11 @@ private fun PockRefCanvas(
     // - Disk cache for thumbnails (WebP, 64MB)
     // - Zoom-aware decode ladder (128→256→512→1024→2048→4096)
     // - Streaming callbacks (no awaitAll blocking)
-    val pipeline = remember(imageDecoder) {
-        val decoder = imageDecoder ?: com.pockref.app.data.SceneImageDecoder(null)
-        com.pockref.app.data.ImageDecodePipeline(decoder)
+    val sourcePixelDecoder = remember(imageDecoder) {
+        imageDecoder ?: com.pockref.app.data.SceneImageDecoder(null)
+    }
+    val pipeline = remember(sourcePixelDecoder) {
+        com.pockref.app.data.ImageDecodePipeline(sourcePixelDecoder)
     }
     val tilePipeline = remember(imageDecoder) {
         imageDecoder?.let { decoder ->
@@ -6287,6 +6345,18 @@ private fun PockRefCanvas(
     }
 
     val currentState by rememberUpdatedState(state)
+    val currentHoverProgress by rememberUpdatedState(hoverProgress)
+    val colorSamplerScope = rememberCoroutineScope()
+    val colorSampleRequestSerial = remember { mutableLongStateOf(0L) }
+    val colorSampleJob = remember { mutableStateOf<Job?>(null) }
+    val colorLongPressJob = remember { mutableStateOf<Job?>(null) }
+    DisposableEffect(colorSampleJob, colorLongPressJob) {
+        onDispose {
+            colorSampleJob.value?.cancel()
+            colorLongPressJob.value?.cancel()
+            colorSamplerLens.value = null
+        }
+    }
     DisposableEffect(pipeline) {
         pipeline.onBitmapReady = { imageId, level, bitmap ->
             val current = bitmapCache[imageId]
@@ -6303,6 +6373,15 @@ private fun PockRefCanvas(
     }
 
     val currentOnAction by rememberUpdatedState(onAction)
+    fun clearColorSample() {
+        colorSamplerLens.value = null
+        colorSampleRequestSerial.longValue += 1L
+        colorSampleJob.value?.cancel()
+        colorSampleJob.value = null
+        colorLongPressJob.value?.cancel()
+        colorLongPressJob.value = null
+        currentOnAction(PockRefAction.SetColorSample(null))
+    }
     val panCoalescer = remember { CanvasPanFrameCoalescer() }
     val panFrameRequests = remember { Channel<Unit>(Channel.CONFLATED) }
     var canvasPanPresentationOffset by remember { mutableStateOf<Offset?>(null) }
@@ -6916,6 +6995,7 @@ private fun PockRefCanvas(
                     // select / drag images behind the overlay.
                     if (currentState.cropImageId != null) return@awaitEachGesture
                     val downPos = down.position
+                    if (currentState.colorSample != null) clearColorSample()
                     val downTime = System.currentTimeMillis()
                     val s = currentState
                     // V_NOW (user feedback "P0-A1 阈值按 density
@@ -7099,6 +7179,97 @@ private fun PockRefCanvas(
                         }
                     }
                     val hitId = hitTestImage(s, downPos, Size(size.width.toFloat(), size.height.toFloat()))
+                    // Shared with the existing multi-select long-press path;
+                    // color sampling also owns the gesture after its delay.
+                    var longPressFired = false
+                    var colorSamplerActive = false
+                    var colorSamplerCompleted = false
+                    var colorSamplerCandidateActive = false
+                    var colorSamplerImageId: String? = null
+                    var latestColorSamplerPosition = downPos
+                    var lastColorSamplerPosition: Offset? = null
+                    val previewImage = s.hoverPreviewImageId?.let { id ->
+                        s.images.firstOrNull { it.id == id && bitmapCache.containsKey(id) }
+                    }
+                    val previewGeometry = previewImage?.let {
+                        ColorSamplerMath.hoverPreviewGeometry(
+                            it, Size(size.width.toFloat(), size.height.toFloat()),
+                            s.canvasOffset, s.canvasScale, currentHoverProgress,
+                        )
+                    }
+
+                    fun requestOriginalColorSample(imageId: String, point: Offset) {
+                        val snapshot = currentState
+                        val image = snapshot.images.firstOrNull { it.id == imageId } ?: return
+                        val sourcePixel = if (previewGeometry != null && imageId == previewImage.id && pinnedHoverPreview.value != null) {
+                            ColorSamplerMath.sourcePixelForHoverPreview(image, point, previewGeometry)
+                        } else {
+                            ColorSamplerMath.sourcePixelForScreenPoint(
+                                image = image,
+                                screenPoint = point,
+                                viewportSize = Size(size.width.toFloat(), size.height.toFloat()),
+                                canvasOffset = snapshot.canvasOffset,
+                                canvasScale = snapshot.canvasScale,
+                            )
+                        }
+                        val currentSample = snapshot.colorSample
+                        if (sourcePixel == null) {
+                            colorSamplerLens.value = null
+                            if (currentSample?.imageId == imageId) {
+                                currentOnAction(
+                                    PockRefAction.SetColorSample(currentSample.copy(screenPosition = point)),
+                                )
+                            }
+                            return
+                        }
+                        val isPreview = previewGeometry != null && imageId == previewImage.id && pinnedHoverPreview.value != null
+                        val geometry = if (isPreview) previewGeometry else ColorSamplerMath.PreviewGeometry(
+                            center = Offset(
+                                size.width / 2f + snapshot.canvasOffset.x + image.center.x * snapshot.canvasScale,
+                                size.height / 2f + snapshot.canvasOffset.y + image.center.y * snapshot.canvasScale,
+                            ),
+                            width = image.displaySize.width * image.scale * snapshot.canvasScale,
+                            height = image.displaySize.height * image.scale * snapshot.canvasScale,
+                        )
+                        colorSamplerLens.value = ColorSamplerLens(image, point, geometry, isPreview)
+                        if (lastColorSamplerPosition == point) return
+                        lastColorSamplerPosition = point
+                        val serial = colorSampleRequestSerial.longValue + 1L
+                        colorSampleRequestSerial.longValue = serial
+                        colorSampleJob.value?.cancel()
+                        colorSampleJob.value = colorSamplerScope.launch {
+                            val argb = withContext(Dispatchers.IO) {
+                                sourcePixelDecoder.sampleOriginalPixel(image, sourcePixel.x, sourcePixel.y)
+                            } ?: return@launch
+                            if (serial != colorSampleRequestSerial.longValue) return@launch
+                            val values = ColorSamplerMath.fromArgb(argb)
+                            currentOnAction(
+                                PockRefAction.SetColorSample(
+                                    ColorSample(
+                                        imageId = imageId,
+                                        screenPosition = point,
+                                        sourceX = sourcePixel.x,
+                                        sourceY = sourcePixel.y,
+                                        argb = argb,
+                                        hue = values.hue,
+                                        saturation = values.saturation,
+                                        value = values.value,
+                                        alpha = values.alpha,
+                                        rgbHex = values.rgbHex,
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+
+                    fun startColorSampler(point: Offset) {
+                        val imageId = colorSamplerImageId ?: return
+                        if (!colorSamplerCandidateActive || colorSamplerActive) return
+                        colorSamplerCandidateActive = false
+                        colorSamplerActive = true
+                        longPressFired = true
+                        requestOriginalColorSample(imageId, point)
+                    }
 
                     var activeDragImageId: String? = null
                     // Separate the "image the user tapped"
@@ -7163,14 +7334,6 @@ private fun PockRefCanvas(
                     var rotationHandleDragActive = false
                     val rotationHandleOffsetPx = with(density) { ROTATION_HANDLE_OFFSET_DP.dp.toPx() }
                     val rotationHandleHitRadiusPx = with(density) { ROTATION_HANDLE_HIT_RADIUS_DP.dp.toPx() }
-                    // V_NOW: long-press on a selected image in
-                    // multi-select mode triggers the
-                    // SelectionBottomSheet. Track whether the
-                    // long-press has already fired for this
-                    // gesture so it doesn't re-fire on
-                    // subsequent move events.
-                    var longPressFired = false
-
                     // S Pen button binding. The side button on the
                     // Galaxy Tab S Pen reports as `PointerType.Stylus`
                     // with `event.buttons.isSecondaryPressed == true`
@@ -7209,6 +7372,69 @@ private fun PockRefCanvas(
                         firstEvent.buttons.isSecondaryPressed ||
                             firstEvent.buttons.isTertiaryPressed
                     )
+                    if (
+                        !stylusButtonDown && previewImage != null &&
+                        previewGeometry != null &&
+                        !previewImage.mimeType.equals("image/gif", ignoreCase = true) &&
+                        isGestureEnabled(s.gestureToggles, GestureId.COLOR_PICKER) &&
+                        ColorSamplerMath.sourcePixelForHoverPreview(previewImage, downPos, previewGeometry) != null
+                    ) {
+                        pinnedHoverPreview.value = PinnedHoverPreview(previewImage.id, currentHoverProgress)
+                        colorSamplerImageId = previewImage.id
+                        colorSamplerCandidateActive = true
+                        colorLongPressJob.value?.cancel()
+                        colorLongPressJob.value = colorSamplerScope.launch {
+                            delay(500L)
+                            startColorSampler(latestColorSamplerPosition)
+                        }
+                        try {
+                            while (true) {
+                                val changes = awaitPointerEvent(PointerEventPass.Main).changes
+                                val change = changes.firstOrNull { it.id == down.id } ?: break
+                                if (changes.count { it.pressed } > 1) {
+                                    colorSamplerLens.value = null
+                                    colorSampleRequestSerial.longValue += 1L
+                                    colorSampleJob.value?.cancel()
+                                    currentOnAction(PockRefAction.SetColorSample(null))
+                                    changes.forEach { it.consume() }
+                                    break
+                                }
+                                latestColorSamplerPosition = change.position
+                                if (!colorSamplerActive && (change.position - downPos).getDistance() >= tapMaxDragPx) {
+                                    colorSamplerCandidateActive = false
+                                    colorLongPressJob.value?.cancel()
+                                }
+                                if (colorSamplerActive) requestOriginalColorSample(previewImage.id, change.position)
+                                change.consume()
+                                if (!change.pressed) break
+                            }
+                        } finally {
+                            colorSamplerCandidateActive = false
+                            colorLongPressJob.value?.cancel()
+                            colorSamplerLens.value = null
+                            pinnedHoverPreview.value = null
+                        }
+                        return@awaitEachGesture
+                    }
+                    if (
+                        hitId != null &&
+                        s.images.firstOrNull { it.id == hitId }
+                            ?.mimeType?.equals("image/gif", ignoreCase = true) != true &&
+                        !s.multiSelectMode &&
+                        !s.boxSelectMode &&
+                        !stylusButtonDown &&
+                        isGestureEnabled(s.gestureToggles, GestureId.COLOR_PICKER)
+                    ) {
+                        colorSamplerCandidateActive = true
+                        colorSamplerImageId = hitId
+                        colorLongPressJob.value?.cancel()
+                        colorLongPressJob.value = colorSamplerScope.launch {
+                            delay(500L)
+                            if (colorSamplerCandidateActive && !colorSamplerActive) {
+                                startColorSampler(latestColorSamplerPosition)
+                            }
+                        }
+                    }
                     // V2 debug: the user reported the S Pen
                     // side button "doesn't fire" — i.e. the
                     // BOX/MULTI/SINGLE transition doesn't
@@ -7583,6 +7809,11 @@ private fun PockRefCanvas(
                         }
                     }
 
+                    if (groupCornerDrag != null || rotationHandleDrag != null || boxSelectDragging) {
+                        colorSamplerCandidateActive = false
+                        colorLongPressJob.value?.cancel()
+                    }
+
                     if (rotationHandleDrag != null) {
                         // Rotation handle owns this gesture; the move loop below
                         // turns pointer angle deltas into TransformSelectedImage.
@@ -7736,6 +7967,11 @@ private fun PockRefCanvas(
                         val changes = event.changes
                         val pointerCount = changes.size
 
+                        if (pointerCount > 1 && colorSamplerCandidateActive) {
+                            colorSamplerCandidateActive = false
+                            colorLongPressJob.value?.cancel()
+                        }
+
                         // Update multi-finger-tap tracking. We
                         // also need to detect movement in events
                         // that don't go through the single-finger
@@ -7761,11 +7997,51 @@ private fun PockRefCanvas(
                             maxSingleFingerDistancePx = maxOf(maxSingleFingerDistancePx, distance)
                         }
 
+                        changes.firstOrNull { it.id == down.id }?.let { primaryChange ->
+                            latestColorSamplerPosition = primaryChange.position
+                        }
+                        if (
+                            colorSamplerCandidateActive &&
+                            maxSingleFingerDistancePx >= tapMaxDragPx
+                        ) {
+                            colorSamplerCandidateActive = false
+                            colorLongPressJob.value?.cancel()
+                        }
+                        if (
+                            colorSamplerCandidateActive &&
+                            System.currentTimeMillis() - downTime >= 500L
+                        ) {
+                            startColorSampler(latestColorSamplerPosition)
+                        }
+                        if (colorSamplerActive && pointerCount > 1) {
+                            colorSamplerLens.value = null
+                            colorSamplerActive = false
+                            colorSamplerCompleted = false
+                            colorSampleRequestSerial.longValue += 1L
+                            colorSampleJob.value?.cancel()
+                            currentOnAction(PockRefAction.SetColorSample(null))
+                        } else if (colorSamplerActive && pointerCount == 1) {
+                            val change = changes.firstOrNull { it.id == down.id }
+                            if (change != null) {
+                                latestColorSamplerPosition = change.position
+                                colorSamplerImageId?.let { imageId ->
+                                    requestOriginalColorSample(imageId, change.position)
+                                }
+                                if (!change.pressed) {
+                                    colorSamplerLens.value = null
+                                    colorSamplerActive = false
+                                    colorSamplerCompleted = true
+                                }
+                                change.consume()
+                                continue
+                            }
+                        }
+
                         if (
                             shouldSkipFrozenCanvasPointerWork(
                                 canvasFrozen = currentState.lockCanvasFrozen,
                                 hasPressedPointers = changes.any { it.pressed },
-                            )
+                            ) && !colorSamplerActive
                         ) {
                             changes.forEach { it.consume() }
                             continue
@@ -8498,6 +8774,14 @@ private fun PockRefCanvas(
                         }
                     } while (changes.any { it.pressed })
 
+                    colorLongPressJob.value?.cancel()
+                    colorSamplerLens.value = null
+                    colorSamplerCandidateActive = false
+                    if (colorSamplerCompleted) {
+                        autoScrollEligibleState.value = false
+                        return@awaitEachGesture
+                    }
+
                     // Gesture ended — drop the auto-scroll
                     // flag so the worker idles even if the
                     // pointer happens to still be in the edge
@@ -9101,6 +9385,7 @@ private fun PockRefCanvas(
                 var lastTargetSwitchTime = 0L
                 var lastTargetId: String? = null
                 var previewActiveId: String? = null
+                var clearPreviewJob: Job? = null
 
                 val triggerDelayMs = 300L
                 val speedThresholdPxPerSec = 500f
@@ -9122,10 +9407,24 @@ private fun PockRefCanvas(
                         when (event.type) {
                             PointerEventType.Enter,
                             PointerEventType.Move -> {
+                                clearPreviewJob?.cancel()
                                 val pos = hoverChange.position
                                 val now = System.currentTimeMillis()
                                 val s = currentState
                                 val viewportSize = Size(size.width.toFloat(), size.height.toFloat())
+                                val activePreview = previewActiveId?.let { id -> s.images.firstOrNull { it.id == id } }
+                                val activeGeometry = activePreview?.let {
+                                    ColorSamplerMath.hoverPreviewGeometry(
+                                        it, viewportSize, s.canvasOffset, s.canvasScale, currentHoverProgress,
+                                    )
+                                }
+                                if (activePreview != null && activeGeometry != null &&
+                                    ColorSamplerMath.sourcePixelForHoverPreview(activePreview, pos, activeGeometry) != null
+                                ) {
+                                    lastHoverPos = pos
+                                    lastHoverTime = now
+                                    continue
+                                }
                                 val hitId = hitTestImage(s, pos, viewportSize)
 
                                 currentOnAction(PockRefAction.SetHover(hitId, pos))
@@ -9199,8 +9498,14 @@ private fun PockRefCanvas(
                                 hoverCandidateStartTime = 0L
                                 lastTargetId = null
                                 if (previewActiveId != null) {
-                                    previewActiveId = null
-                                    currentOnAction(PockRefAction.SetHoverPreview(null))
+                                    clearPreviewJob?.cancel()
+                                    clearPreviewJob = colorSamplerScope.launch {
+                                        delay(150L)
+                                        if (pinnedHoverPreview.value == null) {
+                                            previewActiveId = null
+                                            currentOnAction(PockRefAction.SetHoverPreview(null))
+                                        }
+                                    }
                                 }
                             }
                             else -> { }
@@ -10657,15 +10962,18 @@ private fun DrawScope.drawGifMovieFrame(
  * doesn't add a permanent transparent layer on top of
  * the chrome.
  */
+private data class PinnedHoverPreview(val imageId: String, val progress: Float)
+
 @Composable
 private fun BoxScope.HoverMagnifierOverlay(
     state: PockRefUiState,
     bitmapCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Pair<Int, ImageBitmap>>,
     posterizeCache: PosterizeBitmapCache,
     progress: Float,
+    pinnedImageId: String?,
 ) {
     if (progress <= 0f) return
-    val hoveredId = state.hoverPreviewImageId
+    val hoveredId = pinnedImageId ?: state.hoverPreviewImageId
     if (hoveredId == null) return
     val hoveredImage = state.images.firstOrNull { it.id == hoveredId } ?: return
     val cachedBitmap = bitmapCache[hoveredImage.id]?.second ?: return
@@ -10676,19 +10984,13 @@ private fun BoxScope.HoverMagnifierOverlay(
         // the magnifier math is screen-space and the
         // overlay covers the same area as the main
         // canvas did.
-        val centerOffset = Offset(size.width / 2f, size.height / 2f)
-        val imageScreenCenter = Offset(
-            x = centerOffset.x + state.canvasOffset.x + hoveredImage.center.x * state.canvasScale,
-            y = centerOffset.y + state.canvasOffset.y + hoveredImage.center.y * state.canvasScale,
-        )
-        val imageScreenW = hoveredImage.displaySize.width * hoveredImage.scale * state.canvasScale
-        val imageScreenH = hoveredImage.displaySize.height * hoveredImage.scale * state.canvasScale
+        val geometry = ColorSamplerMath.hoverPreviewGeometry(
+            hoveredImage, size, state.canvasOffset, state.canvasScale, progress,
+        ) ?: return@Canvas
         drawHoverMagnifier(
             image = hoveredImage,
             bitmap = cachedBitmap,
-            imageScreenCenter = imageScreenCenter,
-            imageScreenWidth = imageScreenW,
-            imageScreenHeight = imageScreenH,
+            geometry = geometry,
             progress = progress,
             posterizeLevels = state.posterizeLevelsFor(hoveredImage.id),
             posterizeCache = posterizeCache,
@@ -10809,9 +11111,7 @@ private fun DrawScope.drawGroupSelectionChrome(
 private fun DrawScope.drawHoverMagnifier(
     image: SceneImage,
     bitmap: ImageBitmap,
-    imageScreenCenter: Offset,
-    imageScreenWidth: Float,
-    imageScreenHeight: Float,
+    geometry: ColorSamplerMath.PreviewGeometry,
     progress: Float,
     posterizeLevels: Int? = null,
     posterizeCache: PosterizeBitmapCache? = null,
@@ -10833,101 +11133,10 @@ private fun DrawScope.drawHoverMagnifier(
         )
     }
 
-    // Viewport budget: stay within 90% of the window. [vpW] / [vpH] and the
-    // image's [intrinsicWidth] / [intrinsicHeight] are both in pixels, so the
-    // budget stays dimensionally consistent without needing to factor in
-    // [density]. (Earlier we multiplied by [density] here, but on a 2x DPI
-    // panel that made the budget 1.8× the viewport and the magnifier
-    // overflowed the window. The [density] parameter is still threaded
-    // through to the signature for future use but is not part of the budget.)
-    val maxW = vpW * 0.9f
-    val maxH = vpH * 0.9f
-    val insetW = (vpW - maxW) / 2f
-    val insetH = (vpH - maxH) / 2f
-
-    // Smart adaptive zoom: aim to fill at least [minFillRatio] of the
-    // viewport (so the user always sees a recognisable image, never a
-    // postage-stamp), but never downscale (clamp to 1.0) and never
-    // upscale beyond [maxZoom]. The final size is the zoomed image size,
-    // then scaled-to-fit if it would still exceed the window. We derive
-    // [idealW] / [idealH] from the *viewport* (not [maxW]) so the
-    // [minFillRatio] is "X% of what the user can see", independent of the
-    // 0.9 inset.
-    val intrinsicW = image.intrinsicWidth.toFloat().coerceAtLeast(1f)
-    val intrinsicH = image.intrinsicHeight.toFloat().coerceAtLeast(1f)
-    val maxZoom = 3.5f
-    val minFillRatio = 0.5f
-    val idealW = vpW * minFillRatio
-    val idealH = vpH * minFillRatio
-    val zoomToFillW = idealW / intrinsicW
-    val zoomToFillH = idealH / intrinsicH
-    val requiredZoom = maxOf(zoomToFillW, zoomToFillH)
-    val appliedZoom = requiredZoom.coerceIn(1.0f, maxZoom)
-    val zoomedW = intrinsicW * appliedZoom
-    val zoomedH = intrinsicH * appliedZoom
-    val scaleToFit = minOf(maxW / zoomedW, maxH / zoomedH, 1.0f)
-    val baseTargetW = (zoomedW * scaleToFit).coerceAtLeast(1f)
-    val baseTargetH = (zoomedH * scaleToFit).coerceAtLeast(1f)
-
-    // A rotated rectangle's axis-aligned bounding box is larger than the
-    // rectangle itself by a factor up to (|cos θ| + |sin θ|), which reaches
-    // √2 ≈ 1.414 at 45°. The [scaleToFit] above only bounds the unrotated
-    // image; we have to shrink further so the *rotated* image still fits the
-    // viewport. Otherwise the rotated corners spill out of the white
-    // magnifier box (and past the window edge).
-    val rotRad = image.rotationDegrees.toDouble() * (PI / 180.0)
-    val absCos = abs(cos(rotRad).toFloat())
-    val absSin = abs(sin(rotRad).toFloat())
-    val rotBboxW = baseTargetW * absCos + baseTargetH * absSin
-    val rotBboxH = baseTargetW * absSin + baseTargetH * absCos
-    val rotScale = minOf(
-        if (rotBboxW > maxW) maxW / rotBboxW else 1f,
-        if (rotBboxH > maxH) maxH / rotBboxH else 1f,
-        1f,
-    )
-    val targetW = (baseTargetW * rotScale).coerceAtLeast(1f)
-    val targetH = (baseTargetH * rotScale).coerceAtLeast(1f)
-
-    // The white box needs to contain the *rotated* image, not the unrotated
-    // image. The image is drawn at (targetW, targetH), then rotated; the
-    // rotated AABB is (targetW*|cos| + targetH*|sin|, targetW*|sin| +
-    // targetH*|cos|). Make the box exactly that size and center the image
-    // inside it — the rotated corners now land on the box edges, not past
-    // them.
-    val boxW = targetW * absCos + targetH * absSin
-    val boxH = targetW * absSin + targetH * absCos
-
-    val originW = imageScreenWidth.coerceAtLeast(1f)
-    val originH = imageScreenHeight.coerceAtLeast(1f)
-
-    val currentW = originW + (targetW - originW) * eased
-    val currentH = originH + (targetH - originH) * eased
-    val currentBoxW = boxW * eased
-    val currentBoxH = boxH * eased
-
-    var centerX = imageScreenCenter.x
-    var centerY = imageScreenCenter.y
-
-    val leftBound = currentBoxW / 2f + insetW
-    val rightBound = vpW - currentBoxW / 2f - insetW
-    val topBound = currentBoxH / 2f + insetH
-    val bottomBound = vpH - currentBoxH / 2f - insetH
-    // Floating-point: when [currentBoxW] lands a few ULPs above [maxW] the
-    // bounds can invert (leftBound > rightBound), and Kotlin's [coerceIn]
-    // throws on an inverted range. Swap defensively so the clamp is always
-    // well-defined.
-    centerX = centerX.coerceIn(minOf(leftBound, rightBound), maxOf(leftBound, rightBound))
-    centerY = centerY.coerceIn(minOf(topBound, bottomBound), maxOf(topBound, bottomBound))
-
-    val magnifierLeft = centerX - currentBoxW / 2f
-    val magnifierTop = centerY - currentBoxH / 2f
-
-    // Center the image inside the (rotated-AABB-sized) box.
-    val imgOffsetX = (currentBoxW - currentW) / 2f
-    val imgOffsetY = (currentBoxH - currentH) / 2f
-
-    translate(magnifierLeft, magnifierTop) {
-        translate(imgOffsetX, imgOffsetY) {
+    val currentW = geometry.width
+    val currentH = geometry.height
+    translate(geometry.center.x - currentW / 2f, geometry.center.y - currentH / 2f) {
+        translate(0f, 0f) {
             rotate(image.rotationDegrees, pivot = Offset(currentW / 2f, currentH / 2f)) {
                 scale(
                     scaleX = if (image.flipX) -1f else 1f,
@@ -11429,7 +11638,7 @@ private fun resolveGifBytes(
     }
 }
 
-private fun buildColorFilter(adjust: ColorAdjust): ColorFilter? {
+internal fun buildColorFilter(adjust: ColorAdjust): ColorFilter? {
     val matrix = buildColorMatrix(adjust) ?: return null
     return ColorFilter.colorMatrix(ColorMatrix(matrix))
 }

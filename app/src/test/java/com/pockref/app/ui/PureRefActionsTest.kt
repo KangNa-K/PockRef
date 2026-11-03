@@ -179,7 +179,9 @@ class PockRefActionsTest {
     // 2026-10-25: +5 markup tool/style/delete/transform actions.
     // 2026-10-25: +1 SetFrostedGlassEnabled appearance preference.
     // Added DuplicateSelectedMarkup for the selection reuse button.
-    private val expectedVariantCount: Int = 202
+    // 2026-11-03: 202 → 203 — added transient SetColorSample for
+    // original-pixel color picking; it is not persisted in scene data.
+    private val expectedVariantCount: Int = 203
 
     private fun directSubclasses(): List<Class<out PockRefAction>> {
         val permitted = PockRefAction::class.java.permittedSubclasses

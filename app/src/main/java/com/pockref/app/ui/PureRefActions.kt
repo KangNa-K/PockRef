@@ -11,6 +11,7 @@ import com.pockref.app.model.BackgroundPreset
 import com.pockref.app.model.CropAspect
 import com.pockref.app.data.ThemeMode
 import com.pockref.app.model.CropRect
+import com.pockref.app.model.ColorSample
 import com.pockref.app.model.PracticeConfig
 import com.pockref.app.model.PracticePhase
 import com.pockref.app.model.SettingsTab
@@ -674,6 +675,8 @@ sealed interface PockRefAction {
 
     data class SetHoverPreview(val imageId: String?) : PockRefAction
 
+    data class SetColorSample(val sample: ColorSample?) : PockRefAction
+
     data class SetDragOver(val isOver: Boolean) : PockRefAction
 
     data class DropImages(val uris: List<Uri>, val dragPermission: android.view.DragAndDropPermissions? = null, val positionInWindow: Offset? = null) : PockRefAction
@@ -1169,9 +1172,9 @@ sealed interface PockRefAction {
  * used both in [com.pockref.app.model.PockRefUiState.gestureToggles]
  * (Map<String, Boolean>) and in the persisted
  * [com.pockref.app.data.AppPreferences.disabledGestureIds]
- * (Set<String>). The 7 entries correspond to the 7 multi-touch
- * / compound gestures that have a UI toggle — single-finger drag
- * is the simplest, three-finger tap is the most complex
+ * (Set<String>). The entries correspond to every gesture with a UI
+ * toggle, including image movement, canvas movement, multi-touch
+ * gestures, and original-pixel color picking.
  * (the earlier "three-finger double-tap → reset transform"
  * toggle was removed in 2026-06).
  */
@@ -1183,10 +1186,11 @@ object GestureId {
     const val TWO_FINGER_TAP = "twoFingerTap"
     const val THREE_FINGER_TAP = "threeFingerTap"
     const val DOUBLE_TAP_EMPTY = "doubleTapEmpty"
+    const val COLOR_PICKER = "colorPicker"
     val ALL: List<String> = listOf(
         MOVE_IMAGE, SINGLE_FINGER_PAN, PINCH_ZOOM, PINCH_ROTATE,
         TWO_FINGER_TAP, THREE_FINGER_TAP,
-        DOUBLE_TAP_EMPTY,
+        DOUBLE_TAP_EMPTY, COLOR_PICKER,
     )
 
     /** Human-readable label for the settings panel. */
@@ -1198,6 +1202,7 @@ object GestureId {
         TWO_FINGER_TAP -> "双指点击(撤销)"
         THREE_FINGER_TAP -> "三指点击(重做)"
         DOUBLE_TAP_EMPTY -> "双击空白(适应窗口)"
+        COLOR_PICKER -> "长按图片取色"
         else -> id
     }
 }

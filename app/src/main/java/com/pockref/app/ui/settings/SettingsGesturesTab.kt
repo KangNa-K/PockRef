@@ -15,7 +15,7 @@ import com.pockref.app.ui.GestureId
 import com.pockref.app.ui.PockRefAction
 
 /**
- * Static grouping of the7 [GestureId]s into3 sub-categories
+ * Static grouping of the8 [GestureId]s into3 sub-categories
  * (gesture tab visual hierarchy). Mirrors Procreate's
  * "Gestures → [Zoom / Rotate / Edit]"3-bucket layout so users
  * coming from Procreate find the toggle they want without
@@ -47,16 +47,17 @@ private val gestureGroupSpecs: List<GestureGroupSpec> = listOf(
  GestureId.TWO_FINGER_TAP,
  GestureId.THREE_FINGER_TAP,
  GestureId.DOUBLE_TAP_EMPTY,
+ GestureId.COLOR_PICKER,
  ),
  ),
 )
 
 /**
- * "手势" tab —7 per-gesture on/off switches grouped into
+ * "手势" tab —8 per-gesture on/off switches grouped into
  *缩放 /旋转 /编辑 sub-categories. Each group has a small
  * section header (titleSmall, onSurfaceVariant) so the visual
  * rhythm reads as "3 buckets of1-4 toggles" rather than a single
- * flat list of7. Uses [LazyColumn] for lazy composition.
+ * flat list of8. Uses [LazyColumn] for lazy composition.
  */
 @Composable
 internal fun SettingsGesturesTab(
@@ -110,5 +111,6 @@ private fun gestureSubtitle(id: String, isOn: Boolean): String = when (id) {
  GestureId.TWO_FINGER_TAP -> if (isOn) "撤销" else "已关闭"
  GestureId.THREE_FINGER_TAP -> if (isOn) "重做" else "已关闭"
  GestureId.DOUBLE_TAP_EMPTY -> if (isOn) "适应窗口" else "已关闭"
+ GestureId.COLOR_PICKER -> if (isOn) "长按图片读取原图颜色" else "已关闭"
  else -> if (isOn) "已启用" else "已关闭"
 }
