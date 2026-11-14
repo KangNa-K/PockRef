@@ -22,6 +22,9 @@ release.keystore
 .mavis/
 .superpowers/
 
+# Local agent instructions
+/AGENTS.md
+
 # OS
 .DS_Store
 Thumbs.db
@@ -43,7 +46,7 @@ hs_err_pid*
 # Kotlin
 .kotlin/
 
-# Python (for the build_patch.py utility in docs/)
+# Python caches
 __pycache__/
 *.pyc
 *.pyo

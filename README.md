@@ -72,7 +72,7 @@ app/src/main/java/com/pockref/app/
 app/src/test/           本地单元测试
 app/src/androidTest/    设备端测试
 benchmark/             性能测试
-docs/                  设计记录与发布说明
+docs/                  发布流程说明
 ```
 
 ## 反馈与贡献
