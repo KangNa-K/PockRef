@@ -6,6 +6,13 @@ local.properties
 keystore.properties
 keystore 2.properties
 release.keystore
+*.keystore
+*.jks
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
 
 # IDE
 .idea/
@@ -13,6 +20,7 @@ release.keystore
 .trae/
 .opencode/
 .mavis/
+.superpowers/
 
 # OS
 .DS_Store

@@ -2,9 +2,10 @@
 
 The Android client reads `update/version.json` from the public
 `KangNa-K/PockRef-updates` repository's `main` branch. A Release asset named
-`pockref-X.Y.Z.apk` contains the signed APK. The source repository `PockRef`
-is private; never push its Git history, source files, or signing keys to
-`PockRef-updates`. Publish the asset before pointing the manifest to it. Do
+`pockref-X.Y.Z.apk` contains the signed APK. The source repository is
+`KangNa-K/PockRef`; keep `PockRef-updates` dedicated to update manifests and
+release assets. Never publish signing keys or signing properties in either
+repository. Publish the asset before pointing the manifest to it. Do
 not replace an asset after publishing its ID in the manifest: GitHub assigns
 a new ID on reupload.
 
@@ -14,7 +15,7 @@ a new ID on reupload.
 2. Verify that `apksigner verify --print-certs` reports the same signing
    certificate as the installed release. Never upload the keystore or
    `keystore.properties`.
-3. Commit the implementation to the **private** source repository, copy the
+3. Commit the implementation to the source repository, copy the
    exact built APK to `pockref-X.Y.Z.apk`, then publish it with
    `gh release create release-X.Y.Z /path/to/pockref-X.Y.Z.apk --repo KangNa-K/PockRef-updates --target main --title "PockRef X.Y.Z" --notes-file CHANGELOG_X.Y.Z.md`.
    The `#label` suffix accepted by `gh release create` does **not** rename the
@@ -33,8 +34,9 @@ a new ID on reupload.
    and `releaseUrl`.
    Never publish an unverified APK URL or a hash placeholder.
 
-Versions up to and including 2.2.6 still point to the now-private source
-repository, so users must manually install the 2.2.7 migration APK. Future
+Versions up to and including 2.2.6 point to the source repository, which was
+private when updates moved to `PockRef-updates`. Users of those versions should
+manually install a current APK from `PockRef-updates`. Future
 updates can use the in-app button in Settings > General.
 
 ## Foreground update flow
