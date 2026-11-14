@@ -183,13 +183,15 @@ class AutoSaveManager internal constructor(
         try {
             val sceneHash = computeSceneHash(scene)
             val lastHash = prefs.getString(KEY_LAST_CONTENT_HASH, null)
+            val destination = currentSceneUri?.toString()
+            val backupFile = File(autoSaveDir, backupFileName(scene.name, destination))
             Log.d(TAG, "autoSave: sceneHash=$sceneHash, lastHash=$lastHash, uri=$currentSceneUri")
-            if (lastHash == sceneHash) {
+            if (shouldSkipAutoSave(sceneHash, lastHash, destination, prefs.getString(KEY_LAST_DESTINATION, null), backupFile.isFile)) {
                 Log.d(TAG, "autoSave: hash unchanged, skipping")
                 return@withContext AutoSaveResult()
             }
 
-            val backupFile = writeBackup(scene)
+            writeBackup(scene, backupFile)
             Log.d(TAG, "autoSave: backup written to ${backupFile.absolutePath}")
 
             var originalSaved = false
@@ -216,8 +218,10 @@ class AutoSaveManager internal constructor(
                 // original on the next cycle even when the scene has not changed.
                 if (currentSceneUri == null || originalSaved) {
                     putString(KEY_LAST_CONTENT_HASH, sceneHash)
+                    putString(KEY_LAST_DESTINATION, destination)
                 } else {
                     remove(KEY_LAST_CONTENT_HASH)
+                    remove(KEY_LAST_DESTINATION)
                 }
             }
 
@@ -232,11 +236,8 @@ class AutoSaveManager internal constructor(
         }
     }
 
-    private fun writeBackup(scene: PockRefScene): File {
-        val sanitizedName = scene.name.replace(Regex("[^a-zA-Z0-9_.-]"), "_")
-        val backupFileName = "${sanitizedName}.auto_backup.pur"
-        val backupFile = File(autoSaveDir, backupFileName)
-        val tempFile = File(autoSaveDir, "$backupFileName.tmp")
+    private fun writeBackup(scene: PockRefScene, backupFile: File) {
+        val tempFile = File(autoSaveDir, "${backupFile.name}.tmp")
 
         try {
             FileOutputStream(tempFile).use { output ->
@@ -247,8 +248,6 @@ class AutoSaveManager internal constructor(
         } finally {
             tempFile.delete()
         }
-
-        return backupFile
     }
 
     private fun cleanupOldBackups() {
@@ -268,6 +267,7 @@ class AutoSaveManager internal constructor(
         prefs.edit {
             remove(KEY_LAST_SAVE_TS)
             remove(KEY_LAST_CONTENT_HASH)
+            remove(KEY_LAST_DESTINATION)
         }
     }
 
@@ -277,7 +277,7 @@ class AutoSaveManager internal constructor(
             ?.map { file ->
                 BackupEntry(
                     file = file,
-                    name = file.name.removeSuffix(".auto_backup.pur"),
+                    name = backupDisplayName(file.name),
                     timestamp = file.lastModified(),
                     size = file.length(),
                 )
@@ -317,6 +317,7 @@ class AutoSaveManager internal constructor(
         private const val TAG = "AutoSaveManager"
         private const val KEY_LAST_SAVE_TS = "last_auto_save_timestamp"
         private const val KEY_LAST_CONTENT_HASH = "last_content_hash"
+        private const val KEY_LAST_DESTINATION = "last_destination"
         const val DEFAULT_INTERVAL_MS = 5L * 60 * 1000
 
         /**
@@ -328,6 +329,29 @@ class AutoSaveManager internal constructor(
         )
     }
 }
+
+internal fun backupFileName(sceneName: String, destination: String?): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val identity = if (destination == null) "name:$sceneName" else "uri:$destination"
+    val hash = digest.digest(identity.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+    val prefix = sceneName.take(32).trimEnd { it.isHighSurrogate() }
+        .map { if (it == '/' || it == '\\' || it.isISOControl()) '_' else it }
+        .joinToString("").ifBlank { "Untitled" }
+    return "$prefix.$hash.auto_backup.pur"
+}
+
+internal fun backupDisplayName(fileName: String): String =
+    fileName.removeSuffix(".auto_backup.pur")
+        .replace(Regex("\\.[0-9a-f]{64}$"), "")
+
+internal fun shouldSkipAutoSave(
+    sceneHash: String,
+    lastHash: String?,
+    destination: String?,
+    lastDestination: String?,
+    backupExists: Boolean,
+): Boolean = backupExists && sceneHash == lastHash && destination == lastDestination
 
 internal data class RestoredBackup(
     val entry: AutoSaveManager.BackupEntry,

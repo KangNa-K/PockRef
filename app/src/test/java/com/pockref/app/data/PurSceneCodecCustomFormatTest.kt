@@ -16,12 +16,45 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.RandomAccessFile
+import java.io.EOFException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.file.Files
 import java.util.Base64
 
 class PurSceneCodecCustomFormatTest {
+
+    @Test
+    fun customSceneHeaderCanBeReadFromFileLargerThanTwoGiB() {
+        val file = Files.createTempFile("pockref-large-sparse", ".pur").toFile()
+        val codec = PurSceneCodec()
+        try {
+            file.outputStream().use { codec.write(PockRefScene(name = "large"), it) }
+            RandomAccessFile(file, "rw").use { it.setLength(Int.MAX_VALUE.toLong() + 1L) }
+            assertEquals("large", codec.readFromFile(file).name)
+        } finally {
+            codec.release()
+            file.delete()
+        }
+    }
+
+    @Test
+    fun truncatedCustomStringWithHugeLengthFailsBeforeAllocation() {
+        val bytes = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
+            .put(byteArrayOf('P'.code.toByte(), 'R'.code.toByte(), 'F'.code.toByte(), 'A'.code.toByte()))
+            .putInt(7).putInt(Int.MAX_VALUE).array()
+        val file = Files.createTempFile("pockref-bad-length", ".pur").toFile()
+        val codec = PurSceneCodec()
+        try {
+            file.writeBytes(bytes)
+            assertTrue(runCatching { codec.readFromFile(file) }.exceptionOrNull() is EOFException)
+            assertTrue(runCatching { bytes.inputStream().use(codec::read) }.exceptionOrNull() is EOFException)
+        } finally {
+            codec.release()
+            file.delete()
+        }
+    }
 
     @Test
     fun customFormat_roundTripsOriginalResolutionPreference() {

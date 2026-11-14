@@ -8,6 +8,7 @@ import android.util.Log
 import android.view.DragEvent
 import android.view.MotionEvent
 import android.view.View
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -48,7 +49,7 @@ class MainActivity : ComponentActivity() {
      */
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (::spenInputBridge.isInitialized) {
-            spenInputBridge.onButtonState(event.buttonState)
+            spenInputBridge.onMotionEvent(event)
         }
         return super.dispatchTouchEvent(event)
     }
@@ -76,7 +77,7 @@ class MainActivity : ComponentActivity() {
      */
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (::spenInputBridge.isInitialized) {
-            spenInputBridge.onButtonState(event.buttonState)
+            spenInputBridge.onMotionEvent(event)
         }
         return super.dispatchGenericMotionEvent(event)
     }
@@ -156,6 +157,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        awaitingOverlayPermission = savedInstanceState?.getBoolean(STATE_AWAITING_OVERLAY_PERMISSION) == true
         // V_NOW (2026-06-16, "启动页导出运行日志" feature):
         // Install the crash handler BEFORE any other init so
         // we catch crashes from enableEdgeToEdge / setContent /
@@ -220,12 +222,18 @@ class MainActivity : ComponentActivity() {
     private fun enterFloatingWindow() {
         if (!Settings.canDrawOverlays(this)) {
             awaitingOverlayPermission = true
-            startActivity(
-                Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    "package:$packageName".toUri(),
-                ),
-            )
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        "package:$packageName".toUri(),
+                    ),
+                )
+            } catch (error: RuntimeException) {
+                awaitingOverlayPermission = false
+                Log.w(TAG, "Unable to open overlay permission settings", error)
+                Toast.makeText(this, "无法打开悬浮窗权限设置", Toast.LENGTH_SHORT).show()
+            }
             return
         }
         FloatingWindowService.launch(
@@ -256,19 +264,14 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         viewModel.appUpdateController.onBackground()
-        // Reset the edge state so a backgrounded app
-        // doesn't fire a stale UP when it resumes mid-
-        // press (the user's finger was on the button
-        // when the app went to background; on resume the
-        // system won't replay the DOWN, so the next
-        // event we see is the UP — without this reset
-        // we'd treat it as an "UP after a never-felt
-        // DOWN" and skip it, but the state machine
-        // would also still be in FIRST_DOWN from the
-        // pre-background press, which is wrong).
         if (::spenInputBridge.isInitialized) {
-            spenInputBridge.reset()
+            spenInputBridge.cancel()
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(STATE_AWAITING_OVERLAY_PERMISSION, awaitingOverlayPermission)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -409,6 +412,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val STATE_AWAITING_OVERLAY_PERMISSION = "awaitingOverlayPermission"
 
         /**
          * V_NOW: MIME type for the app's native `.pur` scene

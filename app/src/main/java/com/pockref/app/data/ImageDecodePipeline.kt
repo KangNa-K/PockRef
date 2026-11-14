@@ -120,7 +120,7 @@ class ImageDecodePipeline(
         cachedImageIds: Set<String>,
         decodeRequestForImage: (SceneImage) -> ImageDecodeRequest,
     ) {
-        val toLoad = images.filter { it.id !in cachedImageIds && it.id !in loadingImages }
+        val toLoad = images.filter { it.id !in cachedImageIds && !isLoading(it.id) }
         if (toLoad.isEmpty()) return
 
         val (inView, offView) = toLoad.partition { image ->
@@ -177,7 +177,7 @@ class ImageDecodePipeline(
         val toDecode = images.filter { image ->
             val aabb = imageWorldAabb(image)
             if (!rectsOverlap(aabb, viewportRect)) return@filter false
-            if (image.id in loadingImages) return@filter false
+            if (isLoading(image.id)) return@filter false
             if (image.id !in cachedImageIds) return@filter true
             // Already cached — check if zoom increased enough to warrant
             // a re-decode at a higher level
@@ -207,6 +207,10 @@ class ImageDecodePipeline(
     }
 
     // ── Internal ───────────────────────────────────────────────────
+
+    private fun isLoading(imageId: String): Boolean = synchronized(loadingImages) {
+        imageId in loadingImages
+    }
 
     private suspend fun decodeAndNotify(
         image: SceneImage,

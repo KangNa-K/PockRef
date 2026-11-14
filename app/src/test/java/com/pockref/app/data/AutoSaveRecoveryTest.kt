@@ -4,6 +4,9 @@ import com.pockref.app.model.PockRefScene
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.File
@@ -53,6 +56,24 @@ class AutoSaveRecoveryTest {
         )
 
         assertNull(restored)
+    }
+
+    @Test
+    fun backupNames_distinguishUnicodeNamesAndDestinationUris() {
+        assertNotEquals(backupFileName("画画", null), backupFileName("参考", null))
+        assertNotEquals(backupFileName("same", "content://one"), backupFileName("same", "content://two"))
+        assertEquals("画画", backupDisplayName(backupFileName("画画", null)))
+        assertEquals("old name", backupDisplayName(backupFileName("old name", "content://one")))
+        assertEquals("legacy", backupDisplayName("legacy.auto_backup.pur"))
+    }
+
+    @Test
+    fun skipRequiresSameContentDestinationAndExistingBackup() {
+        assertTrue(shouldSkipAutoSave("hash", "hash", "content://one", "content://one", true))
+        assertFalse(shouldSkipAutoSave("hash", "hash", "content://two", "content://one", true))
+        assertFalse(shouldSkipAutoSave("hash", "hash", "content://one", "content://one", false))
+        assertFalse(shouldSkipAutoSave("hash", "hash", "content://one", null, true))
+        assertTrue(shouldSkipAutoSave("hash", "hash", null, null, true))
     }
 
     private fun backup(name: String, timestamp: Long): File =

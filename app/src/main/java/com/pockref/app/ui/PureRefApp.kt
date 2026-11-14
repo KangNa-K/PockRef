@@ -1057,9 +1057,7 @@ fun PockRefApp(
             "OpenDocumentTree callback: uri=$treeUri",
         )
         if (treeUri == null) {
-            // user cancelled — leave pendingSaveSceneLaunch already
-            // consumed (LaunchedEffect clears it on entry); nothing
-            // else to do.
+            onAction(PockRefAction.DismissSaveSceneNameDialog)
             return@rememberLauncherForActivityResult
         }
         try {
@@ -1098,6 +1096,8 @@ fun PockRefApp(
         )
         if (documentUri != null) {
             onAction(PockRefAction.SaveScene(documentUri))
+        } else {
+            onAction(PockRefAction.DismissSaveSceneNameDialog)
         }
         // Clear the pending-launch flag now that we've either
         // dispatched SaveScene or failed silently — the
@@ -6234,9 +6234,7 @@ private fun PockRefCanvas(
     // composable scope) and reads the latest pointer position
     // + eligible flag via two mutableStateOf-backed slots
     // that the gesture loop writes into on each event. The
-    // worker is "always running" but is a no-op when the
-    // flag is false, so the cost is one State read per
-    // 16ms tick.
+    // worker only ticks while the gesture is eligible.
     //
     // V2: 64dp zone / 18dp-per-tick cap = ~215px / 60px
     // per tick at 340dpi. The tick-cap is the per-16ms
@@ -6250,6 +6248,8 @@ private fun PockRefCanvas(
     val lastPointerPosState = remember { mutableStateOf(Offset.Zero) }
     val autoScrollEligibleState = remember { mutableStateOf(false) }
     val autoScrollViewportSize = remember { mutableStateOf(Size.Zero) }
+    val currentState by rememberUpdatedState(state)
+    val currentOnAction by rememberUpdatedState(onAction)
     var localCanvasSize by remember { mutableStateOf(Size.Zero) }
     val renderViewportSize = if (
         localCanvasSize.width > 0f && localCanvasSize.height > 0f
@@ -6266,26 +6266,9 @@ private fun PockRefCanvas(
     // must use this host's measured canvas size; the global state viewport
     // can still contain the full-screen Activity dimensions while the
     // overlay is showing.
-    // V3: auto-scroll worker also feeds the active drag.
-    // The user's reported bug was that the canvas panned
-    // under a stationary image when the finger sat in
-    // the edge zone — the canvas moved but the image
-    // stayed at the screen position it was first
-    // dragged to. The fix: when the auto-scroll worker
-    // dispatches PanCanvas(scroll), it ALSO dispatches
-    // UpdateImageDrag(scroll) for every currently-dragged
-    // image. The image's center moves by `scroll` in
-    // world units (= screen units / canvasScale, but
-    // UpdateImageDrag takes SCREEN units and the
-    // reducer multiplies by 1/canvasScale — so passing
-    // `scroll` as-is is correct). Net effect: the
-    // image keeps its screen-relative position, and
-    // the new scene area scrolls into view. The user
-    // can keep dragging the image into the new area
-    // without it being "left behind".
-    LaunchedEffect(Unit) {
-        while (true) {
-            if (autoScrollEligibleState.value) {
+    LaunchedEffect(autoScrollEdgeZonePx, autoScrollMaxSpeedPx) {
+        snapshotFlow { autoScrollEligibleState.value }.collectLatest { eligible ->
+            while (eligible) {
                 val pos = lastPointerPosState.value
                 val viewport = autoScrollViewportSize.value
                 if (viewport.width > 0f && viewport.height > 0f) {
@@ -6295,30 +6278,12 @@ private fun PockRefCanvas(
                         edgeZonePx = autoScrollEdgeZonePx,
                         maxSpeedPx = autoScrollMaxSpeedPx,
                     )
-                    if (scroll != Offset.Zero) {
-                        onAction(PockRefAction.PanCanvas(scroll))
-                        // V3: also nudge every actively-
-                        // dragged image by the SAME amount
-                        // so it follows the canvas. We read
-                        // [state.transientDragImageIds]
-                        // (set by the move loop via
-                        // BeginImageDrag) — when the gesture
-                        // is a box-select or lasso the set
-                        // is empty so this is a no-op and
-                        // only the canvas pans, which is
-                        // the right behavior (you wouldn't
-                        // expect the box-select rectangle
-                        // to follow a canvas scroll).
-                        val draggedIds = state.transientDragImageIds
-                        for (id in draggedIds) {
-                            onAction(
-                                PockRefAction.UpdateImageDrag(scroll),
-                            )
-                        }
+                    if (scroll != Offset.Zero && !currentState.lockCanvasFrozen) {
+                        dispatchEdgeAutoScroll(scroll, currentState.transientDragImageIds, currentOnAction)
                     }
                 }
+                delay(autoScrollTickMs)
             }
-            delay(autoScrollTickMs)
         }
     }
     // ── Image decode pipeline (replaces old LRU + LaunchedEffect) ──
@@ -6344,7 +6309,6 @@ private fun PockRefCanvas(
         }
     }
 
-    val currentState by rememberUpdatedState(state)
     val currentHoverProgress by rememberUpdatedState(hoverProgress)
     val colorSamplerScope = rememberCoroutineScope()
     val colorSampleRequestSerial = remember { mutableLongStateOf(0L) }
@@ -6372,7 +6336,6 @@ private fun PockRefCanvas(
         }
     }
 
-    val currentOnAction by rememberUpdatedState(onAction)
     fun clearColorSample() {
         colorSamplerLens.value = null
         colorSampleRequestSerial.longValue += 1L
@@ -6534,6 +6497,14 @@ private fun PockRefCanvas(
     // an image is added/removed/reordered (e.g. bringToFront / sendToBack
     // / import), not on every state change.
     val sortedImages = remember(state.images) { state.images.sortedBy { it.zIndex } }
+    val groupMembers = remember(state.groups, state.images) {
+        state.groups.map { group -> group to state.images.filter { it.id in group.imageIds } }
+    }
+    val groupByFirstMember = remember(groupMembers) {
+        groupMembers.mapNotNull { (group, members) ->
+            members.minByOrNull { it.zIndex }?.id?.let { it to (group to members) }
+        }.toMap()
+    }
 
     // Union of "ids we must draw even if off-viewport": selected, in-progress
     // box-select previews, and transient-drag targets.
@@ -7961,11 +7932,13 @@ private fun PockRefCanvas(
                     // `changes.any { it.pressed }` exit check.
                     var peakPointerCount = 1
                     var gestureMoved = false
+                    val pointerDownPositions = mutableMapOf(down.id to down.position)
 
                     do {
                         val event = awaitPointerEvent(PointerEventPass.Main)
                         val changes = event.changes
                         val pointerCount = changes.size
+                        if (pointerCount > 1) autoScrollEligibleState.value = false
 
                         if (pointerCount > 1 && colorSamplerCandidateActive) {
                             colorSamplerCandidateActive = false
@@ -7988,7 +7961,8 @@ private fun PockRefCanvas(
                         }
                         if (!gestureMoved) {
                             gestureMoved = changes.any { change ->
-                                (change.position - change.previousPosition).getDistance() > gestureMovedThresholdPx
+                                val start = pointerDownPositions.getOrPut(change.id) { change.position }
+                                (change.position - start).getDistance() > gestureMovedThresholdPx
                             }
                         }
                         if (peakPointerCount == 1) {
@@ -9534,14 +9508,10 @@ private fun PockRefCanvas(
             viewportHeight = size.height,
         )
 
-        val groupByFirstMember = state.groups.mapNotNull { group ->
-            val members = state.images.filter { it.id in group.imageIds }
-            members.minByOrNull { it.zIndex }?.id?.let { it to group }
-        }.toMap()
+        val tilesByImage = tileCache.entries.groupBy({ it.key.imageId }, { it.key to it.value })
 
         sortedImages.forEach { image ->
-            groupByFirstMember[image.id]?.let { group ->
-                val members = state.images.filter { it.id in group.imageIds }
+            groupByFirstMember[image.id]?.let { (group, members) ->
                 drawSceneGroupContainer(
                     group = group,
                     images = members,
@@ -9566,7 +9536,7 @@ private fun PockRefCanvas(
                 null
             }
             val cached = bitmapCache[image.id]?.second
-            val tiles = tileCache.filterKeys { it.imageId == image.id }
+            val tiles = tilesByImage[image.id]?.toMap().orEmpty()
             if (cached != null || gifSource != null || tiles.isNotEmpty()) {
                 drawSceneImage(
                     image = image,
@@ -9649,8 +9619,7 @@ private fun PockRefCanvas(
 
         // Draw outlines after all members so the group affordance remains
         // visible even when a member covers its own edge.
-        state.groups.forEach { group ->
-            val members = state.images.filter { it.id in group.imageIds }
+        groupMembers.forEach { (group, members) ->
             if (members.isNotEmpty()) {
                 drawSceneGroupContainer(
                     group = group,
@@ -11271,6 +11240,18 @@ internal fun computeEdgeAutoScroll(
         dy = -maxSpeedPx * t * t
     }
     return Offset(dx, dy)
+}
+
+internal fun dispatchEdgeAutoScroll(
+    scroll: Offset,
+    draggedIds: Set<String>,
+    onAction: (PockRefAction) -> Unit,
+) {
+    onAction(PockRefAction.PanCanvas(scroll))
+    if (draggedIds.isNotEmpty()) {
+        // The drag delta applies to the whole selection, in screen pixels.
+        onAction(PockRefAction.UpdateImageDrag(-scroll))
+    }
 }
 
 /**

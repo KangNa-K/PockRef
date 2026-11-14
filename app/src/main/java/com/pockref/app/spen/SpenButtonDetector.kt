@@ -522,6 +522,17 @@ class SpenButtonDetector(
         lastDownTime = 0L
     }
 
+    /** End an active box selection when its input window is interrupted. */
+    fun cancel() {
+        val boxActive = when (mode) {
+            SpenMode.PRESS_AND_HOLD -> pressHoldState == PressHoldState.FIRST_DOWN
+            SpenMode.TOGGLE -> toggleState == ToggleState.ON
+            SpenMode.DOUBLE_TAP -> doubleTapState != DoubleTapState.IDLE
+        }
+        reset()
+        if (boxActive) onEvent(ButtonEvent.BoxEnd)
+    }
+
     private fun cancelPending() {
         pendingRunnable?.let { scheduler.cancel(it) }
         pendingRunnable = null

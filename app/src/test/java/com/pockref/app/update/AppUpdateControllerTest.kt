@@ -22,6 +22,8 @@ class AppUpdateControllerTest {
         var cached: File? = null
         var gate: CompletableDeferred<Unit>? = null
         var failCheck = false
+        var failPermission = false
+        var onOpenPermission: (() -> Unit)? = null
         override suspend fun check(): UpdateCheckResult {
             checks++
             if (failCheck) error("offline")
@@ -35,7 +37,11 @@ class AppUpdateControllerTest {
         }
         override fun newerThanInstalled(code: Int) = true
         override fun canInstall() = allowed
-        override fun openPermission() { permissions++ }
+        override fun openPermission() {
+            permissions++
+            if (failPermission) error("settings unavailable")
+            onOpenPermission?.invoke()
+        }
         override fun install(apk: File): UpdateInstallResult {
             installs++
             return UpdateInstallResult.Started
@@ -89,6 +95,52 @@ class AppUpdateControllerTest {
         controller.check()
         advanceUntilIdle()
         assertNotNull(controller.state.value.message)
+    }
+
+    @Test fun automaticFailureRetriesOnNextForeground() = runTest {
+        val backend = Backend().apply { failCheck = true }
+        val controller = AppUpdateController(backend, preferences(), this) {}
+        controller.onForeground()
+        advanceUntilIdle()
+        backend.failCheck = false
+        controller.onBackground()
+        controller.onForeground()
+        advanceUntilIdle()
+        assertEquals(2, backend.checks)
+        assertNotNull(controller.state.value.manifest)
+    }
+
+    @Test fun permissionSettingsFailureDoesNotLeavePendingAuthorization() = runTest {
+        val backend = Backend().apply { allowed = false; failPermission = true }
+        val controller = AppUpdateController(backend, preferences(), this) {}
+        controller.onForeground()
+        advanceUntilIdle()
+        controller.downloadAndInstall()
+        advanceUntilIdle()
+        assertFalse(controller.state.value.awaitingPermission)
+        assertTrue(controller.state.value.message!!.contains("settings unavailable"))
+        backend.allowed = true
+        controller.onBackground()
+        controller.onForeground()
+        advanceUntilIdle()
+        assertEquals(0, backend.installs)
+    }
+
+    @Test fun immediatePermissionReturnResumesAfterPreparationFinishes() = runTest {
+        val backend = Backend().apply { allowed = false }
+        val controller = AppUpdateController(backend, preferences(), this) {}
+        backend.onOpenPermission = {
+            controller.onBackground()
+            backend.allowed = true
+            controller.onForeground()
+        }
+        controller.onForeground()
+        advanceUntilIdle()
+        controller.downloadAndInstall()
+        advanceUntilIdle()
+        assertEquals(1, backend.installs)
+        assertFalse(controller.state.value.awaitingPermission)
+        assertFalse(controller.state.value.preparingInstall)
     }
 
     @Test fun backgroundDownloadNeverInstallsAutomaticallyOnResume() = runTest {

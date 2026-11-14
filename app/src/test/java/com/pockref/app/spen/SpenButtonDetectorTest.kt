@@ -199,6 +199,30 @@ class SpenButtonDetectorTest {
     }
 
     @Test
+    fun cancellationEndsActiveBoxInEveryMode() {
+        SpenMode.values().forEach { mode ->
+            val h = Harness(mode = mode)
+            h.detector.onDown()
+            h.detector.cancel()
+            h.tick(500)
+            assertEquals(listOf(SpenButtonDetector.ButtonEvent.BoxStart, SpenButtonDetector.ButtonEvent.BoxEnd), h.events)
+            assertEquals(0, h.scheduler.pendingCount)
+        }
+    }
+
+    @Test
+    fun cancellingPendingOrSecondPressDoesNotEndBoxTwice() {
+        val h = Harness()
+        h.detector.onDown()
+        h.detector.onUp()
+        h.tick(50)
+        h.detector.onDown()
+        h.detector.cancel()
+        h.tick(500)
+        assertEquals(listOf(SpenButtonDetector.ButtonEvent.BoxStart, SpenButtonDetector.ButtonEvent.BoxEnd, SpenButtonDetector.ButtonEvent.Single), h.events)
+    }
+
+    @Test
     fun isButtonHeld_reflectsState() {
         val h = Harness()
         assertEquals(false, h.detector.isButtonHeld)

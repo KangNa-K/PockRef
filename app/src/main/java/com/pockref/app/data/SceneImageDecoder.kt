@@ -14,6 +14,7 @@ import java.io.File
 import java.io.InputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -90,7 +91,7 @@ class SceneImageDecoder(
         // the existing v1 cache entries invisible (different key) and
         // [DiskThumbnailCache.init] cleans the orphaned files on first
         // construction of the new cache.
-        private const val DISK_CACHE_VERSION = 2
+        private const val DISK_CACHE_VERSION = 3
         private const val DISK_CACHE_DIR = "image_decode_cache"
         private const val DISK_CACHE_MAX_BYTES = 64L * 1024 * 1024 // 64MB
         private const val ORIGINAL_SAMPLE_TILE_EDGE = 256
@@ -126,7 +127,7 @@ class SceneImageDecoder(
         release()
         sourceRaf = RandomAccessFile(file, "r")
         sourceFile = file
-        sourceFingerprint = "${file.length()}_${file.lastModified()}_v$DISK_CACHE_VERSION"
+        sourceFingerprint = "${file.absolutePath}_${file.length()}_${file.lastModified()}_v$DISK_CACHE_VERSION"
     }
 
     /**
@@ -281,7 +282,7 @@ class SceneImageDecoder(
         // with no UI indication. Skipping the disk cache for these
         // decodes means we lose cross-session thumbnail reuse, but the
         // in-memory decode itself still works.
-        if (ImageDiskCachePolicy.shouldCache(level) && cacheDir != null) {
+        if (image.imageBytes.isEmpty() && ImageDiskCachePolicy.shouldCache(level) && cacheDir != null) {
             val diskKey = diskCacheKey(image, level)
             diskCache.get(diskKey)?.let { cached ->
                 return DecodeResult(cached, level, fromDiskCache = true)
@@ -304,7 +305,7 @@ class SceneImageDecoder(
         }
 
         // 3. Write to disk cache (bounded ladder levels only) — same guard
-        if (ImageDiskCachePolicy.shouldCache(level) && cacheDir != null) {
+        if (image.imageBytes.isEmpty() && ImageDiskCachePolicy.shouldCache(level) && cacheDir != null) {
             val diskKey = diskCacheKey(image, level)
             diskCache.put(diskKey, bitmap)
         }
@@ -322,7 +323,7 @@ class SceneImageDecoder(
         // (256px) is the common case for the initial canvas fill, and
         // the disk cache is purely a "second open is instant"
         // optimization.
-        if (cacheDir != null) {
+        if (image.imageBytes.isEmpty() && cacheDir != null) {
             val diskKey = diskCacheKey(image, 1) // level 1 = 256px
             diskCache.get(diskKey)?.let { cached ->
                 return DecodeResult(cached, 1, fromDiskCache = true)
@@ -867,25 +868,18 @@ private class DiskThumbnailCache(
 
     @Synchronized
     fun put(key: String, bitmap: Bitmap) {
-        // Evict if needed
-        while (totalSize > maxBytes && index.isNotEmpty()) {
-            val oldest = index.entries.first()
-            if (oldest.value.file.exists()) oldest.value.file.delete()
-            totalSize -= oldest.value.size
-            index.remove(oldest.key)
-        }
-
-        val fileName = key.hashCode().toString(16).padStart(8, '0') + ".webp"
+        val fileName = thumbnailCacheFileName(key)
         val file = File(cacheDir, fileName)
         val size: Long
         try {
             file.outputStream().use { out ->
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val compressed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 80, out)
                 } else {
                     @Suppress("DEPRECATION")
                     bitmap.compress(Bitmap.CompressFormat.WEBP, 80, out)
                 }
+                check(compressed) { "Thumbnail compression failed" }
             }
             size = file.length()
         } catch (e: Exception) {
@@ -901,6 +895,12 @@ private class DiskThumbnailCache(
 
         index[key] = CacheEntry(file, size, System.currentTimeMillis())
         totalSize += size
+        while (totalSize > maxBytes && index.isNotEmpty()) {
+            val oldest = index.entries.first()
+            oldest.value.file.delete()
+            totalSize -= oldest.value.size
+            index.remove(oldest.key)
+        }
         saveIndex()
     }
 
@@ -936,3 +936,7 @@ private class DiskThumbnailCache(
         }
     }
 }
+
+internal fun thumbnailCacheFileName(key: String): String =
+    MessageDigest.getInstance("SHA-256").digest(key.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) } + ".webp"

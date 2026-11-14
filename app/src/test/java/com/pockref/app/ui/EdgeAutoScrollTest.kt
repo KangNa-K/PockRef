@@ -29,6 +29,29 @@ class EdgeAutoScrollTest {
     private val maxSpeed = 40f
 
     @Test
+    fun draggedSelectionStaysUnderPointerDuringAutoScroll() {
+        val actions = mutableListOf<PockRefAction>()
+        val scroll = Offset(30f, -20f)
+
+        dispatchEdgeAutoScroll(scroll, setOf("first", "second"), actions::add)
+
+        assertEquals(
+            listOf(PockRefAction.PanCanvas(scroll), PockRefAction.UpdateImageDrag(-scroll)),
+            actions,
+        )
+        val scale = 2f
+        val worldDrag = (actions[1] as PockRefAction.UpdateImageDrag).delta / scale
+        assertEquals(Offset.Zero, scroll + worldDrag * scale)
+    }
+
+    @Test
+    fun selectionBoxAutoScrollDoesNotMoveImages() {
+        val actions = mutableListOf<PockRefAction>()
+        dispatchEdgeAutoScroll(Offset(10f, 0f), emptySet(), actions::add)
+        assertEquals(listOf(PockRefAction.PanCanvas(Offset(10f, 0f))), actions)
+    }
+
+    @Test
     fun pointerAtCenter_returnsZero() {
         val pos = Offset(500f, 400f)  // dead center
         val scroll = computeEdgeAutoScroll(pos, viewport, edgeZone, maxSpeed)

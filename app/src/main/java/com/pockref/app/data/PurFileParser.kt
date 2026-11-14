@@ -108,7 +108,6 @@ class PurFileParser {
 
     fun parse(input: InputStream): PockRefScene {
         val inputFile = File.createTempFile("pockref_input_", ".tmp")
-        inputFile.deleteOnExit()
         try {
             inputFile.outputStream().use { out -> input.copyTo(out, 65536) }
             return parseFromFile(inputFile)
@@ -120,7 +119,7 @@ class PurFileParser {
     fun parseFromFile(file: File): PockRefScene {
         val inputRaf = RandomAccessFile(file, "r")
         try {
-            val headerBytes = ByteArray(minOf(file.length().toInt(), 0x100))
+            val headerBytes = ByteArray(minOf(file.length(), 0x100L).toInt())
             inputRaf.readFully(headerBytes)
             val header = parseHeader(headerBytes)
 
@@ -326,10 +325,11 @@ class PurFileParser {
             ?: error("PureRef v2 SQLite header not found")
         val dbFile = prepareV2SQLiteDatabase(file, sqliteOffset)
         dbTempFile = dbFile
-        val imageFile = File.createTempFile("pockref_v2_images_", ".bin")
-        imageFile.deleteOnExit()
-        imageTempFile = imageFile
+        var imageFile: File? = null
         try {
+            val imagesFile = File.createTempFile("pockref_v2_images_", ".bin")
+            imageFile = imagesFile
+            imageTempFile = imagesFile
             val db = SQLiteDatabase.openDatabase(
                 dbFile.absolutePath,
                 null,
@@ -337,7 +337,7 @@ class PurFileParser {
             )
             try {
                 val privateMetadata = readV2PockRefMetadata(db)
-                val images = FileOutputStream(imageFile).use { output ->
+                val images = FileOutputStream(imagesFile).use { output ->
                     readV2SceneImages(db, output, privateMetadata)
                 }
                 val shared = privateMetadata?.let(SharedMarkupCodec::decode)
@@ -372,7 +372,7 @@ class PurFileParser {
             dbTempFile = null
             try { dbFile.delete() } catch (_: Exception) {}
             imageTempFile = null
-            try { imageFile.delete() } catch (_: Exception) {}
+            try { imageFile?.delete() } catch (_: Exception) {}
             throw error
         }
     }
@@ -620,12 +620,16 @@ class PurFileParser {
             "Invalid PureRef v2 SQLite rotation: prefix=$prefixLength sqliteOffset=$sqliteHeaderOffset"
         }
         val outFile = File.createTempFile("pockref_v2_", ".sqlite")
-        outFile.deleteOnExit()
-        RandomAccessFile(file, "r").use { input ->
-            FileOutputStream(outFile).use { output ->
-                copyRegion(input, output, sqliteHeaderOffset, prefixLength)
-                copyRegion(input, output, prefixLength, sqliteHeaderOffset - prefixLength)
+        try {
+            RandomAccessFile(file, "r").use { input ->
+                FileOutputStream(outFile).use { output ->
+                    copyRegion(input, output, sqliteHeaderOffset, prefixLength)
+                    copyRegion(input, output, prefixLength, sqliteHeaderOffset - prefixLength)
+                }
             }
+        } catch (error: Throwable) {
+            outFile.delete()
+            throw error
         }
         return outFile
     }

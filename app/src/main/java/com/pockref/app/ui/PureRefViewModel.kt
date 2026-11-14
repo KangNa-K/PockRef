@@ -3329,8 +3329,11 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
         uris.forEach { uriString ->
             val uri = uriString.toUri()
             try {
-                DocumentsContract.deleteDocument(contentResolver, uri)
-                deleted.add(uriString)
+                if (DocumentsContract.deleteDocument(contentResolver, uri)) {
+                    deleted.add(uriString)
+                } else {
+                    failed.add(uriString)
+                }
             } catch (e: SecurityException) {
                 // V_NOW (2026-06-12 "本地已删除文件无法清除" fix):
                 // Lost URI permission — the file

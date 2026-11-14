@@ -60,6 +60,7 @@ class AppUpdateController internal constructor(
     val state = _state.asStateFlow()
     private var job: kotlinx.coroutines.Job? = null
     private var foreground = false
+    private var resumeInstallAfterPreparation = false
 
     init {
         val saved = prefs.getString("manifest", null)
@@ -102,7 +103,6 @@ class AppUpdateController internal constructor(
             _state.update { it.copy(noticeVisible = it.manifest?.let(::shouldNotify) == true) }
             return
         }
-        prefs.edit { putLong("last_check", now) }
         _state.update { it.copy(checking = true, message = null) }
         job = scope.launch {
             try {
@@ -148,9 +148,14 @@ class AppUpdateController internal constructor(
         if (_state.value.awaitingPermission) {
             _state.update { it.copy(awaitingPermission = false) }
             if (backend.canInstall()) {
-                installReady()
+                if (_state.value.preparingInstall) {
+                    resumeInstallAfterPreparation = true
+                } else {
+                    installReady()
+                }
                 return
             }
+            _state.update { it.copy(message = "请允许安装应用后重试") }
         }
         check(false)
     }
@@ -217,9 +222,13 @@ class AppUpdateController internal constructor(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                _state.update { it.copy(message = "安装未开始：${error.localizedMessage}") }
+                _state.update { it.copy(awaitingPermission = false, message = "安装未开始：${error.localizedMessage}") }
             } finally {
                 _state.update { it.copy(preparingInstall = false) }
+                if (resumeInstallAfterPreparation) {
+                    resumeInstallAfterPreparation = false
+                    if (foreground) installReady()
+                }
             }
         }
     }

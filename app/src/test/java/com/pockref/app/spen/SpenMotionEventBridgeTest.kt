@@ -1,7 +1,10 @@
 package com.pockref.app.spen
 
 import android.view.MotionEvent
+import android.view.InputDevice
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SpenMotionEventBridgeTest {
@@ -69,5 +72,23 @@ class SpenMotionEventBridgeTest {
             ),
             h.events,
         )
+    }
+
+    @Test
+    fun onlyStylusSourcesOrToolsAreAccepted() {
+        assertFalse(SpenMotionEventBridge.isStylusInput(InputDevice.SOURCE_MOUSE, listOf(MotionEvent.TOOL_TYPE_MOUSE)))
+        assertFalse(SpenMotionEventBridge.isStylusInput(InputDevice.SOURCE_TOUCHSCREEN, listOf(MotionEvent.TOOL_TYPE_FINGER)))
+        assertTrue(SpenMotionEventBridge.isStylusInput(InputDevice.SOURCE_STYLUS, listOf(MotionEvent.TOOL_TYPE_UNKNOWN)))
+        assertTrue(SpenMotionEventBridge.isStylusInput(InputDevice.SOURCE_TOUCHSCREEN, listOf(MotionEvent.TOOL_TYPE_STYLUS)))
+        assertTrue(SpenMotionEventBridge.isStylusInput(InputDevice.SOURCE_TOUCHSCREEN, listOf(MotionEvent.TOOL_TYPE_ERASER)))
+    }
+
+    @Test
+    fun cancelClosesHeldSelectionAndDoesNotEmitDelayedEvents() {
+        val h = Harness()
+        h.bridge.onButtonState(MotionEvent.BUTTON_STYLUS_PRIMARY)
+        h.bridge.cancel()
+        h.bridge.cancel()
+        assertEquals(listOf(SpenButtonDetector.ButtonEvent.BoxStart, SpenButtonDetector.ButtonEvent.BoxEnd), h.events)
     }
 }

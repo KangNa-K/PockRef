@@ -661,7 +661,6 @@ class PurSceneCodec {
 
     fun read(input: InputStream): PockRefScene {
         val tempFile = File.createTempFile("pockref_input_", ".tmp")
-        tempFile.deleteOnExit()
         try {
             val copiedBytes = tempFile.outputStream().use { out -> input.copyTo(out, 65536) }
             require(copiedBytes > 0L) { "Input stream produced 0 bytes" }
@@ -682,7 +681,7 @@ class PurSceneCodec {
         try {
             val fileLen = raf.length()
             require(fileLen > 0L) { "Input file is empty" }
-            val headerSize = minOf(fileLen.toInt(), 108)
+            val headerSize = minOf(fileLen, 108L).toInt()
             val header = ByteArray(headerSize)
             raf.readFully(header)
 
@@ -845,7 +844,7 @@ class PurSceneCodec {
         RandomAccessFile(file, "r").use { raf ->
             val fileLen = raf.length()
             if (fileLen < 224L) return@runCatching null
-            val header = ByteArray(minOf(fileLen.toInt(), 224))
+            val header = ByteArray(minOf(fileLen, 224L).toInt())
             raf.readFully(header)
             val parsedHeader = purFileParser.parseHeader(header)
             val indexOffset = parsedHeader.sqliteOffset
@@ -1185,7 +1184,8 @@ class PurSceneCodec {
         val name = data.readStringUtf8()
         val backgroundColor = Color(data.readLongLe().toULong())
         val imageCount = data.readIntLe()
-        val images = buildList(imageCount) {
+        require(imageCount >= 0 && imageCount <= data.available()) { "Invalid image count: $imageCount" }
+        val images = buildList {
             repeat(imageCount) {
                 val base = SceneImage(
                     id = data.readStringUtf8(),
@@ -1262,8 +1262,10 @@ class PurSceneCodec {
         val name = raf.readStringUtf8()
         val backgroundColor = Color(raf.readLongLe().toULong())
         val imageCount = raf.readIntLe()
-        require(imageCount >= 0) { "Negative image count: $imageCount" }
-        val images = buildList(imageCount) {
+        require(imageCount >= 0 && imageCount.toLong() <= fileLen - raf.filePointer) {
+            "Invalid image count: $imageCount"
+        }
+        val images = buildList {
             repeat(imageCount) {
                 val id = raf.readStringUtf8()
                 val imageName = raf.readStringUtf8()
@@ -2127,18 +2129,19 @@ class PurSceneCodec {
         return String(chars, 0, charIndex)
     }
 
+    // These helpers only receive ByteArrayInputStream-backed data streams.
     private fun DataInputStream.readByteArray(): ByteArray {
         val size = readIntLe()
-        if (size < 0) {
-            throw EOFException("Negative byte array size")
+        if (size < 0 || size > available()) {
+            throw EOFException("Invalid byte array size: $size")
         }
         return ByteArray(size).also(::readFully)
     }
 
     private fun DataInputStream.readStringUtf8(): String {
         val size = readIntLe()
-        if (size < 0) {
-            throw EOFException("Negative string size")
+        if (size < 0 || size > available()) {
+            throw EOFException("Invalid string size: $size")
         }
         val bytes = ByteArray(size)
         readFully(bytes)
@@ -2172,8 +2175,8 @@ class PurSceneCodec {
 
     private fun RandomAccessFile.readStringUtf8(): String {
         val size = readIntLe()
-        if (size < 0) {
-            throw EOFException("Negative string size")
+        if (size < 0 || size.toLong() > length() - filePointer) {
+            throw EOFException("Invalid string size: $size")
         }
         val bytes = ByteArray(size)
         readFully(bytes)

@@ -39,6 +39,9 @@ class GithubAppUpdaterTest {
             valid.copy(size = 251L * 1024 * 1024),
             valid.copy(sha256 = "invalid"),
             valid.copy(apkUrl = "https://example.org/update.apk"),
+            valid.copy(apkUrl = valid.apkUrl + "/../../../../../../other"),
+            valid.copy(apkUrl = valid.apkUrl + "?redirect=https://example.org"),
+            valid.copy(apkUrl = valid.apkUrl.replace("611312842", "not-an-asset")),
         ).forEach { invalid ->
             assertTrue(runCatching { GithubAppUpdater.validateDownload(invalid) }.isFailure)
         }
@@ -55,6 +58,22 @@ class GithubAppUpdaterTest {
             assertTrue(GithubAppUpdater.verifyFile(file, valid))
             assertFalse(GithubAppUpdater.verifyFile(file, valid.copy(size = bytes.size.toLong() + 1)))
             assertFalse(GithubAppUpdater.verifyFile(file, valid.copy(sha256 = "00".repeat(32))))
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test fun cacheWithInvalidPackageIsDiscardedForRetry() {
+        val file = File.createTempFile("pockref-update", ".apk")
+        try {
+            val bytes = "apk bytes".toByteArray()
+            file.writeBytes(bytes)
+            val sha = MessageDigest.getInstance("SHA-256").digest(bytes)
+                .joinToString("") { "%02x".format(it) }
+            val valid = manifest(sha, bytes.size.toLong())
+            assertTrue(GithubAppUpdater.validatedCachedApk(file, valid) {} == file)
+            assertTrue(GithubAppUpdater.validatedCachedApk(file, valid) { error("signature mismatch") } == null)
+            assertFalse(file.exists())
         } finally {
             file.delete()
         }

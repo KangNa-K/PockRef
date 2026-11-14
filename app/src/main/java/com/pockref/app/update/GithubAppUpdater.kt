@@ -64,10 +64,23 @@ object GithubAppUpdater {
         withContext(Dispatchers.IO) {
             validateDownload(manifest)
             val apk = File(context.cacheDir, "updates/pockref-${manifest.versionCode}.apk")
-            if (!verifyFile(apk, manifest)) return@withContext null
-            validatePackage(context, apk, manifest)
-            apk
+            validatedCachedApk(apk, manifest) { validatePackage(context, it, manifest) }
         }
+
+    internal fun validatedCachedApk(
+        apk: File,
+        manifest: AppUpdateManifest,
+        validatePackage: (File) -> Unit,
+    ): File? {
+        if (!verifyFile(apk, manifest)) return null
+        return try {
+            validatePackage(apk)
+            apk
+        } catch (_: Exception) {
+            apk.delete()
+            null
+        }
+    }
 
     suspend fun checkForUpdate(context: Context): UpdateCheckResult = withContext(Dispatchers.IO) {
         val manifest = parseManifest(readUrl(GithubUpdateConfig.manifestUrl))
@@ -97,10 +110,15 @@ object GithubAppUpdater {
         validateDownload(manifest)
         val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
         val apk = File(updatesDir, "pockref-${manifest.versionCode}.apk")
-        if (!verifyFile(apk, manifest)) {
+        if (cachedApk(context, manifest) == null) {
             downloadFile(manifest, apk, onProgress)
         }
-        validatePackage(context, apk, manifest)
+        try {
+            validatePackage(context, apk, manifest)
+        } catch (error: Exception) {
+            apk.delete()
+            throw error
+        }
         apk
     }
 
@@ -138,11 +156,9 @@ object GithubAppUpdater {
         require(manifest.versionCode > 0 && manifest.size in 1..MAX_APK_SIZE) {
             "Invalid APK size or version"
         }
-        require(
-            manifest.apkUrl.startsWith(
-                "https://api.github.com/repos/KangNa-K/PockRef-updates/releases/assets/",
-            ),
-        ) { "APK must be a PockRef GitHub Release asset" }
+        require(manifest.apkUrl.matches(Regex(
+            "https://api\\.github\\.com/repos/KangNa-K/PockRef-updates/releases/assets/[0-9]+",
+        ))) { "APK must be a PockRef GitHub Release asset" }
         require(manifest.sha256.matches(Regex("[A-Fa-f0-9]{64}"))) {
             "Invalid APK SHA-256"
         }

@@ -48,15 +48,17 @@ internal class PurV2SceneWriter(
             }
         }
         val dbFile = File.createTempFile("pockref-v2-db-", ".sqlite", workDir)
-        val wrappedFile = File.createTempFile("pockref-v2-scene-", ".pur", workDir)
+        var wrappedFile: File? = null
         try {
+            val outputFile = File.createTempFile("pockref-v2-scene-", ".pur", workDir)
+            wrappedFile = outputFile
             val thumbnail = thumbnailData(images)
             writeDatabase(scene, images, thumbnail, dbFile)
-            wrapDatabase(dbFile, wrappedFile, images.size, thumbnail)
-            wrappedFile.inputStream().buffered(BUFFER_SIZE).use { it.copyTo(output, BUFFER_SIZE) }
+            wrapDatabase(dbFile, outputFile, images.size, thumbnail)
+            outputFile.inputStream().buffered(BUFFER_SIZE).use { it.copyTo(output, BUFFER_SIZE) }
         } finally {
             dbFile.delete()
-            wrappedFile.delete()
+            wrappedFile?.delete()
         }
     }
 

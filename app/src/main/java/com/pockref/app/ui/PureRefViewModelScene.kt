@@ -757,10 +757,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             val success = performSave(uri, truncate = false)
             if (success) {
                 mainVm.isImportedPurFile = true
-                if (mainVm._uiState.value.pendingCloseAfterSave) {
-                    mainVm._uiState.update { it.copy(pendingCloseAfterSave = false) }
-                    closeScene()
-                }
+                finishPendingClose(true)
+            } else if (!mainVm._uiState.value.showBatchOptimizeConfirm) {
+                finishPendingClose(false)
             }
         }
     }
@@ -903,7 +902,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
         }
 
         mainVm.viewModelScope.launch {
-            writeSceneToFile(uri, truncate, scene.images)
+            val saved = writeSceneToFile(uri, truncate, scene.images)
+            finishPendingClose(saved)
         }
     }
 
@@ -915,6 +915,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     status = com.pockref.app.model.BatchOptimizeStatus.CANCELLED,
                 ),
                 isSaving = false,
+                pendingCloseAfterSave = false,
             )
         }
         mainVm.setBusy(false)
@@ -1035,6 +1036,14 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 )
             }
         }
+        finishPendingClose(saveSuccess)
+    }
+
+    private fun finishPendingClose(saved: Boolean) {
+        if (!mainVm._uiState.value.pendingCloseAfterSave) return
+        mainVm._uiState.update { it.copy(pendingCloseAfterSave = false) }
+        if (saved) closeScene()
+        else mainVm._uiState.update { it.copy(showUnsavedChangesDialog = true) }
     }
 
     private suspend fun writeSceneToFile(uri: Uri, truncate: Boolean, images: List<SceneImage>): Boolean {
@@ -1068,6 +1077,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             return false
         }
         mainVm.rememberRecentScene(uri, mainVm._uiState.value.sceneName.ifBlank { mainVm.queryDisplayNameSync(uri) ?: "Scene" }, "Saved")
+        if (mainVm.currentSceneUri == uri) mainVm.isImportedPurFile = true
         mainVm._uiState.update { it.copy(images = images) }
         mainVm.lastSaveSnapshotHash = mainVm.computeQuickHash(mainVm._uiState.value.toScene())
         mainVm.syncDirectSaveState()
@@ -1529,15 +1539,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     //       or image/jpeg; OneDrive has the same
                     //       pattern)
                     //
-                    // ONE preflight with the user's MIME couldn't
-                    // tell (A) from (B) — both surface as "uri =
-                    // null". Doing TWO tests (user's MIME +
-                    // application/octet-stream) lets us branch the
-                    // error into actionable advice. The temp
-                    // files are deleted after each preflight so
-                    // the user's folder stays clean (cleanup
-                    // failure is logged but non-fatal — the
-                    // files are hidden by leading underscores).
+                    // Try octet-stream only if the requested MIME fails.
+                    // Both test documents must be cleaned up when created.
                     suspend fun tryCreateDocument(
                         testMime: String,
                         testName: String,
@@ -1549,7 +1552,9 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                 testMime,
                                 testName,
                             )
-                        } catch (e: Throwable) {
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
                             android.util.Log.w(
                                 "PockRefExport",
                                 "preflight createDocument threw " +
@@ -1563,7 +1568,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         if (uri == null) return
                         try {
                             DocumentsContract.deleteDocument(resolver, uri)
-                        } catch (e: Throwable) {
+                        } catch (e: Exception) {
                             android.util.Log.w(
                                 "PockRefExport",
                                 "preflight cleanup failed: ${e.message}",
@@ -1576,15 +1581,17 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         testName = "__pockref_preflight_test__" +
                             "${preflightStamp}__.$extension",
                     )
-                    val preflightUriOctet = tryCreateDocument(
-                        testMime = "application/octet-stream",
-                        testName = "__pockref_preflight_test_octet__" +
-                            "${preflightStamp}__.bin",
-                    )
+                    val preflightUriOctet = if (preflightUriUser == null) {
+                        tryCreateDocument(
+                            testMime = "application/octet-stream",
+                            testName = "__pockref_preflight_test_octet__" +
+                                "${preflightStamp}__.bin",
+                        )
+                    } else null
                     val userMimeFailed = preflightUriUser == null
                     val octetFailed = preflightUriOctet == null
-                    if (userMimeFailed) deleteIfPresent(preflightUriOctet)
-                    if (!userMimeFailed) deleteIfPresent(preflightUriUser)
+                    deleteIfPresent(preflightUriOctet)
+                    deleteIfPresent(preflightUriUser)
                     if (userMimeFailed && octetFailed) {
                         // Case (A): the folder rejects BOTH image
                         // MIME and octet-stream → the provider
@@ -1634,9 +1641,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                         )
                         return@withContext
                     }
-                    // Case (C): both preflights succeeded. The
-                    // folder is healthy; the real export below
-                    // will use the user's chosen MIME.
+                    // The chosen MIME is accepted; proceed with the export.
                     var successCount = 0
                     var failCount = 0
                     // V3 diagnostic: log the tree URI's
@@ -1664,20 +1669,24 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                             "mime=$mime targetCount=${targets.size}",
                     )
                     for (image in targets) {
+                        var documentUri: Uri? = null
+                        var completed = false
                         try {
                             val baseName = image.name.ifBlank { "Untitled" }
                             val displayName = "$baseName.$extension"
                             // DocumentsContract.createDocument handles
                             // collision-disambiguation on the SAF side,
                             // so we pass the desired name verbatim.
-                            val documentUri = try {
+                            documentUri = try {
                                 DocumentsContract.createDocument(
                                     resolver,
                                     docUri,
                                     mime,
                                     displayName,
                                 )
-                            } catch (innerCreate: Throwable) {
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (innerCreate: Exception) {
                                 // Some providers throw rather than
                                 // returning null on permission /
                                 // capability errors. Surface the
@@ -1701,38 +1710,40 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                 continue
                             }
                             val bytes = mainVm.resolveImageBytes(image)
-                            var source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                                 ?: error("无法解码图片数据")
-                            // Apply non-destructive crop before transforms.
-                            val crop = image.cropRect
-                            val croppedSource = if (crop != null) {
-                                val cx = (crop.left * source.width).toInt().coerceIn(0, source.width - 1)
-                                val cy = (crop.top * source.height).toInt().coerceIn(0, source.height - 1)
-                                val cw = ((crop.right - crop.left) * source.width).toInt().coerceIn(1, source.width - cx)
-                                val ch = ((crop.bottom - crop.top) * source.height).toInt().coerceIn(1, source.height - cy)
-                                Bitmap.createBitmap(source, cx, cy, cw, ch)
-                                    .also { if (it !== source) source.recycle() }
-                            } else {
-                                source
-                            }
-                            val matrix = android.graphics.Matrix()
-                            matrix.postScale(image.scale, image.scale)
-                            if (image.rotationDegrees != 0f) {
-                                matrix.postRotate(
-                                    image.rotationDegrees,
-                                    croppedSource.width / 2f,
-                                    croppedSource.height / 2f,
-                                )
-                            }
-                            if (image.flipX || image.flipY) {
-                                val sx = if (image.flipX) -1f else 1f
-                                val sy = if (image.flipY) -1f else 1f
-                                matrix.postScale(sx, sy, croppedSource.width / 2f, croppedSource.height / 2f)
-                            }
-                            val rendered = if (matrix.isIdentity) croppedSource
-                            else Bitmap.createBitmap(croppedSource, 0, 0, croppedSource.width, croppedSource.height, matrix, true)
-                                .also { if (it !== croppedSource) croppedSource.recycle() }
+                            var bitmapToRecycle = source
                             try {
+                                val crop = image.cropRect
+                                val croppedSource = if (crop != null) {
+                                    val cx = (crop.left * source.width).toInt().coerceIn(0, source.width - 1)
+                                    val cy = (crop.top * source.height).toInt().coerceIn(0, source.height - 1)
+                                    val cw = ((crop.right - crop.left) * source.width).toInt().coerceIn(1, source.width - cx)
+                                    val ch = ((crop.bottom - crop.top) * source.height).toInt().coerceIn(1, source.height - cy)
+                                    Bitmap.createBitmap(source, cx, cy, cw, ch)
+                                        .also { if (it !== source) source.recycle() }
+                                } else {
+                                    source
+                                }
+                                bitmapToRecycle = croppedSource
+                                val matrix = android.graphics.Matrix()
+                                matrix.postScale(image.scale, image.scale)
+                                if (image.rotationDegrees != 0f) {
+                                    matrix.postRotate(
+                                        image.rotationDegrees,
+                                        croppedSource.width / 2f,
+                                        croppedSource.height / 2f,
+                                    )
+                                }
+                                if (image.flipX || image.flipY) {
+                                    val sx = if (image.flipX) -1f else 1f
+                                    val sy = if (image.flipY) -1f else 1f
+                                    matrix.postScale(sx, sy, croppedSource.width / 2f, croppedSource.height / 2f)
+                                }
+                                val rendered = if (matrix.isIdentity) croppedSource
+                                else Bitmap.createBitmap(croppedSource, 0, 0, croppedSource.width, croppedSource.height, matrix, true)
+                                    .also { if (it !== croppedSource) croppedSource.recycle() }
+                                bitmapToRecycle = rendered
                                 val outputStream = resolver.openOutputStream(documentUri)
                                     ?: error("无法打开目标 URI 的输出流")
                                 outputStream.use { stream ->
@@ -1744,9 +1755,12 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                     if (!ok) error("图片编码失败")
                                 }
                             } finally {
-                                if (rendered !== source) rendered.recycle()
+                                if (!bitmapToRecycle.isRecycled) bitmapToRecycle.recycle()
                             }
+                            completed = true
                             successCount++
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
                         } catch (innerError: Throwable) {
                             // One bad image shouldn't kill the whole
                             // batch — log and continue. The final
@@ -1757,6 +1771,8 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                                 "exportBatch: failed to write ${image.name}: ${innerError.message}",
                             )
                             failCount++
+                        } finally {
+                            if (!completed) deleteIfPresent(documentUri)
                         }
                     }
                     if (failCount > 0) {
@@ -1872,6 +1888,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             mainVm._uiState.update { it.copy(triggerSaveAsFromDialog = true, pendingCloseAfterSave = true) }
             return
         }
+        mainVm._uiState.update { it.copy(pendingCloseAfterSave = true) }
         mainVm.viewModelScope.launch {
             val success = if (mainVm.canDirectSave) {
                 performSave(mainVm.currentSceneUri!!, truncate = true)
@@ -1881,7 +1898,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 }
             }
             if (success) {
-                closeScene()
+                finishPendingClose(true)
             } else if (!mainVm._uiState.value.showBatchOptimizeConfirm) {
                 // V_NOW (user bug report — "保存完成后未保存的更改弹窗
                 // 一直显示"): [performSave] returns `false` in TWO
@@ -1912,7 +1929,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 // resolve the optimize-confirm flow instead.
                 // Otherwise we're in case (a) — re-show the
                 // dialog as before.
-                mainVm._uiState.update { it.copy(showUnsavedChangesDialog = true) }
+                finishPendingClose(false)
             }
         }
     }
@@ -1966,6 +1983,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 backgroundCustomColor = defaultBg,
                 showBackgroundPicker = false,
                 settingsSheetOpen = false,
+                pendingCloseAfterSave = false,
                 images = emptyList(),
                 groups = emptyList(),
                 requiresGroupFlattening = false,
@@ -2041,6 +2059,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
             it.copy(
                 showSaveSceneNameDialog = false,
                 pendingSaveSceneLaunch = false,
+                pendingCloseAfterSave = false,
             )
         }
     }
