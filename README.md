@@ -68,6 +68,6 @@ APK 更新流程见 [docs/update-release.md](docs/update-release.md)，版本变
 
 ## 许可证
 
-PockRef 源码采用 [GNU General Public License v3.0](LICENSE)（SPDX：`GPL-3.0-only`）。
+PockRef 源码采用 [MIT License](LICENSE)（SPDX：`MIT`）。
 
 完整条款见 [LICENSE](LICENSE)。第三方依赖遵循各自的许可证。
