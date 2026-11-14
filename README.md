@@ -79,7 +79,7 @@ docs/                  设计记录与发布说明
 
 欢迎通过 [Issues](https://github.com/KangNa-K/PockRef/issues) 报告问题，或提交 Pull Request。报告问题时请附上应用版本、设备型号、Android 版本和复现步骤。提交日志或测试文件前，请移除私人图片、路径和其他个人信息。
 
-APK 更新流程见 [docs/update-release.md](docs/update-release.md)，版本变更见根目录的 `CHANGELOG_*.md`。
+APK 更新流程见 [docs/update-release.md](docs/update-release.md)，版本变更见 [GitHub Releases](https://github.com/KangNa-K/PockRef-updates/releases)。
 
 ## 许可证
 

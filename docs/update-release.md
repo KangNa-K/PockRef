@@ -9,15 +9,15 @@ repository. Publish the asset before pointing the manifest to it. Do
 not replace an asset after publishing its ID in the manifest: GitHub assigns
 a new ID on reupload.
 
-1. Increase `versionCode` and `versionName` in `app/build.gradle.kts`, update
-   `CHANGELOG_X.Y.Z.md`, and build a signed APK with
+1. Increase `versionCode` and `versionName` in `app/build.gradle.kts`, prepare
+   release notes in a local file outside the source repository, and build a signed APK with
    `./gradlew :app:assembleRelease`.
 2. Verify that `apksigner verify --print-certs` reports the same signing
    certificate as the installed release. Never upload the keystore or
    `keystore.properties`.
 3. Commit the implementation to the source repository, copy the
    exact built APK to `pockref-X.Y.Z.apk`, then publish it with
-   `gh release create release-X.Y.Z /path/to/pockref-X.Y.Z.apk --repo KangNa-K/PockRef-updates --target main --title "PockRef X.Y.Z" --notes-file CHANGELOG_X.Y.Z.md`.
+   `gh release create release-X.Y.Z /path/to/pockref-X.Y.Z.apk --repo KangNa-K/PockRef-updates --target main --title "PockRef X.Y.Z" --notes-file /path/to/release-notes.md`.
    The `#label` suffix accepted by `gh release create` does **not** rename the
    file; use a correctly named copy.
 4. Obtain the asset ID from `gh release view release-X.Y.Z --repo KangNa-K/PockRef-updates --json assets`.
