@@ -59,8 +59,7 @@ After a version-code increase, the next ordinary launch restores this checkpoint
 External document-open requests retain priority. Android's installation
 confirmation is still required.
 
-Local verification covers reminder policy and controller behavior with fake
-downloads/installers. Before publishing, verify a real signed version-code
+Before publishing, verify a real signed version-code
 upgrade on device, permission return, background completion, download cancellation,
 and recovery with autosave disabled. Do not treat a same-version reinstall as
 an end-to-end update test.

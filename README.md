@@ -49,18 +49,6 @@ sdk.dir=/absolute/path/to/Android/sdk
 
 调试构建不需要正式签名密钥。正式版本签名从本机 `~/.android-keys/pockref/keystore.properties` 或项目根目录的 `keystore.properties` 读取；这些文件和签名密钥不包含在仓库中。自行分发时请使用自己的签名。
 
-## 测试
-
-```bash
-# 本地单元测试与静态检查
-./gradlew :app:testDebugUnitTest :app:lintDebug
-
-# 仪器测试：需要已连接的 Android 设备或模拟器
-./gradlew :app:connectedDebugAndroidTest
-```
-
-`benchmark/` 包含设备端 Macrobenchmark。性能结果与设备、系统和运行条件有关。
-
 ## 项目结构
 
 ```text
@@ -69,9 +57,6 @@ app/src/main/java/com/pockref/app/
   ui/         Compose 界面、画布和 ViewModel
   spen/       手写笔按键与输入处理
   update/     应用更新检查和安装流程
-app/src/test/           本地单元测试
-app/src/androidTest/    设备端测试
-benchmark/             性能测试
 docs/                  发布流程说明
 ```
 
