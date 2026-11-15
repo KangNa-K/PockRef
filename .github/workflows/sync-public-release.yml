@@ -1,0 +1,32 @@
+name: Sync public release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - scripts/sync-public-release.py
+      - .github/workflows/sync-public-release.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-public-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: main
+      - name: Mirror verified stable APK and legacy update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/sync-public-release.py

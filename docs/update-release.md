@@ -34,10 +34,30 @@ a new ID on reupload.
    and `releaseUrl`.
    Never publish an unverified APK URL or a hash placeholder.
 
-Versions up to and including 2.2.6 point to the source repository, which was
-private when updates moved to `PockRef-updates`. Users of those versions should
-manually install a current APK from `PockRef-updates`. Future
-updates can use the in-app button in Settings > General.
+6. Push the matching implementation/version to the public source repository,
+   then run `gh workflow run sync-public-release.yml --repo KangNa-K/PockRef`
+   and check the run result. The workflow also checks hourly for a newly
+   published stable version. `PockRef-updates` remains the canonical APK and
+   manifest channel; do not build a second APK for the source repository.
+
+## Public release mirror and legacy clients
+
+Updates moved to `PockRef-updates` in 2.2.7 while the source repository was
+private. When the source repository became public again, its last Release
+still showed 2.2.6 and its old `update/version.json` was missing.
+
+The `Sync public release` workflow runs `scripts/sync-public-release.py` to
+mirror the canonical stable APK and release notes to `KangNa-K/PockRef`, set
+that release as Latest, then restore/update its compatibility manifest last.
+It verifies both copies against the canonical SHA-256 and size and refuses
+conflicting assets, a rollback, or a source version that does not match.
+An already synchronized release is a no-op; published assets are never replaced.
+
+Versions up to and including 2.2.6 read the source repository's manifest and
+only accept APK asset URLs under `KangNa-K/PockRef`. Their compatibility
+manifest must therefore reference the mirrored asset ID, not simply copy
+the `PockRef-updates` APK URL. Once upgraded, those clients use the canonical
+update channel. Keep this compatibility route available for old installations.
 
 ## Foreground update flow
 
