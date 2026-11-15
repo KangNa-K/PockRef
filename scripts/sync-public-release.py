@@ -96,23 +96,26 @@ def main():
     # All project stable tags use release-X.Y.Z. Never replace a newer Latest.
     if tuple(map(int, latest["tag_name"].removeprefix("release-").split("."))) > tuple(map(int, version.split("."))):
         raise ValueError("Source repository already has a newer release")
-    releases = json.loads(gh("release", "list", "--repo", SOURCE, "--limit", "100", "--json", "tagName"))
-    exists = any(r["tagName"] == tag for r in releases)
+    releases = api(f"repos/{SOURCE}/releases?per_page=100")
+    release = next((r for r in releases if r["tag_name"] == tag), None)
 
     with tempfile.TemporaryDirectory(prefix="pockref-release-sync-") as directory:
         apk = Path(directory) / name
         download(manifest["apkUrl"], apk, manifest)
         notes = Path(directory) / "notes.md"
         notes.write_text(canonical["body"] + f"\n\n同步自 [{UPDATES}]({canonical['html_url']})；APK 与更新渠道完全一致。\n")
-        if not exists:
+        if release is None:
             target = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
             gh("release", "create", tag, str(apk), "--repo", SOURCE, "--target", target,
                "--title", canonical["name"], "--notes-file", str(notes), "--draft")
-        release = api(f"repos/{SOURCE}/releases/tags/{tag}")
+            # A draft may not have a Git tag yet, so /releases/tags/TAG can
+            # return 404. Authenticated release listing includes drafts.
+            releases = api(f"repos/{SOURCE}/releases?per_page=100")
+            release = next(r for r in releases if r["tag_name"] == tag)
         mirrored = [a for a in release["assets"] if a["name"] == name]
         if not mirrored and release["draft"]:
             gh("release", "upload", tag, str(apk), "--repo", SOURCE)
-            release = api(f"repos/{SOURCE}/releases/tags/{tag}")
+            release = api(f"repos/{SOURCE}/releases/{release['id']}")
             mirrored = [a for a in release["assets"] if a["name"] == name]
         if len(mirrored) != 1 or len(release["assets"]) != 1 or release["prerelease"]:
             raise ValueError("Conflicting mirror release; refusing to replace assets")
