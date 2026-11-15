@@ -5,5 +5,5 @@
   "sha256": "757d4169a73f908cdeef5ebb511a390165123e48d180a5a83c6754889b17b9c0",
   "size": 3611786,
   "notes": "修复自动备份、保存与导出问题，改进画布手势、S Pen、图片缓存和更新稳定性。",
-  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/untagged-cec801344cbf2d38fe1a"
+  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.2"
 }
