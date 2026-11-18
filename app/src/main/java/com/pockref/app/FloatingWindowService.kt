@@ -32,14 +32,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,21 +48,21 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAbsoluteAlignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.ComposeView
@@ -196,6 +193,7 @@ class FloatingWindowService : Service() {
         }
     }
     private var receiverRegistered = false
+    private var dragStartBounds: FloatingWindowBounds? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -347,12 +345,16 @@ class FloatingWindowService : Service() {
                     )
                     setContent {
                         val state by host.viewModel.uiState.collectAsState()
-                        PockRefTheme(themeMode = state.themeMode) {
+                        PockRefTheme(
+                            themeMode = state.themeMode,
+                            frostedGlassEnabled = state.frostedGlassEnabled,
+                        ) {
                             FloatingWindowFrame(
                                 viewModel = host.viewModel,
                                 state = state,
-                                onMove = ::moveWindow,
-                                onResize = ::resizeWindow,
+                                onDragStart = ::beginWindowDrag,
+                                onDrag = ::dragWindow,
+                                onDragEnd = ::finishWindowDrag,
                                 onRestoreFullScreen = ::restoreFullScreen,
                                 onMinimize = ::minimizeToBubble,
                                 onCloseFloatingWindow = ::closeFloatingWindow,
@@ -390,7 +392,7 @@ class FloatingWindowService : Service() {
         val x = preferences().getInt(KEY_X, (metrics.widthPixels - width) / 2)
             .coerceIn(0, (metrics.widthPixels - width).coerceAtLeast(0))
         val y = preferences().getInt(KEY_Y, topInset + (usableHeight - height) / 4)
-            .coerceIn(topInset, (metrics.heightPixels - height).coerceAtLeast(topInset))
+            .coerceIn(topInset, (metrics.heightPixels - dp(WINDOW_MARGIN_DP) - height).coerceAtLeast(topInset))
 
         return WindowManager.LayoutParams(
             width,
@@ -412,7 +414,8 @@ class FloatingWindowService : Service() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
+            // MotionEvent.rawX and the drag geometry use physical screen coordinates.
+            gravity = Gravity.TOP or Gravity.LEFT
             this.x = x
             this.y = y
             // The non-deprecated path is WindowInsets-based IME handling,
@@ -421,29 +424,47 @@ class FloatingWindowService : Service() {
         }
     }
 
-    private fun moveWindow(deltaX: Float, deltaY: Float) {
-        updateLayout { params, metrics ->
-            val topInset = statusBarInsetPx()
-            params.x = (params.x + deltaX.roundToInt())
-                .coerceIn(0, (metrics.widthPixels - params.width).coerceAtLeast(0))
-            params.y = (params.y + deltaY.roundToInt())
-                .coerceIn(topInset, (metrics.heightPixels - params.height).coerceAtLeast(topInset))
+    private fun beginWindowDrag() {
+        val params = layoutParams ?: return
+        val metrics = resources.displayMetrics
+        val start = FloatingWindowBounds(params.x, params.y, params.width, params.height)
+        val fitted = start.fitWithin(
+            metrics.widthPixels,
+            statusBarInsetPx(),
+            metrics.heightPixels - dp(WINDOW_MARGIN_DP),
+        )
+        if (fitted != start) {
+            updateLayout { layout, _ ->
+                layout.x = fitted.x
+                layout.y = fitted.y
+                layout.width = fitted.width
+                layout.height = fitted.height
+            }
         }
+        dragStartBounds = fitted
     }
 
-    private fun resizeWindow(deltaX: Float, deltaY: Float) {
+    private fun dragWindow(target: FloatingWindowDragTarget, deltaX: Float, deltaY: Float) {
+        val start = dragStartBounds ?: return
         updateLayout { params, metrics ->
             val topInset = statusBarInsetPx()
-            params.width = (params.width + deltaX.roundToInt()).coerceIn(
-                dp(MIN_WINDOW_WIDTH_DP),
-                (metrics.widthPixels - params.x).coerceAtLeast(dp(MIN_WINDOW_WIDTH_DP)),
+            val screenBottom = metrics.heightPixels - dp(WINDOW_MARGIN_DP)
+            val bounds = start.dragged(
+                target = target,
+                dx = deltaX.roundToInt(),
+                dy = deltaY.roundToInt(),
+                screenWidth = metrics.widthPixels,
+                screenBottom = screenBottom,
+                screenTop = topInset,
+                minWidth = dp(MIN_WINDOW_WIDTH_DP).coerceAtMost(metrics.widthPixels),
+                minHeight = dp(MIN_WINDOW_HEIGHT_DP).coerceAtMost(
+                    (screenBottom - topInset).coerceAtLeast(1),
+                ),
             )
-            params.height = (params.height + deltaY.roundToInt()).coerceIn(
-                dp(MIN_WINDOW_HEIGHT_DP),
-                (metrics.heightPixels - params.y - dp(WINDOW_MARGIN_DP))
-                    .coerceAtLeast(dp(MIN_WINDOW_HEIGHT_DP)),
-            )
-            params.y = params.y.coerceAtLeast(topInset)
+            params.x = bounds.x
+            params.y = bounds.y
+            params.width = bounds.width
+            params.height = bounds.height
         }
     }
 
@@ -452,6 +473,11 @@ class FloatingWindowService : Service() {
         val params = layoutParams ?: return
         update(params, resources.displayMetrics)
         windowManager.updateViewLayout(view, params)
+    }
+
+    private fun finishWindowDrag() {
+        dragStartBounds = null
+        val params = layoutParams ?: return
         preferences().edit {
             putInt(KEY_WIDTH, params.width)
             putInt(KEY_HEIGHT, params.height)
@@ -511,7 +537,7 @@ class FloatingWindowService : Service() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
+            gravity = Gravity.TOP or Gravity.LEFT
             x = preferences().getInt(
                 KEY_BUBBLE_X,
                 metrics.widthPixels - size - dp(WINDOW_MARGIN_DP),
@@ -679,34 +705,50 @@ class FloatingWindowService : Service() {
     }
 }
 
+private class FloatingWindowTouchState {
+    var downX = 0f
+    var downY = 0f
+    var dragging = false
+    var cancelled = false
+}
+
+// Screen coordinates and a frozen window rectangle prevent feedback/jitter when
+// the top or left edge moves underneath the finger during the same gesture.
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
 private fun Modifier.floatingWindowHandleGesture(
-    onTap: () -> Unit,
-    onMove: (Float, Float) -> Unit,
-): Modifier = pointerInput(Unit) {
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        var accumulatedDelta = Offset.Zero
-        var dragging = false
-
-        do {
-            val event = awaitPointerEvent()
-            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            val delta = change.positionChange()
-            accumulatedDelta += delta
-            if (!dragging && hypot(
-                    accumulatedDelta.x.toDouble(),
-                    accumulatedDelta.y.toDouble(),
-                ) > viewConfiguration.touchSlop
-            ) {
-                dragging = true
+    onDragStart: () -> Unit,
+    onDrag: (Float, Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onTap: () -> Unit = {},
+): Modifier {
+    val touch = remember { FloatingWindowTouchState() }
+    val slop = LocalViewConfiguration.current.touchSlop
+    return pointerInteropFilter { event ->
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touch.downX = event.rawX
+                touch.downY = event.rawY
+                touch.dragging = false
+                touch.cancelled = false
+                onDragStart()
             }
-            if (dragging && delta != Offset.Zero) {
-                change.consume()
-                onMove(delta.x, delta.y)
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> {
+                touch.cancelled = true
+                onDragEnd()
             }
-        } while (change.pressed)
-
-        if (!dragging) onTap()
+            MotionEvent.ACTION_MOVE -> if (!touch.cancelled) {
+                val dx = event.rawX - touch.downX
+                val dy = event.rawY - touch.downY
+                if (hypot(dx.toDouble(), dy.toDouble()) > slop) touch.dragging = true
+                if (touch.dragging) onDrag(dx, dy)
+            }
+            MotionEvent.ACTION_UP -> {
+                onDragEnd()
+                if (!touch.cancelled && !touch.dragging) onTap()
+            }
+        }
+        true
     }
 }
 
@@ -714,8 +756,9 @@ private fun Modifier.floatingWindowHandleGesture(
 private fun FloatingWindowFrame(
     viewModel: PockRefViewModel,
     state: com.pockref.app.model.PockRefUiState,
-    onMove: (Float, Float) -> Unit,
-    onResize: (Float, Float) -> Unit,
+    onDragStart: () -> Unit,
+    onDrag: (FloatingWindowDragTarget, Float, Float) -> Unit,
+    onDragEnd: () -> Unit,
     onRestoreFullScreen: () -> Unit,
     onMinimize: () -> Unit,
     onCloseFloatingWindow: () -> Unit,
@@ -723,18 +766,11 @@ private fun FloatingWindowFrame(
     var controlsExpanded by remember { mutableStateOf(false) }
     var controlsBounds by remember { mutableStateOf(Rect.Zero) }
     val windowShape = RoundedCornerShape(28.dp)
-    val contentShape = RoundedCornerShape(25.dp)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .clip(windowShape)
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
-            .border(
-                width = 0.75.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                shape = windowShape,
-            )
             // Observe presses without consuming them. Canvas gestures retain
             // their original behavior while any press outside the control pill
             // returns its chrome to the compact One UI handle.
@@ -750,9 +786,7 @@ private fun FloatingWindowFrame(
     ) {
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(3.dp)
-                .clip(contentShape),
+                .fillMaxSize(),
         ) {
             PockRefApp(
                 state = state,
@@ -767,39 +801,35 @@ private fun FloatingWindowFrame(
             )
         }
 
-        if (!controlsExpanded) {
-            Surface(
+        // Keep the input target on a plain Box: Surface adds an internal
+        // pointer handler that prevents pointerInteropFilter from owning DOWN.
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .size(width = 96.dp, height = 32.dp)
+                .floatingWindowHandleGesture(
+                    onDragStart = onDragStart,
+                    onDrag = { dx, dy -> onDrag(FloatingWindowDragTarget.MOVE, dx, dy) },
+                    onDragEnd = onDragEnd,
+                    onTap = { controlsExpanded = true },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 4.dp)
-                    .size(width = 72.dp, height = 28.dp)
-                    .floatingWindowHandleGesture(
-                        onTap = { controlsExpanded = true },
-                        onMove = onMove,
+                    .size(width = 40.dp, height = 4.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+                        shape = RoundedCornerShape(4.dp),
                     ),
-                shape = RoundedCornerShape(16.dp),
-                color = Color.Transparent,
-                tonalElevation = 0.dp,
-                shadowElevation = 0.dp,
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 40.dp, height = 4.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
-                                shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
-                            ),
-                    )
-                }
-            }
+            )
         }
 
         AnimatedVisibility(
             visible = controlsExpanded,
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 6.dp),
+                .padding(top = 36.dp),
             enter = fadeIn() + expandHorizontally(expandFrom = Alignment.CenterHorizontally),
             exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.CenterHorizontally),
         ) {
@@ -850,18 +880,25 @@ private fun FloatingWindowFrame(
             }
         }
 
-        // The lower-right corner remains a resize hit area only, with no icon.
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(2.dp)
-                .size(32.dp)
-                .pointerInput(Unit) {
-                    detectDragGestures { change, dragAmount ->
-                        change.consume()
-                        onResize(dragAmount.x, dragAmount.y)
-                    }
-                },
-        )
+        FloatingWindowDragTarget.entries.filter { it != FloatingWindowDragTarget.MOVE }.forEach { corner ->
+            val alignment = when (corner) {
+                FloatingWindowDragTarget.TOP_LEFT -> BiasAbsoluteAlignment(-1f, -1f)
+                FloatingWindowDragTarget.TOP_RIGHT -> BiasAbsoluteAlignment(1f, -1f)
+                FloatingWindowDragTarget.BOTTOM_LEFT -> BiasAbsoluteAlignment(-1f, 1f)
+                else -> BiasAbsoluteAlignment(1f, 1f)
+            }
+            Box(Modifier.align(alignment).size(48.dp)) {
+                // Invisible L-shaped targets overlay only the outer edge;
+                // the canvas fills the window without any reserved frame.
+                // Keep the inner corner clear for canvas controls and gestures.
+                val gesture = Modifier.floatingWindowHandleGesture(
+                    onDragStart = onDragStart,
+                    onDrag = { dx, dy -> onDrag(corner, dx, dy) },
+                    onDragEnd = onDragEnd,
+                )
+                Box(Modifier.align(alignment).size(width = 48.dp, height = 16.dp).then(gesture))
+                Box(Modifier.align(alignment).size(width = 16.dp, height = 48.dp).then(gesture))
+            }
+        }
     }
 }
