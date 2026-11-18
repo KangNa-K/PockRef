@@ -31,7 +31,6 @@ import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
@@ -60,6 +59,7 @@ import androidx.compose.ui.BiasAbsoluteAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -67,6 +67,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.lifecycle.Lifecycle
@@ -801,35 +802,28 @@ private fun FloatingWindowFrame(
             )
         }
 
-        // Keep the input target on a plain Box: Surface adds an internal
-        // pointer handler that prevents pointerInteropFilter from owning DOWN.
-        Box(
+        // A native touch target keeps ownership during a stationary long hold
+        // instead of allowing canvas/Compose long-press handlers to cancel it.
+        val handleColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f).toArgb()
+        AndroidView(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .size(width = 96.dp, height = 32.dp)
-                .floatingWindowHandleGesture(
-                    onDragStart = onDragStart,
-                    onDrag = { dx, dy -> onDrag(FloatingWindowDragTarget.MOVE, dx, dy) },
-                    onDragEnd = onDragEnd,
-                    onTap = { controlsExpanded = true },
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(width = 40.dp, height = 4.dp)
-                    .background(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
-                        shape = RoundedCornerShape(4.dp),
-                    ),
-            )
-        }
+                .size(width = 96.dp, height = 40.dp),
+            factory = { context -> FloatingWindowMoveHandle(context) },
+            update = { handle ->
+                handle.handleColor = handleColor
+                handle.onDragStart = onDragStart
+                handle.onDrag = { dx, dy -> onDrag(FloatingWindowDragTarget.MOVE, dx, dy) }
+                handle.onDragEnd = onDragEnd
+                handle.onTap = { controlsExpanded = true }
+            },
+        )
 
         AnimatedVisibility(
             visible = controlsExpanded,
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 36.dp),
+                .padding(top = 44.dp),
             enter = fadeIn() + expandHorizontally(expandFrom = Alignment.CenterHorizontally),
             exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.CenterHorizontally),
         ) {
