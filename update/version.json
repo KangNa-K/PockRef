@@ -1,9 +1,9 @@
 {
-  "versionCode": 50,
-  "versionName": "2.5.4",
-  "apkUrl": "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/764085944",
-  "sha256": "08ead266ff14cb8484cd5fe4c580d70051c39e851463322b62b33a06197ae897",
-  "size": 3611786,
-  "notes": "悬浮窗保持无边框显示，支持四角拖动缩放；修复顶部把手拖动，优化触摸热区、缩放稳定性和屏幕边界处理。",
-  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.4"
+  "versionCode": 51,
+  "versionName": "2.5.5",
+  "apkUrl": "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/764780631",
+  "sha256": "54dd634840bdd9f7464003b07f873b1b91fdedeb5611c000b74c6a1d7f96f32b",
+  "size": 3628170,
+  "notes": "修复悬浮窗顶部把手按住后无法拖动的问题；扩大透明触摸区域，保持无边框显示和四角缩放。",
+  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.5"
 }
