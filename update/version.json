@@ -1,9 +1,9 @@
 {
-  "versionCode": 49,
-  "versionName": "2.5.3",
-  "apkUrl": "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/763390707",
-  "sha256": "abde956631db944ad85f6d53f613658c150602a1d01f6a070f5d5d8dcf3635d8",
+  "versionCode": 50,
+  "versionName": "2.5.4",
+  "apkUrl": "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/764085944",
+  "sha256": "08ead266ff14cb8484cd5fe4c580d70051c39e851463322b62b33a06197ae897",
   "size": 3611786,
-  "notes": "新增画布网格样式；更新检测、安装包和源码统一迁入公开的 PockRef 项目仓库。",
-  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.3"
+  "notes": "悬浮窗保持无边框显示，支持四角拖动缩放；修复顶部把手拖动，优化触摸热区、缩放稳定性和屏幕边界处理。",
+  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.4"
 }
