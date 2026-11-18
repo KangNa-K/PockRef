@@ -18,9 +18,9 @@
 
 ## 下载
 
-已签名的 Android 安装包发布在独立的更新仓库：
+源码、已签名的 Android 安装包和更新清单统一发布在本仓库：
 
-[下载 PockRef APK](https://github.com/KangNa-K/PockRef-updates/releases/latest)
+[下载 PockRef APK](https://github.com/KangNa-K/PockRef/releases/latest)
 
 应用最低支持 Android 7.0（API 24）。平板和手写笔是主要使用场景。
 
@@ -64,7 +64,7 @@ docs/                  发布流程说明
 
 欢迎通过 [Issues](https://github.com/KangNa-K/PockRef/issues) 报告问题，或提交 Pull Request。报告问题时请附上应用版本、设备型号、Android 版本和复现步骤。提交日志或测试文件前，请移除私人图片、路径和其他个人信息。
 
-APK 更新流程见 [docs/update-release.md](docs/update-release.md)，版本变更见 [GitHub Releases](https://github.com/KangNa-K/PockRef-updates/releases)。
+APK 更新流程见 [docs/update-release.md](docs/update-release.md)，版本变更见 [GitHub Releases](https://github.com/KangNa-K/PockRef/releases)。
 
 ## 许可证
 

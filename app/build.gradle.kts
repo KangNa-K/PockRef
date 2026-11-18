@@ -16,8 +16,8 @@ android {
         minSdk = 24
         targetSdk = 34
 
-        versionCode = 48
-        versionName = "2.5.2"
+        versionCode = 49
+        versionName = "2.5.3"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -117,6 +117,7 @@ kotlin {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
 
     implementation(composeBom)

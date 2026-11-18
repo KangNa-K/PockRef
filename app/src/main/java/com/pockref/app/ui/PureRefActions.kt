@@ -8,6 +8,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import com.pockref.app.model.AlignMode
 import com.pockref.app.model.BackgroundPreset
+import com.pockref.app.model.CanvasStyle
 import com.pockref.app.model.CropAspect
 import com.pockref.app.data.ThemeMode
 import com.pockref.app.model.CropRect
@@ -662,6 +663,7 @@ sealed interface PockRefAction {
     data class ShowBackgroundPicker(val show: Boolean) : PockRefAction
     data class SetThemeMode(val mode: ThemeMode) : PockRefAction
     data class SetFrostedGlassEnabled(val enabled: Boolean) : PockRefAction
+    data class SetCanvasStyle(val style: CanvasStyle) : PockRefAction
     /**
      * Acknowledge the most recent UiError after the Snackbar has been displayed.
      * The UI fires this when the snackbar is dismissed so the VM can clear

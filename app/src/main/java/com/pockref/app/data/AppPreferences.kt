@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.pockref.app.model.BackgroundPreset
+import com.pockref.app.model.CanvasStyle
 import com.pockref.app.spen.SpenMode
 
 /**
@@ -41,6 +42,15 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_FROSTED_GLASS_ENABLED, true)
         set(value) {
             prefs.edit { putBoolean(KEY_FROSTED_GLASS_ENABLED, value) }
+        }
+
+    var canvasStyle: CanvasStyle
+        get() {
+            val stored = prefs.getString(KEY_CANVAS_STYLE, null) ?: return CanvasStyle.SOLID
+            return runCatching { CanvasStyle.valueOf(stored) }.getOrDefault(CanvasStyle.SOLID)
+        }
+        set(value) {
+            prefs.edit { putString(KEY_CANVAS_STYLE, value.name) }
         }
 
     var themeMode: ThemeMode
@@ -522,6 +532,7 @@ class AppPreferences(context: Context) {
         private const val KEY_DEFAULT_BG_PRESET = "default_background_preset"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_FROSTED_GLASS_ENABLED = "frosted_glass_enabled"
+        private const val KEY_CANVAS_STYLE = "canvas_style"
         private const val KEY_EDGE_SNAP_ENABLED = "edge_snap_enabled"
         private const val KEY_ROTATION_SNAP_ENABLED = "rotation_snap_enabled"
         private const val KEY_DISABLED_GESTURE_IDS = "disabled_gesture_ids"

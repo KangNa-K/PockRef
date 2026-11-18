@@ -341,6 +341,7 @@ import com.pockref.app.data.ImageTilePlanner
 import com.pockref.app.data.ImageTilePolicy
 import com.pockref.app.data.ThemeMode
 import com.pockref.app.model.BackgroundPreset
+import com.pockref.app.model.CanvasStyle
 import com.pockref.app.model.CanvasMarkupStroke
 import com.pockref.app.model.CanvasMarkupText
 import com.pockref.app.model.ColorAdjust
@@ -9493,6 +9494,10 @@ private fun PockRefCanvas(
             stateOffset = state.canvasOffset,
             presentationOffset = canvasPanPresentationOffset,
         )
+
+        if (state.canvasStyle == CanvasStyle.GRID) {
+            drawCanvasGrid(state.backgroundColor, state.canvasScale, renderCanvasOffset)
+        }
 
         // Viewport cull: compute the world-space visible rect once per draw
         // pass, then skip images whose AABB does not intersect it. The

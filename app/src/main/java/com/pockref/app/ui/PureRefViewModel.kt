@@ -281,6 +281,7 @@ class PockRefViewModel(application: Application) : AndroidViewModel(application)
             backgroundCustomColor = appPrefs.defaultBackgroundPreset.color,
             themeMode = appPrefs.themeMode,
             frostedGlassEnabled = appPrefs.frostedGlassEnabled,
+            canvasStyle = appPrefs.canvasStyle,
             // V_NOW: spenMode pref → uiState. The detector in
             // MainActivity reads the pref directly (not the
             // uiState) on construction — see MainActivity.onCreate
@@ -1565,6 +1566,10 @@ is PockRefAction.SetCanvasOffsetFromMinimap -> {
             is PockRefAction.SetFrostedGlassEnabled -> {
                 appPrefs.frostedGlassEnabled = action.enabled
                 _uiState.update { it.copy(frostedGlassEnabled = action.enabled) }
+            }
+            is PockRefAction.SetCanvasStyle -> {
+                appPrefs.canvasStyle = action.style
+                _uiState.update { it.copy(canvasStyle = action.style) }
             }
             PockRefAction.ConsumeError -> consumeError()
             is PockRefAction.SetHover -> setHover(action.imageId, action.position)

@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.pockref.app.data.ThemeMode
+import com.pockref.app.model.CanvasStyle
 import com.pockref.app.model.PockRefUiState
 import com.pockref.app.ui.CompactSegmentedControl
 import com.pockref.app.ui.PockRefAction
@@ -18,6 +19,7 @@ import com.pockref.app.ui.PockRefAction
  * "外观" tab — visual look-and-feel:
  * -主题 (system / light / dark segmented row)
  * -毛玻璃效果 (persistent toolbar and popup backdrop-blur switch)
+ * -画布样式 (solid background / world-aligned grid)
  * -背景颜色 (7 preset swatches + inline HSV wheel on the
  * "Custom" chip)
  *
@@ -70,6 +72,20 @@ internal fun SettingsAppearanceTab(
  checked = state.frostedGlassEnabled,
  onCheckedChange = { onAction(PockRefAction.SetFrostedGlassEnabled(it)) },
  )
+ }
+ item {
+ Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+ SettingsSectionHeading("画布样式")
+ val canvasStyles = listOf(CanvasStyle.SOLID, CanvasStyle.GRID)
+ CompactSegmentedControl(
+ options = listOf("纯色", "网格"),
+ selectedIndex = canvasStyles.indexOf(state.canvasStyle),
+ onOptionClick = { index ->
+ onAction(PockRefAction.SetCanvasStyle(canvasStyles[index]))
+ },
+ modifier = Modifier.testTag("canvas-style-toggle"),
+ )
+ }
  }
  //背景颜色
  item {

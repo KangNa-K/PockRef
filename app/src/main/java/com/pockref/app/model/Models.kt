@@ -854,6 +854,9 @@ data class CropRect(
     }
 }
 
+/** Global display preference; deliberately excluded from scene serialization. */
+enum class CanvasStyle { SOLID, GRID }
+
 data class PockRefUiState(
     val sceneName: String = "Untitled",
     val backgroundColor: Color = BackgroundPreset.White.color,
@@ -861,6 +864,7 @@ data class PockRefUiState(
     val showBackgroundPicker: Boolean = false,
     val themeMode: com.pockref.app.data.ThemeMode = com.pockref.app.data.ThemeMode.LIGHT,
     val frostedGlassEnabled: Boolean = true,
+    val canvasStyle: CanvasStyle = CanvasStyle.SOLID,
     /**
      * V_NOW: S Pen side-button gesture mode. Mirrors
      * [com.pockref.app.data.AppPreferences.spenMode] so the
