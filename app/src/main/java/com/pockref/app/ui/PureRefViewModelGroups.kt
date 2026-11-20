@@ -130,6 +130,7 @@ class PureRefViewModelGroups internal constructor(private val mainVm: PockRefVie
                     ?: orderedMembers.lastOrNull()?.id,
                 multiSelectMode = combinedIds.size > 1,
                 transientDragImageIds = emptySet(),
+                transientDragMarkupIds = emptySet(),
                 transientDragDelta = Offset.Zero,
                 snapGuide = null,
                 snapInRangeSinceMs = null,

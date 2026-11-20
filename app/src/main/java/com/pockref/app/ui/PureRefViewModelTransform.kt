@@ -890,9 +890,12 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         }
         if (targets.isEmpty()) return
         mainVm.updateSceneForGesture {
-            copy(images = images.map { image ->
-                if (image.id in targets) image.copy(center = image.center + delta / canvasScale) else image
-            })
+            val worldDelta = delta / canvasScale
+            moveGroupMarkup(markupIdsForGroupMove(targets), worldDelta).copy(
+                images = images.map { image ->
+                    if (image.id in targets) image.copy(center = image.center + worldDelta) else image
+                },
+            )
         }
     }
 
@@ -1031,6 +1034,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         mainVm._uiState.update {
             it.copy(
                 transientDragImageIds = targets,
+                transientDragMarkupIds = it.markupIdsForGroupMove(targets),
                 transientDragDelta = Offset.Zero,
                 // Clear any leftover snap state from a previous gesture so
                 // the new gesture starts from a clean visual baseline.
@@ -1222,11 +1226,13 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         // 同步清零 transient 状态：否则下一帧 drawSceneImage 会把 dragDelta 叠加到
         // 已含 dragDelta 的 image.center 上（image.center + dragOffset），导致 2x 跳位。
         mainVm.updateSceneForGesture {
-            copy(
+            val markupIds = transientDragMarkupIds.intersect(markupIdsForGroupMove(movableIds.toSet()))
+            moveGroupMarkup(markupIds, dragDelta).copy(
                 images = images.map { image ->
                     if (image.id in movableIds) image.copy(center = image.center + dragDelta) else image
                 },
                 transientDragImageIds = emptySet(),
+                transientDragMarkupIds = emptySet(),
                 transientDragDelta = Offset.Zero,
                 snapGuide = null,
                 // Reset the V4 intent-detection state machine so the
@@ -1266,6 +1272,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
         mainVm._uiState.update {
             it.copy(
                 transientDragImageIds = emptySet(),
+                transientDragMarkupIds = emptySet(),
                 transientDragDelta = Offset.Zero,
                 snapGuide = null,
                 snapInRangeSinceMs = null,
@@ -1737,6 +1744,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                 selectedImageId = remaining.lastOrNull()?.id,
                 selectedImageIds = remaining.lastOrNull()?.id?.let(::setOf).orEmpty(),
                 transientDragImageIds = emptySet(),
+                transientDragMarkupIds = emptySet(),
                 transientDragDelta = Offset.Zero,
             )
         }
@@ -2011,6 +2019,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                         pendingMarkupTextFontSize = 80f,
                         editingMarkupTextId = null,
                         transientDragImageIds = emptySet(),
+                        transientDragMarkupIds = emptySet(),
                         transientDragDelta = Offset.Zero,
                     ).normalizeSelection().clearPosterizePreview()
                         .syncHistoryFlags(mainVm.undoStackSize, mainVm.redoStackSize)
@@ -2031,6 +2040,7 @@ class PockRefViewModelTransform(private val mainVm: PockRefViewModel) {
                 is SceneDiff.ReplaceImages -> state.copy(
                     images = diff.newImages,
                     transientDragImageIds = emptySet(),
+                    transientDragMarkupIds = emptySet(),
                     transientDragDelta = Offset.Zero,
                 )
                 is SceneDiff.ReplaceGroups -> state.copy(groups = diff.newGroups)

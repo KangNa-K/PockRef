@@ -9734,8 +9734,11 @@ private fun PockRefCanvas(
             val texts = state.markupTexts.associateBy { it.id }
             (state.markupStrokes.map { it.zOrder to it.id } + state.markupTexts.map { it.zOrder to it.id })
                 .sortedBy { it.first }.forEach { (_, id) ->
-                    strokes[id]?.let { drawMarkupStroke(it,centerOffset,state.canvasScale,renderCanvasOffset) }
-                    texts[id]?.let { drawMarkupText(it,centerOffset,state.canvasScale,renderCanvasOffset) }
+                    val markupOffset = renderCanvasOffset + if (id in state.transientDragMarkupIds) {
+                        state.transientDragDelta * state.canvasScale
+                    } else Offset.Zero
+                    strokes[id]?.let { drawMarkupStroke(it,centerOffset,state.canvasScale,markupOffset) }
+                    texts[id]?.let { drawMarkupText(it,centerOffset,state.canvasScale,markupOffset) }
                 }
             state.draftMarkupStroke?.let { drawMarkupStroke(it,centerOffset,state.canvasScale,renderCanvasOffset) }
             if (state.markupModeActive) markupSelectionBounds(state)?.let { bounds ->

@@ -1112,6 +1112,8 @@ data class PockRefUiState(
     val canvasViewportSize: Size2D = Size2D(0f, 0f),
     val canvasOriginInWindow: Offset = Offset.Zero,
     val transientDragImageIds: Set<String> = emptySet(),
+    /** Annotations enclosed by whole groups at drag start; previewed with the image drag delta. */
+    val transientDragMarkupIds: Set<String> = emptySet(),
     val transientDragDelta: Offset = Offset.Zero,
     val isBusy: Boolean = false,
     val cropImageId: String? = null,

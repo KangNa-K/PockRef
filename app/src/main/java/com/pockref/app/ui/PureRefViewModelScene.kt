@@ -658,6 +658,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                     canvasScale = 1f,
                     fittedImageId = null,
                     transientDragImageIds = emptySet(),
+                    transientDragMarkupIds = emptySet(),
                     transientDragDelta = Offset.Zero,
                 ).clearPosterizePreview()
             }
@@ -715,6 +716,7 @@ class PockRefViewModelScene(private val mainVm: PockRefViewModel) {
                 canvasScale = 1f,
                 fittedImageId = null,
                 transientDragImageIds = emptySet(),
+                transientDragMarkupIds = emptySet(),
                 transientDragDelta = Offset.Zero,
             ).clearPosterizePreview()
         }
