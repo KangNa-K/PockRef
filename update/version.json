@@ -1,9 +1,9 @@
 {
-  "versionCode": 52,
-  "versionName": "2.5.6",
-  "apkUrl": "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/771619334",
-  "sha256": "d3219dfbfe6e748919277fa57102b36eb75ae6578824fd36c095436c38269fc6",
+  "versionCode": 53,
+  "versionName": "2.5.7",
+  "apkUrl": "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/776489869",
+  "sha256": "11e962de0b4b7d81cc023ec7ddbfd534b0c353fe4291d9529ad9ed1540c2b487",
   "size": 3628170,
-  "notes": "移动整组时，完整位于组框内且未锁定的便签、绘画和标记会跟随图片一起移动，支持撤销重做；修复小便签和组边缘便签无法随组移动的问题。",
-  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.6"
+  "notes": "长按图片吸色，松手后自动复制 #RRGGBB 色号到剪贴板，无需再点击复制；普通图片和悬停放大预览均支持。",
+  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.7"
 }
