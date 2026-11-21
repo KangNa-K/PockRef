@@ -12,11 +12,13 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Outline
 import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -181,6 +183,7 @@ private class SpenInputFrameLayout(
  */
 class FloatingWindowService : Service() {
 
+    private lateinit var overlayContext: Context
     private lateinit var windowManager: WindowManager
     private var overlayView: View? = null
     private var overlayOwner: FloatingWindowLifecycleOwner? = null
@@ -320,7 +323,7 @@ class FloatingWindowService : Service() {
             return
         }
 
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        initializeWindowEnvironment(host.activity)
         val owner = FloatingWindowLifecycleOwner()
         val params = createLayoutParams()
         val inputBridge = SpenMotionEventBridge(
@@ -329,7 +332,7 @@ class FloatingWindowService : Service() {
                 onEvent = host.onSpenEvent,
             ),
         )
-        val view = SpenInputFrameLayout(host.activity) { event ->
+        val view = SpenInputFrameLayout(overlayContext) { event ->
             inputBridge.onButtonState(event.buttonState)
         }.apply {
             // The Activity supplies file pickers and back dispatch; this owner
@@ -339,6 +342,9 @@ class FloatingWindowService : Service() {
             setViewTreeSavedStateRegistryOwner(host.activity)
             setViewTreeOnBackPressedDispatcherOwner(host.activity)
             addView(
+                // Keep Activity-owned dialogs and result launchers on their
+                // original UI context. Only the outer window's ViewRoot and
+                // geometry belong to the independent overlay environment.
                 ComposeView(host.activity).apply {
                     layoutParams = FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -374,7 +380,7 @@ class FloatingWindowService : Service() {
     }
 
     private fun createLayoutParams(): WindowManager.LayoutParams {
-        val metrics = resources.displayMetrics
+        val metrics = screenMetrics()
         val topInset = statusBarInsetPx()
         val usableHeight = (metrics.heightPixels - topInset - dp(WINDOW_MARGIN_DP))
             .coerceAtLeast(dp(MIN_WINDOW_HEIGHT_DP))
@@ -427,7 +433,7 @@ class FloatingWindowService : Service() {
 
     private fun beginWindowDrag() {
         val params = layoutParams ?: return
-        val metrics = resources.displayMetrics
+        val metrics = screenMetrics()
         val start = FloatingWindowBounds(params.x, params.y, params.width, params.height)
         val fitted = start.fitWithin(
             metrics.widthPixels,
@@ -472,7 +478,7 @@ class FloatingWindowService : Service() {
     private fun updateLayout(update: (WindowManager.LayoutParams, DisplayMetrics) -> Unit) {
         val view = overlayView ?: return
         val params = layoutParams ?: return
-        update(params, resources.displayMetrics)
+        update(params, screenMetrics())
         windowManager.updateViewLayout(view, params)
     }
 
@@ -521,7 +527,7 @@ class FloatingWindowService : Service() {
 
     private fun showBubble() {
         if (bubbleView != null) return
-        val metrics = resources.displayMetrics
+        val metrics = screenMetrics()
         val size = dp(BUBBLE_SIZE_DP)
         val topInset = statusBarInsetPx()
         val params = WindowManager.LayoutParams(
@@ -546,7 +552,7 @@ class FloatingWindowService : Service() {
             y = preferences().getInt(KEY_BUBBLE_Y, topInset + dp(WINDOW_MARGIN_DP))
                 .coerceIn(topInset, (metrics.heightPixels - size).coerceAtLeast(topInset))
         }
-        val bubble = ImageView(this).apply {
+        val bubble = ImageView(overlayContext).apply {
             setImageDrawable(applicationInfo.loadIcon(packageManager))
             scaleType = ImageView.ScaleType.FIT_CENTER
             background = null
@@ -605,7 +611,7 @@ class FloatingWindowService : Service() {
                     val dy = event.rawY - downY
                     if (!dragged && hypot(dx.toDouble(), dy.toDouble()) > dp(6)) dragged = true
                     if (dragged) {
-                        val metrics = resources.displayMetrics
+                        val metrics = screenMetrics()
                         val topInset = statusBarInsetPx()
                         params.x = (startX + dx.roundToInt())
                             .coerceIn(0, (metrics.widthPixels - params.width).coerceAtLeast(0))
@@ -630,7 +636,7 @@ class FloatingWindowService : Service() {
 
     private fun snapBubbleToNearestEdge(view: View) {
         val params = bubbleLayoutParams ?: return
-        val metrics = resources.displayMetrics
+        val metrics = screenMetrics()
         params.x = if (params.x + params.width / 2 < metrics.widthPixels / 2) {
             0
         } else {
@@ -656,9 +662,9 @@ class FloatingWindowService : Service() {
         // before API 30, so the framework dimen stays as the floor that keeps
         // the overlay below the status bar (2.2.3 fix).
         @Suppress("InternalInsetResource", "DiscouragedApi")
-        val resourceId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        val resourceId = overlayContext.resources.getIdentifier("status_bar_height", "dimen", "android")
         val resourceInset = if (resourceId > 0) {
-            resources.getDimensionPixelSize(resourceId)
+            overlayContext.resources.getDimensionPixelSize(resourceId)
         } else {
             0
         }
@@ -671,7 +677,39 @@ class FloatingWindowService : Service() {
 
     private fun preferences() = getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
+    private fun dp(value: Int): Int = (value * overlayContext.resources.displayMetrics.density).roundToInt()
+
+    private fun initializeWindowEnvironment(activity: MainActivity) {
+        if (::overlayContext.isInitialized) return
+        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            activity.display
+        } else {
+            @Suppress("DEPRECATION")
+            activity.windowManager.defaultDisplay
+        } ?: getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+        val displayContext = createDisplayContext(display)
+        // An Activity in system freeform mode carries that task's bounds and
+        // compatibility transforms. The overlay's ViewRoot and geometry must
+        // use the display's own configuration instead of the task's limits.
+        overlayContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            displayContext.createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
+        } else {
+            displayContext
+        }
+        windowManager = overlayContext.getSystemService(WindowManager::class.java)
+    }
+
+    private fun screenMetrics(): DisplayMetrics = DisplayMetrics().apply {
+        setTo(overlayContext.resources.displayMetrics)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windowManager.maximumWindowMetrics.bounds
+            widthPixels = bounds.width()
+            heightPixels = bounds.height()
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(this)
+        }
+    }
 
     companion object {
         private const val TAG = "FloatingWindowService"
