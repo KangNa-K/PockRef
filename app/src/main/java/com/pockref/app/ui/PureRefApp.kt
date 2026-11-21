@@ -6310,6 +6310,7 @@ private fun PockRefCanvas(
         }
     }
 
+    val colorSamplerContext = androidx.compose.ui.platform.LocalContext.current
     val currentHoverProgress by rememberUpdatedState(hoverProgress)
     val colorSamplerScope = rememberCoroutineScope()
     val colorSampleRequestSerial = remember { mutableLongStateOf(0L) }
@@ -7160,6 +7161,7 @@ private fun PockRefCanvas(
                     var colorSamplerImageId: String? = null
                     var latestColorSamplerPosition = downPos
                     var lastColorSamplerPosition: Offset? = null
+                    var latestColorSample: ColorSample? = null
                     val previewImage = s.hoverPreviewImageId?.let { id ->
                         s.images.firstOrNull { it.id == id && bitmapCache.containsKey(id) }
                     }
@@ -7215,22 +7217,34 @@ private fun PockRefCanvas(
                             } ?: return@launch
                             if (serial != colorSampleRequestSerial.longValue) return@launch
                             val values = ColorSamplerMath.fromArgb(argb)
-                            currentOnAction(
-                                PockRefAction.SetColorSample(
-                                    ColorSample(
-                                        imageId = imageId,
-                                        screenPosition = point,
-                                        sourceX = sourcePixel.x,
-                                        sourceY = sourcePixel.y,
-                                        argb = argb,
-                                        hue = values.hue,
-                                        saturation = values.saturation,
-                                        value = values.value,
-                                        alpha = values.alpha,
-                                        rgbHex = values.rgbHex,
-                                    ),
-                                ),
+                            val sample = ColorSample(
+                                imageId = imageId,
+                                screenPosition = point,
+                                sourceX = sourcePixel.x,
+                                sourceY = sourcePixel.y,
+                                argb = argb,
+                                hue = values.hue,
+                                saturation = values.saturation,
+                                value = values.value,
+                                alpha = values.alpha,
+                                rgbHex = values.rgbHex,
                             )
+                            latestColorSample = sample
+                            currentOnAction(PockRefAction.SetColorSample(sample))
+                        }
+                    }
+
+                    fun copyCompletedColorSample() {
+                        val serial = colorSampleRequestSerial.longValue
+                        val sampleJob = colorSampleJob.value
+                        colorSamplerScope.launch {
+                            // The release position may still be decoding. Copy once it is
+                            // ready, unless another request or cancellation superseded it.
+                            sampleJob?.join()
+                            if (serial != colorSampleRequestSerial.longValue) return@launch
+                            latestColorSample?.let { sample ->
+                                copyColorSampleToClipboard(colorSamplerContext, sample)
+                            }
                         }
                     }
 
@@ -7378,7 +7392,10 @@ private fun PockRefCanvas(
                                 }
                                 if (colorSamplerActive) requestOriginalColorSample(previewImage.id, change.position)
                                 change.consume()
-                                if (!change.pressed) break
+                                if (!change.pressed) {
+                                    if (colorSamplerActive) copyCompletedColorSample()
+                                    break
+                                }
                             }
                         } finally {
                             colorSamplerCandidateActive = false
@@ -8006,6 +8023,7 @@ private fun PockRefCanvas(
                                     colorSamplerLens.value = null
                                     colorSamplerActive = false
                                     colorSamplerCompleted = true
+                                    copyCompletedColorSample()
                                 }
                                 change.consume()
                                 continue

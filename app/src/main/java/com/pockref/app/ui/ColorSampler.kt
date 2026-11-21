@@ -57,6 +57,11 @@ import com.pockref.app.model.ColorSample
 import com.pockref.app.model.SceneImage
 import com.pockref.app.ui.theme.Dimens
 
+internal fun copyColorSampleToClipboard(context: Context, sample: ColorSample) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText("色号", sample.rgbHex))
+}
+
 internal data class ColorSamplerLens(
     val image: SceneImage,
     val point: Offset,
@@ -222,8 +227,7 @@ internal fun ColorSamplerPanel(
             Spacer(Modifier.width(2.dp))
             IconButton(
                 onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("色号", sample.rgbHex))
+                    copyColorSampleToClipboard(context, sample)
                     onClose()
                 },
                 modifier = Modifier
