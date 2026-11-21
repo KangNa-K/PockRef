@@ -1,9 +1,9 @@
 {
-  "versionCode": 53,
-  "versionName": "2.5.7",
-  "apkUrl": "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/776489869",
-  "sha256": "11e962de0b4b7d81cc023ec7ddbfd534b0c353fe4291d9529ad9ed1540c2b487",
+  "versionCode": 54,
+  "versionName": "2.5.8",
+  "apkUrl": "https://api.github.com/repos/KangNa-K/PockRef/releases/assets/776564445",
+  "sha256": "b85a7d38425bc35582e9904094f1ba429a98cd549129247530a4d38ff0c4fb29",
   "size": 3628170,
-  "notes": "长按图片吸色，松手后自动复制 #RRGGBB 色号到剪贴板，无需再点击复制；普通图片和悬停放大预览均支持。",
-  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.7"
+  "notes": "修复从系统小窗切换到悬浮窗后，窗口无法正常移动和调整大小的问题；悬浮窗与悬浮球统一使用完整屏幕范围，恢复窗口时保留位置和尺寸。",
+  "releaseUrl": "https://github.com/KangNa-K/PockRef/releases/tag/release-2.5.8"
 }
